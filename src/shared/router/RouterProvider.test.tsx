@@ -38,6 +38,13 @@ function RouterConsumerProbe() {
       >
         replace reader
       </button>
+      <button
+        type="button"
+        data-testid="btn-replace-empty"
+        onClick={() => replace("   ")}
+      >
+        replace empty
+      </button>
       <button type="button" data-testid="btn-back" onClick={back}>
         back
       </button>
@@ -149,6 +156,14 @@ describe("RouterProvider", () => {
     expect(replaceStateSpy).toHaveBeenLastCalledWith(null, "", "/read/local");
     expect(screen.getByTestId("probe-route-name")).toHaveTextContent(
       "reader-local",
+    );
+
+    // 空白ターゲットへの replace は "/" へ正規化して遷移
+    await user.click(screen.getByTestId("btn-replace-empty"));
+    expect(replaceStateSpy).toHaveBeenCalledTimes(3);
+    expect(replaceStateSpy).toHaveBeenLastCalledWith(null, "", "/");
+    expect(screen.getByTestId("probe-route-name")).toHaveTextContent(
+      "bookshelf",
     );
   });
 

@@ -6,7 +6,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { matchRoute, resolveInitialPath } from "./routeMatcher";
+import {
+  BOOKSHELF_ROUTE,
+  matchRoute,
+  resolveInitialPath,
+} from "./routeMatcher";
 import { RouterContext, type RouterContextValue } from "./routerContext";
 
 export interface RouterProviderProps {
@@ -14,50 +18,58 @@ export interface RouterProviderProps {
   readonly initialPath?: string;
 }
 
+function readWindowPath(): string {
+  return `${window.location.pathname}${window.location.search}`;
+}
+
+function resolveNavigationTarget(to: string): string {
+  const trimmed = to.trim();
+  return trimmed === "" ? BOOKSHELF_ROUTE.path : trimmed;
+}
+
 export function RouterProvider({ children, initialPath }: RouterProviderProps) {
   const [currentPath, setCurrentPath] = useState<string>(() =>
-    resolveInitialPath(
-      initialPath,
-      `${window.location.pathname}${window.location.search}`,
-    ),
+    resolveInitialPath(initialPath, readWindowPath()),
   );
   const currentPathRef = useRef<string>(currentPath);
 
+  const commitPathState = useCallback((nextPath: string) => {
+    currentPathRef.current = nextPath;
+    setCurrentPath(nextPath);
+  }, []);
+
   useEffect(() => {
     if (initialPath !== undefined) {
-      currentPathRef.current = initialPath;
-      setCurrentPath(initialPath);
+      commitPathState(initialPath);
     }
-  }, [initialPath]);
+  }, [initialPath, commitPathState]);
 
   useEffect(() => {
     const handlePopState = () => {
-      const nextPath = `${window.location.pathname}${window.location.search}`;
-      currentPathRef.current = nextPath;
-      setCurrentPath(nextPath);
+      commitPathState(readWindowPath());
     };
 
     window.addEventListener("popstate", handlePopState);
     return () => {
       window.removeEventListener("popstate", handlePopState);
     };
-  }, []);
+  }, [commitPathState]);
 
   const navigate = useCallback(
     (to: string, options?: { replace?: boolean }) => {
-      if (currentPathRef.current === to) {
+      const target = resolveNavigationTarget(to);
+      if (currentPathRef.current === target) {
         return;
       }
 
       if (options?.replace) {
-        window.history.replaceState(null, "", to);
+        window.history.replaceState(null, "", target);
       } else {
-        window.history.pushState(null, "", to);
+        window.history.pushState(null, "", target);
       }
-      currentPathRef.current = to;
-      setCurrentPath(to);
+      commitPathState(target);
     },
-    [],
+    [commitPathState],
   );
 
   const replace = useCallback(
@@ -71,7 +83,7 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
 
   const back = useCallback(() => {
     if (route.name === "reader-local") {
-      navigate("/", { replace: true });
+      navigate(BOOKSHELF_ROUTE.path, { replace: true });
     }
   }, [route.name, navigate]);
 

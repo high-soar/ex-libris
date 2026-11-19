@@ -2,23 +2,29 @@ export type AppRoute =
   | { readonly name: "bookshelf"; readonly path: "/" }
   | { readonly name: "reader-local"; readonly path: "/read/local" };
 
+export const BOOKSHELF_ROUTE: AppRoute = { name: "bookshelf", path: "/" };
+export const READER_LOCAL_ROUTE: AppRoute = {
+  name: "reader-local",
+  path: "/read/local",
+};
+
 export function normalizePath(path: string): string {
   const trimmed = path.trim();
   if (trimmed === "") {
-    return "/";
+    return BOOKSHELF_ROUTE.path;
   }
   const [withoutHash] = trimmed.split("#");
   const [pathnameRaw] = withoutHash.split("?");
   const stripped = pathnameRaw.replace(/\/+$/, "");
-  return stripped === "" ? "/" : stripped;
+  return stripped === "" ? BOOKSHELF_ROUTE.path : stripped;
 }
 
 export function matchRoute(path: string): AppRoute {
   const normalized = normalizePath(path);
-  if (normalized === "/read/local") {
-    return { name: "reader-local", path: "/read/local" };
+  if (normalized === READER_LOCAL_ROUTE.path) {
+    return READER_LOCAL_ROUTE;
   }
-  return { name: "bookshelf", path: "/" };
+  return BOOKSHELF_ROUTE;
 }
 
 export function resolveInitialPath(
@@ -31,5 +37,5 @@ export function resolveInitialPath(
   if (fallbackPath) {
     return fallbackPath;
   }
-  return "/";
+  return BOOKSHELF_ROUTE.path;
 }
