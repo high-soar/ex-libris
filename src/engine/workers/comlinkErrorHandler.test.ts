@@ -177,6 +177,7 @@ describe("comlinkErrorHandler", () => {
         caughtAbort = error;
       }
       expect(isAbortError(caughtAbort)).toBe(true);
+      expect((caughtAbort as Error).name).toBe("AbortError");
       expect((caughtAbort as Error).message).toBe("Aborted");
 
       let caughtString: unknown;

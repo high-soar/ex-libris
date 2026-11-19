@@ -22,15 +22,19 @@ interface SerializedZipArchiveErrorEnvelope {
   };
 }
 
-const ZIP_ERROR_CODES: ReadonlySet<string> = new Set<ZipErrorCode>([
-  "CORRUPT_ZIP",
-  "EMPTY_ARCHIVE",
-  "ENCRYPTED_ZIP",
-  "UNSUPPORTED_COMPRESSION",
-  "ZIP64_NOT_SUPPORTED",
-  "DECODE_FAILED",
-  "READ_ERROR",
-]);
+const ZIP_ERROR_CODE_MAP: Record<ZipErrorCode, true> = {
+  CORRUPT_ZIP: true,
+  EMPTY_ARCHIVE: true,
+  ENCRYPTED_ZIP: true,
+  UNSUPPORTED_COMPRESSION: true,
+  ZIP64_NOT_SUPPORTED: true,
+  DECODE_FAILED: true,
+  READ_ERROR: true,
+};
+
+const ZIP_ERROR_CODES: ReadonlySet<string> = new Set(
+  Object.keys(ZIP_ERROR_CODE_MAP),
+);
 
 const wrappedThrowHandlers = new WeakSet<
   Comlink.TransferHandler<unknown, unknown>
