@@ -6,6 +6,7 @@ import type {
   DecodedPageFrame,
   OpenArchiveResult,
   RandomAccessReader,
+  ZipErrorCode,
   ZipPageEntry,
 } from "../types";
 import { ZipArchiveError, isAbortError } from "../zip/errors";
@@ -39,6 +40,35 @@ function defaultCreateReader(
         "READ_ERROR",
         `未対応のアーカイブソース種別です: ${String((_exhaustiveCheck as { kind?: unknown }).kind)}`,
       );
+    }
+  }
+}
+
+function abortControllers(controllers: Iterable<AbortController>): void {
+  for (const controller of controllers) {
+    controller.abort();
+  }
+}
+
+function createPageErrorFrame(
+  pageIndex: number,
+  epoch: number,
+  errorCode: ZipErrorCode,
+  message: string,
+): DecodedPageFrame {
+  return {
+    status: "error",
+    pageIndex,
+    epoch,
+    errorCode,
+    message,
+  };
+}
+
+function closeReadyFrames(frames: readonly (DecodedPageFrame | null)[]): void {
+  for (const frame of frames) {
+    if (frame !== null && frame.status === "ready") {
+      frame.bitmap.close();
     }
   }
 }
@@ -87,13 +117,67 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
 
   private resetActiveArchiveState(): void {
     for (const controllers of this.inflightAbortControllers.values()) {
-      for (const controller of controllers) {
-        controller.abort();
-      }
+      abortControllers(controllers);
     }
     this.inflightAbortControllers.clear();
     this.activeReader = null;
     this.entries = [];
+  }
+
+  private async fetchAndDecodePage(
+    reader: RandomAccessReader,
+    entry: ZipPageEntry | undefined,
+    pageIndex: number,
+    epoch: number,
+    signal: AbortSignal,
+  ): Promise<DecodedPageFrame | null> {
+    if (!entry) {
+      return createPageErrorFrame(
+        pageIndex,
+        epoch,
+        "READ_ERROR",
+        `指定されたページ番号が範囲外です: ${pageIndex}`,
+      );
+    }
+
+    try {
+      const compressedSlice = await readCompressedPageSlice(
+        reader,
+        entry,
+        signal,
+      );
+      if (signal.aborted) {
+        return null;
+      }
+
+      const decoded = await this.decodePool.decodePageSlice(
+        compressedSlice,
+        entry.compressionMethod,
+      );
+      if (signal.aborted) {
+        decoded.bitmap.close();
+        return null;
+      }
+
+      return {
+        status: "ready",
+        pageIndex,
+        epoch,
+        width: decoded.width,
+        height: decoded.height,
+        bitmap: decoded.bitmap,
+      };
+    } catch (error) {
+      if (isAbortError(error) || signal.aborted) {
+        return null;
+      }
+      return createPageErrorFrame(
+        pageIndex,
+        epoch,
+        error instanceof ZipArchiveError ? error.code : "DECODE_FAILED",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   async openArchive(
@@ -154,67 +238,19 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
 
     try {
       const results = await Promise.all(
-        pageIndices.map(async (pageIndex): Promise<DecodedPageFrame | null> => {
-          const entry = entries[pageIndex];
-          if (!entry) {
-            return {
-              status: "error",
-              pageIndex,
-              epoch,
-              errorCode: "READ_ERROR",
-              message: `指定されたページ番号が範囲外です: ${pageIndex}`,
-            };
-          }
-
-          try {
-            const compressedSlice = await readCompressedPageSlice(
-              reader,
-              entry,
-              controller.signal,
-            );
-            if (controller.signal.aborted) {
-              return null;
-            }
-
-            const decoded = await this.decodePool.decodePageSlice(
-              compressedSlice,
-              entry.compressionMethod,
-            );
-            if (controller.signal.aborted) {
-              decoded.bitmap.close();
-              return null;
-            }
-
-            return {
-              status: "ready",
-              pageIndex,
-              epoch,
-              width: decoded.width,
-              height: decoded.height,
-              bitmap: decoded.bitmap,
-            };
-          } catch (error) {
-            if (isAbortError(error) || controller.signal.aborted) {
-              return null;
-            }
-            return {
-              status: "error",
-              pageIndex,
-              epoch,
-              errorCode:
-                error instanceof ZipArchiveError ? error.code : "DECODE_FAILED",
-              message: error instanceof Error ? error.message : String(error),
-            };
-          }
-        }),
+        pageIndices.map((pageIndex) =>
+          this.fetchAndDecodePage(
+            reader,
+            entries[pageIndex],
+            pageIndex,
+            epoch,
+            controller.signal,
+          ),
+        ),
       );
 
       if (controller.signal.aborted) {
-        for (const frame of results) {
-          if (frame !== null && frame.status === "ready") {
-            frame.bitmap.close();
-          }
-        }
+        closeReadyFrames(results);
         return [];
       }
 
@@ -240,9 +276,7 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
       controllers,
     ] of this.inflightAbortControllers.entries()) {
       if (epoch < this.minActiveEpoch) {
-        for (const controller of controllers) {
-          controller.abort();
-        }
+        abortControllers(controllers);
         this.inflightAbortControllers.delete(epoch);
       }
     }

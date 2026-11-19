@@ -79,7 +79,7 @@ describe("DecodeWorkerPool", () => {
     expect(spy0).toHaveBeenCalledTimes(1);
     expect(spy1).toHaveBeenCalledTimes(2);
 
-    // 両方ともビジー状態から負荷が最小の側へ割り振られ、失敗時もactiveCountが解放される
+    // 失敗時もactiveCountが0へ戻ること（Worker 0がactive=1の状態で次の要求がWorker 1を優先選択する）
     let rejectSlow1!: (err: unknown) => void;
     spy1.mockImplementationOnce(
       () =>
@@ -88,14 +88,36 @@ describe("DecodeWorkerPool", () => {
         }),
     );
     const job3 = pool.decodePageSlice(new Uint8Array([4]), 0); // Worker 1 (active=0)
-    const job4 = pool.decodePageSlice(new Uint8Array([5]), 0); // Worker 0 (active=1) vs Worker 1 (active=1)
-
     rejectSlow1(new Error("decode error"));
     await expect(job3).rejects.toThrow("decode error");
 
+    const job4 = pool.decodePageSlice(new Uint8Array([5]), 0); // activeCount復帰によりWorker 1 (active=0 < 1) を選択
+    await job4;
+    expect(spy0).toHaveBeenCalledTimes(1);
+    expect(spy1).toHaveBeenCalledTimes(4);
+
+    // 両方ともactive=1で同率の場合はnextIndex側が選ばれる
+    let resolveSlow1!: (val: {
+      bitmap: ImageBitmap;
+      width: number;
+      height: number;
+    }) => void;
+    spy1.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSlow1 = resolve;
+        }),
+    );
+    const job5 = pool.decodePageSlice(new Uint8Array([6]), 0); // Worker 1 (active=0 < 1), nextIndex -> 0
+    const job6 = pool.decodePageSlice(new Uint8Array([7]), 0); // Worker 0 (active=1) vs Worker 1 (active=1) -> Worker 0
+    expect(spy0).toHaveBeenCalledTimes(2);
+    expect(spy1).toHaveBeenCalledTimes(5);
+
     resolveSlow0({ bitmap: createFakeBitmap(0), width: 100, height: 200 });
+    resolveSlow1({ bitmap: createFakeBitmap(1), width: 101, height: 201 });
     await expect(job0).resolves.toMatchObject({ width: 100 });
-    await expect(job4).resolves.toMatchObject({ width: 100 });
+    await expect(job5).resolves.toMatchObject({ width: 101 });
+    await expect(job6).resolves.toMatchObject({ width: 100 });
   });
 
   it("disposeで全Workerを破棄し破棄後のデコード呼び出しをDECODE_FAILEDで拒否すること", async () => {
