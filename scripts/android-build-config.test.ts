@@ -13,6 +13,27 @@ describe("Android build, Capacitor & Remote Agent governance invariants", () => 
     expect(capacitorConfig.plugins?.CapacitorHttp?.enabled).toBe(false);
   });
 
+  it("capacitor.config.ts が Android 15/16 Edge-to-Edge マージン調整と黒背景色を設定していること", () => {
+    expect(capacitorConfig.backgroundColor).toBe("#000000");
+    expect(capacitorConfig.android?.backgroundColor).toBe("#000000");
+    expect(capacitorConfig.android?.adjustMarginsForEdgeToEdge).toBe("auto");
+  });
+
+  it("MainActivity.java が黒ウィンドウ背景色と暗色背景向け白システムバーアイコンを設定していること", () => {
+    const mainActivityPath = path.resolve(
+      repoRoot,
+      "android/app/src/main/java/com/highsoar/exlibris/MainActivity.java",
+    );
+    expect(fs.existsSync(mainActivityPath)).toBe(true);
+    const mainActivity = fs.readFileSync(mainActivityPath, "utf8");
+
+    expect(mainActivity).toContain("Color.BLACK");
+    expect(mainActivity).toContain("WindowCompat.getInsetsController");
+    expect(mainActivity).toContain("WindowInsetsControllerCompat");
+    expect(mainActivity).toContain("setAppearanceLightStatusBars(false)");
+    expect(mainActivity).toContain("setAppearanceLightNavigationBars(false)");
+  });
+
   it(".agents/environment.json が sudo を使わず冪等な install コマンドを定義していること", () => {
     const envJsonPath = path.resolve(repoRoot, ".agents/environment.json");
     expect(fs.existsSync(envJsonPath)).toBe(true);
