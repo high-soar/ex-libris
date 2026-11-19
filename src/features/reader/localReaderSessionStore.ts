@@ -13,9 +13,19 @@ export interface LocalReaderSessionState {
 }
 
 export const useLocalReaderSessionStore = create<LocalReaderSessionState>(
-  () => ({
+  (set) => ({
     session: null,
-    openLocalFile: (_file: File) => {},
-    clearSession: () => {},
+    openLocalFile: (file: File) => {
+      set({
+        session: {
+          file,
+          fileName: file.name,
+          fileSize: file.size,
+        },
+      });
+    },
+    clearSession: () => {
+      set({ session: null });
+    },
   }),
 );

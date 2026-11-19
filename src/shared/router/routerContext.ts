@@ -1,4 +1,4 @@
-import { createContext } from "react";
+import { createContext, useContext } from "react";
 import type { AppRoute } from "./routeMatcher";
 
 export interface RouterContextValue {
@@ -12,5 +12,9 @@ export interface RouterContextValue {
 export const RouterContext = createContext<RouterContextValue | null>(null);
 
 export function useRouter(): RouterContextValue {
-  throw new Error("Not implemented");
+  const context = useContext(RouterContext);
+  if (!context) {
+    throw new Error("useRouter must be used within a RouterProvider");
+  }
+  return context;
 }
