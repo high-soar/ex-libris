@@ -1,4 +1,7 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
 import type { DecodedPageFrame } from "../engine/types";
+import { WebGLRendererCore } from "./WebGLRendererCore";
 
 export type WebGLStatus = "initializing" | "ready" | "context-lost" | "error";
 export type WebGLFatalErrorCode = "WEBGL_UNSUPPORTED" | "WEBGL_INIT_FAILED";
@@ -17,13 +20,228 @@ export interface ReaderCanvasProps {
   ) => WebGL2RenderingContext | null;
 }
 
-export function ReaderCanvas(_props: ReaderCanvasProps) {
+interface RenderedState {
+  readonly page: string;
+  readonly epoch: string;
+}
+
+const EMPTY_RENDERED: RenderedState = { page: "", epoch: "" };
+const DEFAULT_INIT_ERROR_MESSAGE = "WebGL2 描画の初期化に失敗しました";
+
+function defaultGetWebGL2Context(
+  canvas: HTMLCanvasElement,
+): WebGL2RenderingContext | null {
+  return canvas.getContext("webgl2", {
+    alpha: false,
+    antialias: false,
+    depth: false,
+    stencil: false,
+    preserveDrawingBuffer: false,
+    powerPreference: "high-performance",
+  });
+}
+
+function getWebGLInitErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : DEFAULT_INIT_ERROR_MESSAGE;
+}
+
+function readElementCssSize(
+  canvas: HTMLCanvasElement,
+  observerEntry?: ResizeObserverEntry,
+): { width: number; height: number } {
+  const rect = observerEntry
+    ? observerEntry.contentRect
+    : canvas.getBoundingClientRect();
+  return {
+    width: rect.width > 0 ? rect.width : canvas.clientWidth,
+    height: rect.height > 0 ? rect.height : canvas.clientHeight,
+  };
+}
+
+export function ReaderCanvas({
+  frame,
+  onRendererReady,
+  onFatalError,
+  getWebGL2Context,
+}: ReaderCanvasProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const rendererRef = useRef<WebGLRendererCore | null>(null);
+  const isContextLostRef = useRef(false);
+  const lastRenderedKeyRef = useRef("");
+
+  const frameRef = useRef(frame);
+  frameRef.current = frame;
+  const onRendererReadyRef = useRef(onRendererReady);
+  onRendererReadyRef.current = onRendererReady;
+  const onFatalErrorRef = useRef(onFatalError);
+  onFatalErrorRef.current = onFatalError;
+  const getWebGL2ContextRef = useRef(getWebGL2Context);
+  getWebGL2ContextRef.current = getWebGL2Context;
+
+  const [status, setStatus] = useState<WebGLStatus>("initializing");
+  const [rendered, setRendered] = useState<RenderedState>(EMPTY_RENDERED);
+
+  const clearRenderedState = useCallback(() => {
+    if (lastRenderedKeyRef.current !== "") {
+      lastRenderedKeyRef.current = "";
+      setRendered(EMPTY_RENDERED);
+    }
+  }, []);
+
+  const applyFrame = useCallback(
+    (renderer: WebGLRendererCore, nextFrame: DecodedPageFrame | null) => {
+      renderer.renderFrame(nextFrame);
+      if (nextFrame !== null && nextFrame.status === "ready") {
+        const page = String(nextFrame.pageIndex);
+        const epoch = String(nextFrame.epoch);
+        const nextKey = `${page}:${epoch}`;
+        if (lastRenderedKeyRef.current !== nextKey) {
+          lastRenderedKeyRef.current = nextKey;
+          setRendered({ page, epoch });
+        }
+      } else {
+        clearRenderedState();
+      }
+    },
+    [clearRenderedState],
+  );
+
+  useEffect(() => {
+    const canvas = canvasRef.current as HTMLCanvasElement;
+    const resolveContext =
+      getWebGL2ContextRef.current ?? defaultGetWebGL2Context;
+    const gl = resolveContext(canvas);
+
+    if (!gl) {
+      diagnosticLogger.error(
+        "webgl2",
+        DEFAULT_INIT_ERROR_MESSAGE,
+        "WebGL2 context unavailable",
+      );
+      setStatus("error");
+      onRendererReadyRef.current?.(null);
+      onFatalErrorRef.current?.(
+        "WEBGL_UNSUPPORTED",
+        DEFAULT_INIT_ERROR_MESSAGE,
+      );
+      return;
+    }
+
+    let renderer: WebGLRendererCore;
+    try {
+      renderer = new WebGLRendererCore(gl);
+    } catch (error) {
+      const message = getWebGLInitErrorMessage(error);
+      diagnosticLogger.error(
+        "webgl2",
+        "WebGLRendererCore initialization failed",
+        message,
+      );
+      setStatus("error");
+      onRendererReadyRef.current?.(null);
+      onFatalErrorRef.current?.("WEBGL_INIT_FAILED", message);
+      return;
+    }
+
+    rendererRef.current = renderer;
+    isContextLostRef.current = false;
+
+    const handle: ReaderCanvasHandle = {
+      deletePageTexture: (pageIndex) => {
+        renderer.deletePageTexture(pageIndex);
+      },
+      clearAllTextures: () => {
+        renderer.clearAllTextures();
+      },
+    };
+
+    const syncSize = (entry?: ResizeObserverEntry): boolean => {
+      const { width, height } = readElementCssSize(canvas, entry);
+      const dpr = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+      return renderer.resize(width, height, dpr);
+    };
+
+    syncSize();
+    setStatus("ready");
+    onRendererReadyRef.current?.(handle);
+
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      isContextLostRef.current = true;
+      diagnosticLogger.warn(
+        "webgl2",
+        "WebGL2 コンテキストがロストしました（自動復帰待機）",
+      );
+      setStatus("context-lost");
+      clearRenderedState();
+      onRendererReadyRef.current?.(null);
+    };
+
+    const handleContextRestored = () => {
+      try {
+        renderer.reinitializeAfterContextLost();
+      } catch (error) {
+        const message = getWebGLInitErrorMessage(error);
+        diagnosticLogger.error(
+          "webgl2",
+          "WebGL2 context restoration failed",
+          message,
+        );
+        setStatus("error");
+        onRendererReadyRef.current?.(null);
+        onFatalErrorRef.current?.("WEBGL_INIT_FAILED", message);
+        return;
+      }
+
+      isContextLostRef.current = false;
+      syncSize();
+      applyFrame(renderer, frameRef.current);
+      setStatus("ready");
+      onRendererReadyRef.current?.(handle);
+    };
+
+    canvas.addEventListener("webglcontextlost", handleContextLost);
+    canvas.addEventListener("webglcontextrestored", handleContextRestored);
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver((entries) => {
+        if (isContextLostRef.current) {
+          return;
+        }
+        const resized = syncSize(entries[0]);
+        if (resized) {
+          applyFrame(renderer, frameRef.current);
+        }
+      });
+      observer.observe(canvas);
+    }
+
+    return () => {
+      observer?.disconnect();
+      canvas.removeEventListener("webglcontextlost", handleContextLost);
+      canvas.removeEventListener("webglcontextrestored", handleContextRestored);
+      rendererRef.current = null;
+      renderer.dispose();
+      onRendererReadyRef.current?.(null);
+    };
+  }, [applyFrame, clearRenderedState]);
+
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (renderer === null || isContextLostRef.current) {
+      return;
+    }
+    applyFrame(renderer, frame);
+  }, [applyFrame, frame]);
+
   return (
     <canvas
+      ref={canvasRef}
       data-testid="reader-canvas"
-      data-webgl-status="initializing"
-      data-rendered-page=""
-      data-rendered-epoch=""
+      data-webgl-status={status}
+      data-rendered-page={rendered.page}
+      data-rendered-epoch={rendered.epoch}
       className="block h-full w-full bg-black"
     />
   );

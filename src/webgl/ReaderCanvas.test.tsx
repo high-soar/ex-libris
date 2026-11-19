@@ -190,7 +190,11 @@ describe("ReaderCanvas", () => {
     });
 
     const { rerender, unmount } = render(
-      <Default getWebGL2Context={() => gl} onRendererReady={onRendererReady} />,
+      <ReaderCanvas
+        frame={null}
+        getWebGL2Context={() => gl}
+        onRendererReady={onRendererReady}
+      />,
     );
 
     const canvas = screen.getByTestId("reader-canvas");
