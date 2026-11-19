@@ -1,107 +1,135 @@
 ---
 type: spec-architecture
 title: "4層＋マルチスレッドアーキテクチャと共通インターフェース契約"
-description: "I/O & Provider・Engine Worker・Storage・Viewer & Bridge の4層責務境界、Zero-Copy 転送、および CapacitorHttp 非干渉ルールの正本"
-status: Draft
-updated: "2026-11-18"
-tags: [architecture, web-worker, webgl2, comlink, capacitor]
+description: "Streaming & Provider・Engine Worker・Storage・Viewer & Bridge の4層責務境界、Zero-Copy 転送、メモリ予算定数、および TypeScript コア契約の正本"
+status: "Approved (Phase 2)"
+updated: "2026-11-19"
+tags: [architecture, web-worker, webgl2, comlink, capacitor, cache, oauth]
 related_specs:
+  - docs/index.md
   - docs/specs/requirements.md
   - docs/specs/db-schema.md
   - docs/specs/screen-transitions.md
   - docs/guidelines/testing.md
-related_tests: []
+related_tests:
+  - src/App.test.tsx
+  - src/diagnostics/diagnosticLogger.test.ts
+  - src/shared/constants/app.test.ts
+  - src/storage/db.test.ts
+  - scripts/android-build-config.test.ts
 ---
 
 # ExLibris 4層＋マルチスレッドアーキテクチャと共通インターフェース契約
 
-> [!NOTE]
-> **Phase 2（コア仕様策定フェーズ）向け初期骨格（`Draft`）**:
-> 本ドキュメントは `ex_libris_concept.md` §2〜§4 の技術検証結果を反映したアーキテクチャ正本の初期骨格です。Phase 2 にてインターフェース型定義を確定し、`Approved (Phase 2)` へ昇格させます。
+本ドキュメントは、ExLibris における 4層 × 3スレッド領域の責務分離、ディレクトリ構成規約、メモリ・ストリーミング制御定数、およびレイヤー間を結ぶ TypeScript コアインターフェース契約の正本（Single Source of Truth）です。
 
 ---
 
-## 1. 4層責務分離とスレッドモデル全体像
+## 1. 4層 × 3スレッド領域のアーキテクチャ全体像
 
-60fps の UI 応答性維持、高解像度/AVIF デコードによるメインスレッドブロック回避、および Android WebView の VRAM 枯渇（OOM）防止のため、システムを以下の **4層 × 3スレッド領域** に厳格分離します。
+60fps の UI 応答性維持、高解像度スキャン画像（AVIF / JPEG / PNG / WebP）デコードによるメインスレッドブロックの根絶、および Android WebView 特有の VRAM 枯渇（OOM クラッシュ）防止のため、システムを以下の **4層 × 3スレッド領域** に厳格分離します。
 
 ```mermaid
 flowchart TB
-    subgraph UIThread["Main Thread (UI & GPU Layer)"]
-        UI["Viewer Layer (React + Zustand)"]
-        L1["L1 Cache (ImageBitmap: 3-5 pages, strict bitmap.close())"]
-        GL["Raw WebGL2 Renderer (Mipmap + Custom Fragment Shader)"]
-        Bridge["Capacitor Bridge Adapters (OAuth / MetadataHttp / VolumeKey)"]
+    subgraph UIThread["Main Thread (Viewer, UI & Bridge Layer)"]
+        UI["React 19 + Zustand (SCR-01〜SCR-04)"]
+        L1["L1 Cache (ImageBitmap: max 5 pages, strict bitmap.close())"]
+        GL["WebGLRendererCore (Mipmap + Custom Fragment Shader + MAX_TEXTURE_SIZE Guard)"]
+        Bridge["Capacitor Bridges (GoogleAuth / MetadataHttp / AppLifecycle / VolumeKey)"]
+        Diag["DiagnosticLogger (Ring Buffer + Secret Redaction)"]
     end
 
-    subgraph CoordThread["Coordinator Worker (Streaming & L2 Layer)"]
-        Coord["CoordinatorCore (Comlink Endpoint)"]
-        Prefetch["Adaptive Prefetcher (Fast-Path + 8-12MB Byte Budget)"]
-        ZipParser["ZIP / ZIP64 / CP932 Parser & 1-RTT Slicer"]
-        L2["L2 Cache (Compressed Uint8Array: 60-100MB LRU)"]
-        Reader["RandomAccessReader (GoogleDrive / HttpRange / LocalFile)"]
+    subgraph CoordThread["Coordinator Worker (Streaming, ZIP64 & L2 Layer)"]
+        Coord["CoordinatorCore (Comlink Endpoint + Epoch Guard)"]
+        Prefetch["AdaptivePrefetcher (Fast-Path + 10MB Byte Budget / 64KB Gap Coalesce)"]
+        ZipParser["ZipParserCore (Tail 128KB + ZIP64 + CP932 + 1-RTT LFH Slicer)"]
+        L2["L2ByteCache (Compressed Uint8Array: 80MB LRU)"]
+        Reader["RandomAccessReader (GoogleDriveRange / LocalFile)"]
     end
 
-    subgraph DecodeThreads["Decode Worker Pool (x2 Workers)"]
+    subgraph DecodeThreads["Decode Worker Pool (x2 Dedicated Workers)"]
         Inflate["DecompressionStream('deflate-raw') / fflate fallback"]
-        Decode["createImageBitmap Decoder"]
+        Decode["createImageBitmap Off-Thread Decoder"]
     end
 
-    subgraph LocalStorage["Storage Layer (IndexedDB)"]
-        Dexie[("Dexie.js (Series / Volumes / ZipIndexCache / Progress)")]
+    subgraph LocalStorage["Storage Layer (IndexedDB / Dexie.js)"]
+        Dexie[("ExLibrisDatabase (Series / Volumes / ZipIndexCache / Progress / SyncRoots)")]
     end
 
-    UI <-->|"Comlink RPC + Epoch Cancellation"| Coord
-    Coord -->|"Compressed Slice (Transferable)"| Inflate
+    UI <-->|"Comlink RPC + requestEpoch"| Coord
+    Coord -->|"Compressed Slice (Transferable ArrayBuffer)"| Inflate
     Inflate --> Decode
     Decode -->|"ImageBitmap (Zero-Copy Transfer)"| L1
-    L1 -->|"gl.texImage2D"| GL
+    L1 -->|"gl.texImage2D + generateMipmap"| GL
     UI <--> Dexie
     Coord <--> Dexie
-    Bridge -.->|"Bearer Token Supply / Explicit CORS API Request"| UI
+    Bridge -.->|"Single-Flight Bearer Token / Explicit CORS Request"| UI
+    Bridge -.->|"Updated Bearer Token"| Coord
 ```
 
-| レイヤー                                  | 主な配置先（予定）                                                | 責務と境界ルール                                                                                                                                                                                                                                                                                                 |
-| :---------------------------------------- | :---------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1. Streaming & Provider Layer**         | `src/engine/io/`, `src/providers/`                                | `RandomAccessReader`（Google Drive / HTTP Range / Local `File.slice`）、Drive `files.list` / `changes.list` 同期、自炊ファイル名パーサー、公開書誌 API クライアント。UI コンポーネントへの直接依存禁止。                                                                                                         |
-| **2. Engine Worker Layer**                | `src/engine/zip/`, `src/engine/cache/`, `src/engine/workers/`     | ZIP/ZIP64 解析（末尾 128KB 取得＋不足分フォールバック、LFH 可変長 1 RTT 切り出し）、Fast-Path＋バイト予算先読み、L2 LRU キャッシュ、Decode Worker プール制御。**ビジネスロジックは純粋な `*Core.ts` に分離し、`*.worker.ts` は薄い `Comlink.expose` エントリのみとする。**                                       |
-| **3. Storage Layer**                      | `src/storage/`                                                    | Dexie.js（IndexedDB）アダプタ。仮想本棚メタデータ、軽量表紙 WebP、ZIP Central Directory キャッシュ（`fileId + md5Checksum`）、読書進捗を管理。`resetTestDb()` で決定論的に初期化可能とする。                                                                                                                     |
-| **4. Viewer, Diagnostics & Bridge Layer** | `src/features/`, `src/webgl/`, `src/bridges/`, `src/diagnostics/` | React UI、生 WebGL2 レンダラ（`WebGLRendererCore` と Canvas コンポーネントの分離）、L1 `ImageBitmap` キャッシュ（退避時 `bitmap.close()` 必須）、Capacitor ネイティブブリッジラッパー（`appId: com.highsoar.exlibris`）、および PC レス実機検証用のオンメモリ診断ログ（機密トークン自動マスク＋1タップコピー）。 |
+### 1.1 標準ディレクトリ構成とレイヤー責務境界
+
+| レイヤー                                  | 配置ディレクトリ                                                                                                                                               | 責務と依存ルール                                                                                                                                                                                                                                                                                                                                                                                                        |
+| :---------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1. Streaming & Provider Layer**         | `src/engine/io/`<br>`src/providers/{gdrive,filename,metadata,sync}/`                                                                                           | ・`RandomAccessReader` 実装（`GoogleDriveRangeReader`, `LocalFileReader`, 将来拡張用 `HttpRangeReader`）<br>・指定ルートフォルダ配下の Drive `files.list` / `changes.list` 同期、自炊ファイル名スマートパーサー、公開書誌 API クライアント（NDL / AniList / Google Books）、`appDataFolder` LWW 同期エンジン<br>・React / DOM / WebGL2 への依存を一切持たない純粋 TypeScript モジュールとする                           |
+| **2. Engine Worker Layer**                | `src/engine/zip/`<br>`src/engine/cache/`<br>`src/engine/prefetch/`<br>`src/engine/workers/`<br>`src/engine/cover/`                                             | ・ZIP / ZIP64 / Shift_JIS 解析、LFH 可変長 1 RTT ゼロコピー切り出し、Fast-Path ＋ 10MB バイト予算先読み、80MB L2 LRU キャッシュ、Decode Worker プール（2 Worker ラウンドロビン/空き優先制御）、2段優先度表紙 WebP 抽出スケジューラ<br>・**ロジック本体は Worker グローバル（`self`）非依存の `*Core.ts` に分離して Vitest で 100% 単体検証し、`*.worker.ts` は数行の `Comlink.expose(...)` ブートストラップのみとする** |
+| **3. Storage Layer**                      | `src/storage/`<br>`src/storage/repositories/`                                                                                                                  | ・Dexie.js インスタンス（`ExLibrisDatabase`）とドメイン別 Repository インターフェース実装<br>・`resetTestDb()` により UT / Storybook / Playwright IT で 100% 決定論的に初期化可能とする                                                                                                                                                                                                                                 |
+| **4. Viewer, Diagnostics & Bridge Layer** | `src/features/{bookshelf,series-detail,reader,settings}/`<br>`src/webgl/`<br>`src/bridges/{oauth,http,app,volume-key}/`<br>`src/diagnostics/`<br>`src/shared/` | ・画面別 Container / Presentational コンポーネント（1対1 Story/UT・親子 `vi.spyOn` 完全分離）<br>・生 WebGL2 レンダラ（`WebGLRendererCore` と `<ReaderCanvas>` の分離）および L1 `ImageBitmap` 管理<br>・Capacitor ネイティブブリッジの薄いアダプタ層（Web/テスト時はモック実装へ自動フォールバック）およびオンメモリ診断ロガー                                                                                         |
 
 ---
 
-## 2. Capacitor 通信・認証に関する最重要アーキテクチャ規約
+## 2. ストリーミング・メモリ予算定数と Engine コア契約
 
-### 2.1 `CapacitorHttp.enabled: false` の絶対維持（Zero-Copy 保護）
+### 2.1 システム基準定数（`ENGINE_BUDGETS`）
 
-> [!CAUTION]
-> **`capacitor.config.ts` で `plugins.CapacitorHttp.enabled: true` を絶対に有効化してはならない。**
-> グローバルな `CapacitorHttp` パッチを有効化すると、WebView 内の `fetch` がネイティブブリッジ経由にフックされ、大容量バイナリ（`ArrayBuffer`）が Base64 文字列変換されてストリーミング性能が致命的に劣化する（また Web Worker 内 `fetch` との不整合を招く）。
+[requirements.md §3](requirements.md#3-非機能要件システムリソース基準nfr-xx) の合意値に基づき、以下の定数をエンジン全体の基準値とします。
 
-- **ストリーミング通信（Google Drive `alt=media` / 自宅 HTTP Range）**:
-  WebView / Web Worker 標準のネイティブ Chromium `fetch`（`Range: bytes=start-end` → `response.arrayBuffer()`）をそのまま使用する（Google Drive API は CORS ヘッダーを返すため `Authorization: Bearer <token>` 付き標準 `fetch` で直接高速取得できる）。
-- **CORS 制限のある公開書誌 API（NDL サーチ / 楽天ブックス等）**:
-  `src/bridges/http/MetadataHttpClient.ts` 内部でのみ、明示的に `CapacitorHttp.request()`（Web 開発時は Vite Proxy またはモック）を呼び出す。
+| 定数名                       |       設定値        | 設計根拠・用途                                                                                                         |
+| :--------------------------- | :-----------------: | :--------------------------------------------------------------------------------------------------------------------- |
+| `INITIAL_TAIL_READ_BYTES`    |  `131_072` (128KB)  | 初回オープン時に ZIP 末尾から Range 取得するバイト数。標準単行本の EOCD + Central Directory 全体を 1 RTT で収める      |
+| `LFH_EXTRA_MARGIN_BYTES`     |    `1_024` (1KB)    | CDH と LFH の `extraFieldLength` 差分を吸収し、LFH ヘッダ＋圧縮本体を 1 RTT で取得するための安全マージン               |
+| `MAX_COALESCE_GAP_BYTES`     |   `65_536` (64KB)   | Warm Prefetch で隣接エントリを単一 Range リクエストに結合する際の最大許容物理ギャップ（超過時はリクエスト分割）        |
+| `WARM_PREFETCH_BUDGET_BYTES` | `10_485_760` (10MB) | Warm Prefetch 1 リクエストあたりの最大合計バイト予算（最低 1 ページは許容）                                            |
+| `L2_CACHE_MAX_BYTES`         | `83_886_080` (80MB) | Coordinator Worker 内で LRU 保持する未デコード圧縮画像（`Uint8Array`）の最大合計バイト数                               |
+| `L1_MAX_PAGES`               |         `5`         | UI スレッド側で同時に保持するデコード済み `ImageBitmap` の最大枚数（現在表示 1〜2 枚 ＋ 進行方向 2 枚 ＋ 逆方向 1 枚） |
+| `DECODE_WORKER_POOL_SIZE`    |         `2`         | `DecompressionStream` 解凍および `createImageBitmap` を並列処理する専用 Decode Worker 数                               |
+| `COVER_BG_MAX_PER_SECOND`    |         `2`         | バックグラウンド低速表紙 WebP 抽出キューの最大処理レート（2 冊/秒）                                                    |
 
-### 2.2 Google OAuth スコープと Worker トークン供給契約
+### 2.2 アーカイブ参照と `RandomAccessReader` 契約
 
-- **要求スコープ**:
-  1. `https://www.googleapis.com/auth/drive.readonly`（ZIP 一覧スキャン・差分検知・Range ストリーミング読み取り専用）
-  2. `https://www.googleapis.com/auth/drive.appdata`（アプリ専用隠し領域 `appDataFolder` への書誌・進捗バックアップ用）
-- **トークン透過リフレッシュ（Single-Flight 制御）**:
-  - ネイティブ Android 側プラグイン（`GoogleAuthPlugin`）が `AuthorizationClient` を用いてアクセストークン取得・失効時 `clearToken` 再取得を担う。
-  - Worker 側で `401 Unauthorized` または有効期限直前（残り 5 分未満）を検知した場合、複数リクエストが同時にリフレッシュを走らせないよう **Single-Flight Promise** で1回だけトークンを更新し、保留中の Range リクエストを透過リトライする。
-
----
-
-## 3. コアインターフェース骨格（Phase 2 詳細化対象）
-
-### 3.1 `RandomAccessReader` 契約
+Google Drive 上の永続巻と、端末ローカル選択の一時 ZIP セッションを単一のパイプラインで扱うため、以下のユニオン識別子と I/O 契約を採用します。
 
 ```ts
+export type ArchiveSourceDescriptor =
+  | {
+      readonly kind: "gdrive";
+      readonly volumeId: string;
+      readonly driveFileId: string;
+      readonly fileSize: number;
+      readonly md5Checksum: string | null;
+      /** `${"gdrive"}:${driveFileId}:${md5Checksum ?? fileSize}` */
+      readonly indexCacheKey: string;
+      /** `vol:${volumeId}` */
+      readonly progressTargetKey: string;
+    }
+  | {
+      readonly kind: "local-session";
+      readonly file: File;
+      readonly rawFileName: string;
+      readonly fileSize: number;
+      /** `local:${rawFileName}:${fileSize}` */
+      readonly indexCacheKey: string;
+      /** `local:${rawFileName}:${fileSize}` */
+      readonly progressTargetKey: string;
+    };
+
 export interface RandomAccessReader {
   readonly sourceId: string;
   readonly totalSize: number;
+  /**
+   * 指定バイト範囲 [offset, offset + length - 1] を取得する。
+   * 終端超過時は実ファイル末尾までにクランプした Uint8Array を返す。
+   */
   readRange(
     offset: number,
     length: number,
@@ -110,9 +138,165 @@ export interface RandomAccessReader {
 }
 ```
 
-### 3.2 非同期処理の世代管理（Epoch / `AbortController`）規約
+### 2.3 ZIP 論理ページ目次と Worker 間 RPC 契約
 
-高速シーク・連続ページめくり・巻切り替え時のレースコンディションおよび無駄な帯域消費を防ぐため、以下を全非同期パイプラインに義務付けます。
+```ts
+export type ZipCompressionMethod = 0 | 8; // 0: Store (無圧縮), 8: Deflate
 
-1. **Epoch ID（世代カウンタ）**: 巻オープン・シーク操作のたびに `requestEpoch` をインクリメントし、古い世代の Range 取得結果やデコード完了 `ImageBitmap` が到着した場合は L1 キャッシュへ入れず即座に **`bitmap.close()` して破棄** する。
-2. **優先度プリエンプション（閲覧最優先）**: リーダーで巻を開いている間、または Fast-Path 取得中は、バックグラウンドの表紙 WebP 抽出キューを即座に一時停止（プリエンプション）し、Google Drive API の 403 Rate Limit と回線帯域競合を回避する。
+export interface ZipPageEntry {
+  /** ゴミ除外・自然順ソート後の 0 始まり論理ページ番号 */
+  readonly pageIndex: number;
+  /** UTF-8 または Shift_JIS デコード後のエントリパス */
+  readonly entryName: string;
+  readonly compressionMethod: ZipCompressionMethod;
+  /** Central Directory 記載の正確な圧縮サイズ（Bit 3 有効時も信頼できる正値） */
+  readonly compressedSize: number;
+  readonly uncompressedSize: number;
+  /** Local File Header 先頭の物理バイトオフセット（64bit 安全整数） */
+  readonly localHeaderOffset: number;
+  /** 次の物理エントリ先頭または Central Directory 開始オフセット（1 RTT 取得上限） */
+  readonly physicalEnd: number;
+  readonly crc32: number;
+}
+
+export interface DecodedPageFrame {
+  readonly pageIndex: number;
+  readonly epoch: number;
+  readonly width: number;
+  readonly height: number;
+  /** Transferable Object として所有権ごと UI スレッドへ Zero-Copy 転送される */
+  readonly bitmap: ImageBitmap;
+}
+
+export interface OpenArchiveResult {
+  readonly pageCount: number;
+  readonly entries: readonly ZipPageEntry[];
+  readonly fromIndexCache: boolean;
+}
+
+export interface CoordinatorWorkerApi {
+  openArchive(
+    source: ArchiveSourceDescriptor,
+    cachedEntries: readonly ZipPageEntry[] | null,
+    epoch: number,
+  ): Promise<OpenArchiveResult>;
+
+  /**
+   * Fast-Path で現在表示に必要なページ（単頁1枚 or 見開き2枚）を最優先返却し、
+   * 非同期で後続ページの Warm Prefetch（10MB 予算 L2 格納）をスケジュールする。
+   */
+  requestVisiblePages(
+    pageIndices: readonly number[],
+    prefetchIndices: readonly number[],
+    epoch: number,
+  ): Promise<DecodedPageFrame[]>;
+
+  updateAccessToken(accessToken: string | null): void;
+  cancelEpochBelow(minActiveEpoch: number): void;
+  closeArchive(): Promise<void>;
+}
+
+export interface DecodeWorkerApi {
+  decodePageSlice(
+    compressedData: Uint8Array,
+    compressionMethod: ZipCompressionMethod,
+  ): Promise<{
+    bitmap: ImageBitmap;
+    width: number;
+    height: number;
+  }>;
+}
+```
+
+---
+
+## 3. 生 WebGL2 描画パイプライン＆L1 キャッシュ契約
+
+### 3.1 見開き・読み方向・画質補正モデル
+
+```ts
+export type ReadingDirection = "rtl" | "ltr"; // rtl: 右開き（標準）, ltr: 左開き
+export type SpreadMode = "single" | "spread"; // single: 単ページ, spread: 2ページ見開き
+
+export interface ShaderCorrectionParams {
+  /** LOD バイアス / アンシャープマスク強度（0.0 = 無補正 〜 1.0 = 強） */
+  readonly sharpness: number;
+  /** 紙地肌の白飛ばし上限（0.80 〜 1.00、黄ばみ除去用） */
+  readonly whitePoint: number;
+  /** インク引き締め・裏写りカット下限（0.00 〜 0.25） */
+  readonly blackPoint: number;
+  /** 中間調ガンマ補正（0.60 〜 1.60、1.00 = 線形） */
+  readonly gamma: number;
+}
+
+export interface ViewportSlotLayout {
+  /** 単ページ表示時は 1 要素、2ページ見開き表示時は左右 2 要素 */
+  readonly slots: readonly {
+    readonly pageIndex: number;
+    readonly position: "center" | "left" | "right";
+  }[];
+}
+```
+
+- **インテリジェント見開き判定ルール**:
+  - `SpreadMode === "spread"`（主にタブレット横向き）であっても、①表紙先頭ページ（`pageIndex === 0` かつ `spreadPageOffset === 0`）、または ②元画像自体が横長スキャン（`width > height`）であるページ（またはペア候補の次ページが横長である場合）は、自動的に **1枚単独中央表示（`position: "center"`）** とする。
+  - ユーザーが「1ページずらし」トグル（`spreadPageOffset: 0 | 1`）を切り替えた場合、ペアリング基準を即座に 1 ページシフトして再レイアウトする。
+
+### 3.2 GPU テクスチャ・`MAX_TEXTURE_SIZE` ガード・L1 解放規律
+
+1. **ハードウェア Mipmap と 1 パス補正シェーダー**:
+   - 各ページテクスチャは `gl.texImage2D` 転送直後に `gl.generateMipmap(gl.TEXTURE_2D)` と `gl.LINEAR_MIPMAP_LINEAR` を設定し、縮小表示時のスクリーントーン干渉縞（モアレ）を GPU で除去する。
+   - フラグメントシェーダー 1 パス内で `ShaderCorrectionParams` Uniform に基づくシャープネスおよび白黒レベル・ガンマ補正を実行する。
+2. **`MAX_TEXTURE_SIZE` 上限ガード**:
+   - WebGL2 初期化時に `gl.getParameter(gl.MAX_TEXTURE_SIZE)` を取得して保持する。
+   - 大判見開き画像等で `bitmap.width > maxTextureSize` または `bitmap.height > maxTextureSize` を検知した場合、左右2分割テクスチャまたは上限内リサイズへ自動フォールバックし、診断ロガー（`diagnosticLogger.warn("webgl2", ...)`）へ記録して黒画面化を防ぐ。
+3. **厳格な `ImageBitmap.close()` とテクスチャ破棄**:
+   - L1 キャッシュが保持上限（`L1_MAX_PAGES = 5`）を超えて古いページを退避する際、古い `requestEpoch` のデコード結果が遅れて到着した際、および巻クローズ・コンポーネントアンマウント時には、対応する `WebGLTexture` の `gl.deleteTexture()` と **`bitmap.close()` を必ず即座に実行** する。
+
+---
+
+## 4. Capacitor 通信・認証・ネイティブブリッジ契約
+
+### 4.1 `CapacitorHttp.enabled: false` の絶対維持（Zero-Copy 保護）
+
+> [!CAUTION]
+> **`capacitor.config.ts` で `plugins.CapacitorHttp.enabled: true` を絶対に有効化してはならない。**
+> グローバルパッチを有効化すると WebView 内の `fetch` がネイティブブリッジ経由の Base64 文字列変換に置き換わり、大容量バイナリ（`ArrayBuffer`）ストリーミング性能が壊滅し Worker 内 `fetch` とも不整合を起こす。
+
+- **バイナリストリーミング通信（Google Drive `alt=media` Range 取得 / Drive REST JSON API）**:
+  WebView / Web Worker 標準の Chromium `fetch`（`Authorization: Bearer <token>` ヘッダー付き）を直接使用する。
+- **CORS 制限のある公開書誌 API（NDL OpenSearch / AniList / Google Books）**:
+  `MetadataHttpClient` アダプター内部でのみ明示的に `CapacitorHttp.request()`（Web ブラウザ・テスト実行時はモックまたは標準 `fetch` アダプター）を呼び出す。
+
+### 4.2 Google OAuth スコープと Single-Flight トークン供給契約
+
+- **要求スコープ**:
+  1. `https://www.googleapis.com/auth/drive.readonly`（指定ルートフォルダ配下のスキャン・`changes.list` 差分検知・ZIP Range 読み取り専用）
+  2. `https://www.googleapis.com/auth/drive.appdata`（`v1.0` のアプリ専用隠し領域 `appDataFolder` バックアップ・端末間同期用）
+- **Single-Flight トークン透過リフレッシュ**:
+  ```ts
+  export interface GoogleAuthSession {
+    readonly email: string;
+    readonly accessToken: string;
+    /** UNIX ms */
+    readonly expiresAt: number;
+  }
+
+  export interface GoogleAuthBridge {
+    signIn(): Promise<GoogleAuthSession>;
+    signOut(): Promise<void>;
+    getValidAccessToken(options?: { forceRefresh?: boolean }): Promise<string>;
+  }
+  ```
+  - アクセストークン有効期限の残り **5 分未満**、または Google Drive API から **`401 Unauthorized`** が返却された際、複数の並列 Range リクエストや同期処理が一斉にリフレッシュを走らせないよう、**Single-Flight Promise（進行中の更新 Promise を共有）** で 1 回だけネイティブ側 `clearToken` ＋ 再取得を実行し、新しいトークンを `CoordinatorWorkerApi.updateAccessToken()` へ配信して失敗リクエストを 1 回透過リトライする。
+
+---
+
+## 5. 非同期世代管理（`requestEpoch`）と優先度プリエンプション規約
+
+1. **Epoch ID（世代カウンタ）による競合・無駄通信の遮断**:
+   - 巻オープン・高速シーク・連続めくりによる対象窓更新のたびに単調増加する `requestEpoch` を発行する。
+   - Coordinator Worker は古い世代に紐づく進行中 `fetch` の `AbortController.abort()` を即時呼び出し、Decode Worker から返却された古い世代の `ImageBitmap` は UI スレッドへ渡さずその場で `bitmap.close()` して破棄する。
+2. **閲覧最優先のバックグラウンド・プリエンプション**:
+   - 表紙 WebP 抽出スケジューラ（`CoverExtractionScheduler`）は `viewport-high`（現在 `SCR-01` に表示中のカード）と `background-low`（最大 2 冊/秒）の 2 段キューを持つ。
+   - ユーザーがリーダー（`SCR-03`）へ遷移した瞬間、`CoverExtractionScheduler.pause()` を同期呼び出しして新規の表紙 Range リクエスト発行を完全に停止し、リーダー終了（`SCR-01` / `SCR-02` 復帰）時に再開する。
