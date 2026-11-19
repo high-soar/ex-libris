@@ -61,6 +61,12 @@ describe("DecodeWorkerCore", () => {
       width: 640,
       height: 960,
     });
+
+    const defaultStreamCore = new DecodeWorkerCore({
+      createImageBitmap: decodeSpy,
+    });
+    const defaultResult = await defaultStreamCore.decodePageSlice(deflated, 8);
+    expect(defaultResult.bitmap).toBe(fakeBitmap);
   });
 
   it("DecompressionStream非対応環境や失敗時はfflate.inflateSyncへフォールバックすること (AC-ENG-06)", async () => {

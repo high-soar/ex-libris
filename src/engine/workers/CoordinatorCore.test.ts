@@ -348,6 +348,7 @@ describe("CoordinatorCore", () => {
     };
 
     const earlyBitmap = createFakeBitmap(500, 500);
+    const extraBitmap = createFakeBitmap(500, 500);
     let rejectThirdDecode!: (err: unknown) => void;
     const decodePool: DecodeWorkerApi = {
       decodePageSlice: vi
@@ -359,7 +360,12 @@ describe("CoordinatorCore", () => {
             new Promise((_, reject) => {
               rejectThirdDecode = reject;
             }),
-        ),
+        )
+        .mockResolvedValueOnce({
+          bitmap: extraBitmap,
+          width: 500,
+          height: 500,
+        }),
     };
 
     const coordinator = new CoordinatorCore({
@@ -372,13 +378,14 @@ describe("CoordinatorCore", () => {
     const batchPromise = coordinator.requestVisiblePages([0, 1, 2], [], 5);
     const sameEpochPromise = coordinator.requestVisiblePages([0], [], 5);
     await vi.waitFor(() =>
-      expect(decodePool.decodePageSlice).toHaveBeenCalledTimes(3),
+      expect(decodePool.decodePageSlice).toHaveBeenCalledTimes(4),
     );
+    const sameEpochFrames = await sameEpochPromise;
+    expect(sameEpochFrames).toHaveLength(1);
 
     // closeArchiveで進行中全ジョブを中断（earlyBitmapは既にreadyで待機中、page1はerror、page2はrejectする）
     await coordinator.closeArchive();
     rejectThirdDecode(new Error("late failure after close"));
-    await expect(sameEpochPromise).resolves.toEqual([]);
     expect(await batchPromise).toEqual([]);
     expect(earlyBitmap.close).toHaveBeenCalledTimes(1);
 
