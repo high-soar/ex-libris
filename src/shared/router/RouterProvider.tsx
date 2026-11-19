@@ -32,6 +32,7 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
     resolveInitialPath(initialPath, readWindowPath()),
   );
   const currentPathRef = useRef<string>(currentPath);
+  const prevInitialPathRef = useRef<string | undefined>(initialPath);
 
   const commitPathState = useCallback((nextPath: string) => {
     currentPathRef.current = nextPath;
@@ -39,8 +40,11 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
   }, []);
 
   useEffect(() => {
-    if (initialPath !== undefined) {
-      commitPathState(initialPath);
+    if (prevInitialPathRef.current !== initialPath) {
+      prevInitialPathRef.current = initialPath;
+      if (initialPath !== undefined) {
+        commitPathState(initialPath);
+      }
     }
   }, [initialPath, commitPathState]);
 
