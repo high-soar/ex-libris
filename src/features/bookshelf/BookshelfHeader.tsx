@@ -15,7 +15,10 @@ export function BookshelfHeader({
   onOpenLocalZip,
 }: BookshelfHeaderProps): ReactNode {
   return (
-    <header className="border-b border-slate-800 bg-slate-900/90 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+    <header
+      style={{ paddingTop: "calc(1rem + env(safe-area-inset-top, 0px))" }}
+      className="border-b border-slate-800 bg-slate-900/90 px-6 py-4 flex flex-wrap items-center justify-between gap-4"
+    >
       <div className="flex items-baseline gap-3">
         <h1 className="text-xl font-bold tracking-tight text-white">
           {APP_NAME}
@@ -50,7 +53,7 @@ export function BookshelfHeader({
           type="button"
           data-testid="header-open-local-zip-button"
           onClick={onOpenLocalZip}
-          className="rounded-lg bg-indigo-500 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-400 transition-colors"
+          className="touch-manipulation rounded-lg bg-indigo-500 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-400 transition-colors"
         >
           ローカル ZIP を開く
         </button>
@@ -58,7 +61,7 @@ export function BookshelfHeader({
           type="button"
           data-testid="copy-diagnostics-button"
           onClick={onCopyDiagnostics}
-          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700 transition-colors"
+          className="touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700 transition-colors"
         >
           診断ログをコピー
         </button>
