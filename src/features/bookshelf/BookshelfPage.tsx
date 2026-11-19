@@ -1,4 +1,10 @@
-import { type ChangeEvent, type DragEvent, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type DragEvent,
+  useCallback,
+  useRef,
+  useState,
+} from "react";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
 import { useRouter } from "../../shared/router/routerContext";
 import { useLocalReaderSessionStore } from "../reader/localReaderSessionStore";
@@ -10,6 +16,9 @@ export interface BookshelfPageProps {
   readonly initialErrorMessage?: string | null;
   readonly initialDragActive?: boolean;
 }
+
+const LOCAL_ARCHIVE_INPUT_ACCEPT =
+  ".zip,.cbz,application/zip,application/x-zip-compressed,application/x-cbz,application/octet-stream";
 
 const UNSUPPORTED_EXTENSION_MESSAGE =
   "対応形式は .zip または .cbz ファイルのみです";
@@ -36,54 +45,63 @@ export function BookshelfPage({
   const [isDragActive, setIsDragActive] = useState<boolean>(initialDragActive);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const handleOpenLocalZip = () => {
+  const handleOpenLocalZip = useCallback(() => {
     (fileInputRef.current as HTMLInputElement).click();
-  };
+  }, []);
 
-  const handleSelectedFile = (file: File | undefined) => {
-    if (!file) {
-      return;
-    }
+  const handleSelectedFile = useCallback(
+    (file: File | undefined) => {
+      if (!file) {
+        return;
+      }
 
-    if (!isSupportedArchiveFile(file.name)) {
-      setErrorMessage(UNSUPPORTED_EXTENSION_MESSAGE);
-      diagnosticLogger.warn(
-        "bookshelf",
-        "Unsupported archive extension",
-        file.name,
-      );
-      return;
-    }
+      if (!isSupportedArchiveFile(file.name)) {
+        setErrorMessage(UNSUPPORTED_EXTENSION_MESSAGE);
+        diagnosticLogger.warn(
+          "bookshelf",
+          "Unsupported archive extension",
+          file.name,
+        );
+        return;
+      }
 
-    setErrorMessage(null);
-    openLocalFile(file);
-    navigate("/read/local");
-  };
+      setErrorMessage(null);
+      openLocalFile(file);
+      navigate("/read/local");
+    },
+    [navigate, openLocalFile],
+  );
 
-  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    handleSelectedFile(file);
-  };
+  const handleFileChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      handleSelectedFile(file);
+    },
+    [handleSelectedFile],
+  );
 
-  const handleDragOver = (event: DragEvent<HTMLElement>) => {
+  const handleDragOver = useCallback((event: DragEvent<HTMLElement>) => {
     event.preventDefault();
     setIsDragActive(true);
-  };
+  }, []);
 
-  const handleDragLeave = (event: DragEvent<HTMLElement>) => {
+  const handleDragLeave = useCallback((event: DragEvent<HTMLElement>) => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
       setIsDragActive(false);
     }
-  };
+  }, []);
 
-  const handleDrop = (event: DragEvent<HTMLElement>) => {
-    event.preventDefault();
-    setIsDragActive(false);
-    handleSelectedFile(event.dataTransfer.files?.[0]);
-  };
+  const handleDrop = useCallback(
+    (event: DragEvent<HTMLElement>) => {
+      event.preventDefault();
+      setIsDragActive(false);
+      handleSelectedFile(event.dataTransfer.files?.[0]);
+    },
+    [handleSelectedFile],
+  );
 
-  const handleCopyDiagnostics = async () => {
+  const handleCopyDiagnostics = useCallback(async () => {
     const report = diagnosticLogger.formatReport();
     if (!navigator.clipboard) {
       setCopyStatus("failed");
@@ -96,7 +114,7 @@ export function BookshelfPage({
     } catch {
       setCopyStatus("failed");
     }
-  };
+  }, []);
 
   return (
     <div
@@ -123,7 +141,7 @@ export function BookshelfPage({
           ref={fileInputRef}
           type="file"
           data-testid="local-zip-file-input"
-          accept=".zip,.cbz,application/zip,application/x-zip-compressed,application/x-cbz,application/octet-stream"
+          accept={LOCAL_ARCHIVE_INPUT_ACCEPT}
           className="hidden"
           onChange={handleFileChange}
         />

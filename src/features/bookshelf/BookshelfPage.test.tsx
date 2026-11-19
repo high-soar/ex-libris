@@ -156,7 +156,8 @@ describe("BookshelfPage", () => {
       "local-zip-file-input",
     ) as HTMLInputElement;
 
-    // キャンセル（ファイル未選択）時は状態変化なし
+    // キャンセル（ファイル未選択・files null）時は状態変化なし
+    fireEvent.change(input, { target: { files: null } });
     fireEvent.change(input, { target: { files: [] } });
     expect(useLocalReaderSessionStore.getState().session).toBeNull();
     expect(window.location.pathname).toBe("/");
@@ -233,9 +234,21 @@ describe("BookshelfPage", () => {
     fireEvent(main, dragLeaveOutsideEvent);
     expect(getLatestEmptyStateProps().isDragActive).toBe(false);
 
-    // drop（files が空）で isDragActive=false のまま遷移しない
+    // drop（files 不在 / 空）で isDragActive=false のまま遷移しない
     fireEvent.dragOver(main);
     expect(getLatestEmptyStateProps().isDragActive).toBe(true);
+    const missingFilesDropEvent = new Event("drop", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(missingFilesDropEvent, "dataTransfer", {
+      value: {},
+    });
+    fireEvent(main, missingFilesDropEvent);
+    expect(getLatestEmptyStateProps().isDragActive).toBe(false);
+    expect(window.location.pathname).toBe("/");
+
+    fireEvent.dragOver(main);
     const emptyDropEvent = new Event("drop", {
       bubbles: true,
       cancelable: true,
