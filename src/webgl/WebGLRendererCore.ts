@@ -1,4 +1,5 @@
 import type { DecodedPageFrame } from "../engine/types";
+import type { ReadyPageFrame } from "./l1PageCache";
 import { FRAGMENT_SHADER_SOURCE, VERTEX_SHADER_SOURCE } from "./shaders";
 
 export class WebGLInitError extends Error {
@@ -144,61 +145,8 @@ export class WebGLRendererCore {
       return;
     }
 
-    const existing = this.textures.get(frame.pageIndex);
-    let texture: WebGLTexture;
-
-    if (existing !== undefined && existing.bitmap === frame.bitmap) {
-      texture = existing.texture;
-      this.gl.activeTexture(this.gl.TEXTURE0);
-      this.gl.bindTexture(this.gl.TEXTURE_2D, texture);
-    } else {
-      if (existing !== undefined) {
-        this.gl.deleteTexture(existing.texture);
-        this.textures.delete(frame.pageIndex);
-      }
-
-      const created = this.gl.createTexture();
-      if (!created) {
-        return;
-      }
-      texture = created;
-      this.textures.set(frame.pageIndex, {
-        texture,
-        bitmap: frame.bitmap,
-      });
-
-      this.gl.activeTexture(this.gl.TEXTURE0);
-      this.gl.bindTexture(this.gl.TEXTURE_2D, texture);
-      this.gl.pixelStorei(this.gl.UNPACK_ALIGNMENT, 1);
-      this.gl.texImage2D(
-        this.gl.TEXTURE_2D,
-        0,
-        this.gl.RGBA,
-        this.gl.RGBA,
-        this.gl.UNSIGNED_BYTE,
-        frame.bitmap,
-      );
-      this.gl.generateMipmap(this.gl.TEXTURE_2D);
-      this.gl.texParameteri(
-        this.gl.TEXTURE_2D,
-        this.gl.TEXTURE_MIN_FILTER,
-        this.gl.LINEAR_MIPMAP_LINEAR,
-      );
-      this.gl.texParameteri(
-        this.gl.TEXTURE_2D,
-        this.gl.TEXTURE_MAG_FILTER,
-        this.gl.LINEAR,
-      );
-      this.gl.texParameteri(
-        this.gl.TEXTURE_2D,
-        this.gl.TEXTURE_WRAP_S,
-        this.gl.CLAMP_TO_EDGE,
-      );
-      this.gl.texParameteri(
-        this.gl.TEXTURE_2D,
-        this.gl.TEXTURE_WRAP_T,
-        this.gl.CLAMP_TO_EDGE,
-      );
+    if (!this.ensurePageTexture(frame)) {
+      return;
     }
 
     const vpWidth =
@@ -261,6 +209,63 @@ export class WebGLRendererCore {
     }
   }
 
+  private ensurePageTexture(frame: ReadyPageFrame): boolean {
+    const existing = this.textures.get(frame.pageIndex);
+    if (existing !== undefined && existing.bitmap === frame.bitmap) {
+      this.gl.activeTexture(this.gl.TEXTURE0);
+      this.gl.bindTexture(this.gl.TEXTURE_2D, existing.texture);
+      return true;
+    }
+
+    if (existing !== undefined) {
+      this.gl.deleteTexture(existing.texture);
+      this.textures.delete(frame.pageIndex);
+    }
+
+    const texture = this.gl.createTexture();
+    if (!texture) {
+      return false;
+    }
+    this.textures.set(frame.pageIndex, {
+      texture,
+      bitmap: frame.bitmap,
+    });
+
+    this.gl.activeTexture(this.gl.TEXTURE0);
+    this.gl.bindTexture(this.gl.TEXTURE_2D, texture);
+    this.gl.pixelStorei(this.gl.UNPACK_ALIGNMENT, 1);
+    this.gl.texImage2D(
+      this.gl.TEXTURE_2D,
+      0,
+      this.gl.RGBA,
+      this.gl.RGBA,
+      this.gl.UNSIGNED_BYTE,
+      frame.bitmap,
+    );
+    this.gl.generateMipmap(this.gl.TEXTURE_2D);
+    this.gl.texParameteri(
+      this.gl.TEXTURE_2D,
+      this.gl.TEXTURE_MIN_FILTER,
+      this.gl.LINEAR_MIPMAP_LINEAR,
+    );
+    this.gl.texParameteri(
+      this.gl.TEXTURE_2D,
+      this.gl.TEXTURE_MAG_FILTER,
+      this.gl.LINEAR,
+    );
+    this.gl.texParameteri(
+      this.gl.TEXTURE_2D,
+      this.gl.TEXTURE_WRAP_S,
+      this.gl.CLAMP_TO_EDGE,
+    );
+    this.gl.texParameteri(
+      this.gl.TEXTURE_2D,
+      this.gl.TEXTURE_WRAP_T,
+      this.gl.CLAMP_TO_EDGE,
+    );
+    return true;
+  }
+
   private compileShader(type: number, source: string): WebGLShader {
     const shader = this.gl.createShader(type);
     if (!shader) {
@@ -278,6 +283,54 @@ export class WebGLRendererCore {
     return shader;
   }
 
+  private setupQuadGeometry(
+    positionLoc: number,
+    texCoordLoc: number,
+  ): { vao: WebGLVertexArrayObject; vbo: WebGLBuffer } {
+    const vao = this.gl.createVertexArray();
+    const vbo = this.gl.createBuffer();
+    if (!vao || !vbo) {
+      if (vao) {
+        this.gl.deleteVertexArray(vao);
+      }
+      if (vbo) {
+        this.gl.deleteBuffer(vbo);
+      }
+      throw new WebGLInitError("VAOまたはVBOの生成に失敗しました");
+    }
+
+    const stride = 4 * Float32Array.BYTES_PER_ELEMENT;
+    this.gl.bindVertexArray(vao);
+    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, vbo);
+    this.gl.bufferData(
+      this.gl.ARRAY_BUFFER,
+      QUAD_VERTICES,
+      this.gl.STATIC_DRAW,
+    );
+    this.gl.enableVertexAttribArray(positionLoc);
+    this.gl.vertexAttribPointer(
+      positionLoc,
+      2,
+      this.gl.FLOAT,
+      false,
+      stride,
+      0,
+    );
+    this.gl.enableVertexAttribArray(texCoordLoc);
+    this.gl.vertexAttribPointer(
+      texCoordLoc,
+      2,
+      this.gl.FLOAT,
+      false,
+      stride,
+      2 * Float32Array.BYTES_PER_ELEMENT,
+    );
+    this.gl.bindVertexArray(null);
+    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, null);
+
+    return { vao, vbo };
+  }
+
   private initPipeline(): void {
     const vertexShader = this.compileShader(
       this.gl.VERTEX_SHADER,
@@ -285,8 +338,6 @@ export class WebGLRendererCore {
     );
     let fragmentShader: WebGLShader | null = null;
     let program: WebGLProgram | null = null;
-    let vao: WebGLVertexArrayObject | null = null;
-    let vbo: WebGLBuffer | null = null;
 
     try {
       fragmentShader = this.compileShader(
@@ -323,40 +374,7 @@ export class WebGLRendererCore {
         );
       }
 
-      vao = this.gl.createVertexArray();
-      vbo = this.gl.createBuffer();
-      if (!vao || !vbo) {
-        throw new WebGLInitError("VAOまたはVBOの生成に失敗しました");
-      }
-
-      const stride = 4 * Float32Array.BYTES_PER_ELEMENT;
-      this.gl.bindVertexArray(vao);
-      this.gl.bindBuffer(this.gl.ARRAY_BUFFER, vbo);
-      this.gl.bufferData(
-        this.gl.ARRAY_BUFFER,
-        QUAD_VERTICES,
-        this.gl.STATIC_DRAW,
-      );
-      this.gl.enableVertexAttribArray(positionLoc);
-      this.gl.vertexAttribPointer(
-        positionLoc,
-        2,
-        this.gl.FLOAT,
-        false,
-        stride,
-        0,
-      );
-      this.gl.enableVertexAttribArray(texCoordLoc);
-      this.gl.vertexAttribPointer(
-        texCoordLoc,
-        2,
-        this.gl.FLOAT,
-        false,
-        stride,
-        2 * Float32Array.BYTES_PER_ELEMENT,
-      );
-      this.gl.bindVertexArray(null);
-      this.gl.bindBuffer(this.gl.ARRAY_BUFFER, null);
+      const { vao, vbo } = this.setupQuadGeometry(positionLoc, texCoordLoc);
 
       this.gl.deleteShader(vertexShader);
       this.gl.deleteShader(fragmentShader);
@@ -373,12 +391,6 @@ export class WebGLRendererCore {
       ) as ArrayLike<number> | null;
       this.gl.clearColor(0, 0, 0, 1);
     } catch (error) {
-      if (vao) {
-        this.gl.deleteVertexArray(vao);
-      }
-      if (vbo) {
-        this.gl.deleteBuffer(vbo);
-      }
       if (program) {
         this.gl.deleteProgram(program);
       }

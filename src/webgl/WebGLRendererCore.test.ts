@@ -384,6 +384,12 @@ describe("WebGLRendererCore", () => {
     expect(mocks.canvas.width).toBe(1600);
     expect(mocks.canvas.height).toBe(1200);
     expect(mocks.viewport).toHaveBeenCalledWith(0, 0, 1600, 1200);
+
+    // 高さのみ変更時も canvas と viewport を更新
+    expect(renderer.resize(800, 500, 2)).toBe(true);
+    expect(mocks.canvas.width).toBe(1600);
+    expect(mocks.canvas.height).toBe(1000);
+    expect(mocks.viewport).toHaveBeenCalledWith(0, 0, 1600, 1000);
   });
 
   it("renderFrameが純黒クリア・UNPACK_ALIGNMENT=1・generateMipmap・LINEAR_MIPMAP_LINEAR・アスペクト維持描画を行うこと (AC-GL-02, AC-GL-03)", () => {
