@@ -51,6 +51,9 @@ describe("L1PageCache", () => {
     const clampedNegative = new L1PageCache({ maxPages: -3 });
     expect(clampedNegative.maxPages).toBe(1);
 
+    const nanFallback = new L1PageCache({ maxPages: Number.NaN });
+    expect(nanFallback.maxPages).toBe(ENGINE_BUDGETS.L1_MAX_PAGES);
+
     const customCache = new L1PageCache({ maxPages: 3 });
     expect(customCache.maxPages).toBe(3);
   });

@@ -8,6 +8,13 @@ export interface L1PageCacheOptions {
   readonly onEvictTexture?: (pageIndex: number) => void;
 }
 
+function normalizeMaxPages(rawMaxPages?: number): number {
+  if (rawMaxPages === undefined || !Number.isFinite(rawMaxPages)) {
+    return ENGINE_BUDGETS.L1_MAX_PAGES;
+  }
+  return Math.max(1, Math.floor(rawMaxPages));
+}
+
 export class L1PageCache {
   readonly maxPages: number;
   private readonly onEvictTexture?: (pageIndex: number) => void;
@@ -15,10 +22,7 @@ export class L1PageCache {
   private minActiveEpoch = 0;
 
   constructor(options: L1PageCacheOptions = {}) {
-    this.maxPages = Math.max(
-      1,
-      Math.floor(options.maxPages ?? ENGINE_BUDGETS.L1_MAX_PAGES),
-    );
+    this.maxPages = normalizeMaxPages(options.maxPages);
     this.onEvictTexture = options.onEvictTexture;
   }
 
@@ -41,13 +45,12 @@ export class L1PageCache {
     const existing = this.entries.get(frame.pageIndex);
     if (existing !== undefined) {
       this.entries.delete(frame.pageIndex);
-      if (existing.status === "ready") {
-        const isSameBitmap =
-          frame.status === "ready" && existing.bitmap === frame.bitmap;
-        if (!isSameBitmap) {
-          this.onEvictTexture?.(frame.pageIndex);
-          existing.bitmap.close();
-        }
+      const isSameBitmap =
+        existing.status === "ready" &&
+        frame.status === "ready" &&
+        existing.bitmap === frame.bitmap;
+      if (!isSameBitmap) {
+        this.releaseEntry(frame.pageIndex, existing);
       }
     }
 
@@ -55,10 +58,7 @@ export class L1PageCache {
       const [evictPageIndex, evictEntry] =
         this.selectEvictionEntry(protectedPages);
       this.entries.delete(evictPageIndex);
-      if (evictEntry.status === "ready") {
-        this.onEvictTexture?.(evictPageIndex);
-        evictEntry.bitmap.close();
-      }
+      this.releaseEntry(evictPageIndex, evictEntry);
     }
 
     this.entries.set(frame.pageIndex, frame);
@@ -95,21 +95,22 @@ export class L1PageCache {
       return false;
     }
     this.entries.delete(pageIndex);
-    if (entry.status === "ready") {
-      this.onEvictTexture?.(pageIndex);
-      entry.bitmap.close();
-    }
+    this.releaseEntry(pageIndex, entry);
     return true;
   }
 
   clear(): void {
     for (const [pageIndex, entry] of this.entries.entries()) {
-      if (entry.status === "ready") {
-        this.onEvictTexture?.(pageIndex);
-        entry.bitmap.close();
-      }
+      this.releaseEntry(pageIndex, entry);
     }
     this.entries.clear();
+  }
+
+  private releaseEntry(pageIndex: number, entry: DecodedPageFrame): void {
+    if (entry.status === "ready") {
+      this.onEvictTexture?.(pageIndex);
+      entry.bitmap.close();
+    }
   }
 
   private selectEvictionEntry(
