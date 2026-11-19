@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type JSHandle, type Page } from "@playwright/test";
 import { unzlibSync, zlibSync } from "fflate";
 import {
   buildSyntheticZip,
@@ -25,6 +25,31 @@ export function trackPageErrors(page: Page): Error[] {
     errors.push(error);
   });
   return errors;
+}
+
+export async function createFileDataTransfer(
+  page: Page,
+  options: {
+    readonly name: string;
+    readonly mimeType: string;
+    readonly bytes: Uint8Array;
+  },
+): Promise<JSHandle<DataTransfer>> {
+  return page.evaluateHandle(
+    ({ name, mimeType, rawBytes }) => {
+      const dataTransfer = new DataTransfer();
+      const file = new File([new Uint8Array(rawBytes)], name, {
+        type: mimeType,
+      });
+      dataTransfer.items.add(file);
+      return dataTransfer;
+    },
+    {
+      name: options.name,
+      mimeType: options.mimeType,
+      rawBytes: Array.from(options.bytes),
+    },
+  );
 }
 
 function createPngChunk(type: string, data: Uint8Array): Uint8Array {

@@ -117,11 +117,23 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     await page.mouse.up();
     await expect(canvas).toHaveAttribute("data-rendered-page", "2");
 
-    // 右30%タップで前ページ (2 -> 1)、ArrowRightキーで前ページ (1 -> 0)
+    // 右→左スワイプ (dx <= -40 && |dx| > |dy|) で前ページ (2 -> 1)
+    await page.mouse.move(surfaceBox.x + surfaceBox.width * 0.65, swipeY);
+    await page.mouse.down();
+    await page.mouse.move(surfaceBox.x + surfaceBox.width * 0.35, swipeY, {
+      steps: 10,
+    });
+    await page.mouse.up();
+    await expect(canvas).toHaveAttribute("data-rendered-page", "1");
+
+    // 右30%タップで前ページ (1 -> 0)、ArrowLeftで次ページ (0 -> 1)、ArrowRightで前ページ (1 -> 0)
     await page.mouse.click(
       surfaceBox.x + surfaceBox.width * 0.85,
       surfaceBox.y + surfaceBox.height * 0.5,
     );
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+
+    await page.keyboard.press("ArrowLeft");
     await expect(canvas).toHaveAttribute("data-rendered-page", "1");
 
     await page.keyboard.press("ArrowRight");
