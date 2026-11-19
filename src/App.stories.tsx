@@ -32,3 +32,11 @@ export const CopyFailedFeedback: Story = {
     initialCopyStatus: "failed",
   },
 };
+
+/** ローカルセッション不在で /read/local へアクセスした際に '/' へ安全フォールバックする状態（TR-10） */
+export const ReaderLocalFallback: Story = {
+  name: "ローカルリーダーセッション不在フォールバック（/）",
+  args: {
+    initialPath: "/read/local",
+  },
+};

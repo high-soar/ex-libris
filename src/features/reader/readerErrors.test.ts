@@ -1,0 +1,101 @@
+import { describe, expect, it } from "vitest";
+import { ZipArchiveError } from "../../engine/zip/errors";
+import { WebGLInitError } from "../../webgl/WebGLRendererCore";
+import {
+  extractReaderError,
+  getReaderErrorMessage,
+  type ReaderFatalErrorCode,
+} from "./readerErrors";
+
+describe("readerErrors", () => {
+  it("getReaderErrorMessageがDECODE_FAILEDを含む全9種のエラーコードに対し仕様通りの日本語文言を返すこと (AC-RD-06, AC-RD-07)", () => {
+    const expectedEntries: Array<readonly [ReaderFatalErrorCode, string]> = [
+      ["CORRUPT_ZIP", "ZIP ファイルが破損しているため開けませんでした"],
+      [
+        "EMPTY_ARCHIVE",
+        "表示できる画像ファイル（JPEG / PNG / WebP / AVIF）が見つかりませんでした",
+      ],
+      [
+        "ENCRYPTED_ZIP",
+        "パスワード保護（暗号化）された ZIP ファイルには対応していません",
+      ],
+      [
+        "UNSUPPORTED_COMPRESSION",
+        "未対応の圧縮方式が含まれているため開けませんでした",
+      ],
+      [
+        "ZIP64_NOT_SUPPORTED",
+        "4GB 超の ZIP64 形式は次期バージョン（v0.1）で対応予定です",
+      ],
+      [
+        "READ_ERROR",
+        "ファイルの読み込みに失敗しました（アクセス権限またはストレージ状態を確認してください）",
+      ],
+      ["WEBGL_UNSUPPORTED", "WebGL2 描画の初期化に失敗しました"],
+      ["WEBGL_INIT_FAILED", "WebGL2 描画の初期化に失敗しました"],
+      ["DECODE_FAILED", "ページの画像デコードに失敗しました"],
+    ];
+
+    expect(expectedEntries).toHaveLength(9);
+    for (const [code, expectedMessage] of expectedEntries) {
+      expect(getReaderErrorMessage(code)).toBe(expectedMessage);
+    }
+  });
+
+  it("extractReaderErrorがZipArchiveError・WebGLInitError・Comlink経由のcodeオブジェクトを正しく変換すること (AC-RD-06)", () => {
+    expect(
+      extractReaderError(new ZipArchiveError("ENCRYPTED_ZIP", "encrypted")),
+    ).toEqual({
+      code: "ENCRYPTED_ZIP",
+      message:
+        "パスワード保護（暗号化）された ZIP ファイルには対応していません",
+    });
+
+    expect(extractReaderError(new WebGLInitError("compile failed"))).toEqual({
+      code: "WEBGL_INIT_FAILED",
+      message: "WebGL2 描画の初期化に失敗しました",
+    });
+
+    expect(
+      extractReaderError({
+        name: "ZipArchiveError",
+        code: "ZIP64_NOT_SUPPORTED",
+        message: "zip64 not supported",
+      }),
+    ).toEqual({
+      code: "ZIP64_NOT_SUPPORTED",
+      message: "4GB 超の ZIP64 形式は次期バージョン（v0.1）で対応予定です",
+    });
+
+    expect(extractReaderError({ code: "WEBGL_UNSUPPORTED" })).toEqual({
+      code: "WEBGL_UNSUPPORTED",
+      message: "WebGL2 描画の初期化に失敗しました",
+    });
+
+    expect(extractReaderError({ code: "DECODE_FAILED" })).toEqual({
+      code: "DECODE_FAILED",
+      message: "ページの画像デコードに失敗しました",
+    });
+  });
+
+  it("extractReaderErrorが未知コード・一般Error・非Error値をREAD_ERRORへフォールバック変換すること", () => {
+    const expectedFallback = {
+      code: "READ_ERROR",
+      message:
+        "ファイルの読み込みに失敗しました（アクセス権限またはストレージ状態を確認してください）",
+    };
+
+    expect(extractReaderError(new Error("generic io failure"))).toEqual(
+      expectedFallback,
+    );
+    expect(extractReaderError({ code: "UNKNOWN_CODE" })).toEqual(
+      expectedFallback,
+    );
+    expect(extractReaderError({ code: 404 })).toEqual(expectedFallback);
+    expect(extractReaderError({})).toEqual(expectedFallback);
+    expect(extractReaderError(null)).toEqual(expectedFallback);
+    expect(extractReaderError(undefined)).toEqual(expectedFallback);
+    expect(extractReaderError("raw error string")).toEqual(expectedFallback);
+    expect(extractReaderError(42)).toEqual(expectedFallback);
+  });
+});

@@ -1,6 +1,7 @@
 import { composeStories } from "@storybook/react";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RouterProvider } from "./RouterProvider";
 import * as stories from "./RouterProvider.stories";
@@ -242,5 +243,28 @@ describe("RouterProvider", () => {
       "popstate",
       expect.any(Function),
     );
+  });
+
+  it("initialPath指定時の初回マウント（StrictMode含む）で子useEffectがreplace('/')を実行してもinitialPathで上書きしないこと (TR-10)", () => {
+    function RedirectOnMount() {
+      const { replace, currentPath, route } = useRouter();
+      useEffect(() => {
+        if (route.name === "reader-local") {
+          replace("/");
+        }
+      }, [replace, route.name]);
+      return <span data-testid="redirect-current-path">{currentPath}</span>;
+    }
+
+    render(
+      <StrictMode>
+        <RouterProvider initialPath="/read/local">
+          <RedirectOnMount />
+        </RouterProvider>
+      </StrictMode>,
+    );
+
+    expect(screen.getByTestId("redirect-current-path")).toHaveTextContent("/");
+    expect(window.location.pathname).toBe("/");
   });
 });
