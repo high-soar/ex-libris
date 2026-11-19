@@ -1,19 +1,41 @@
-import type { AppBridge, BackButtonListener } from "./types";
+import type { AppBridge, BackButtonEvent, BackButtonListener } from "./types";
 
 export class MockAppBridge implements AppBridge {
+  private readonly listeners = new Set<BackButtonListener>();
   minimizeAppCalled = false;
+  private minimizeAppCount = 0;
 
-  addBackButtonListener(_listener: BackButtonListener): () => void {
-    return () => {};
+  addBackButtonListener(listener: BackButtonListener): () => void {
+    this.listeners.add(listener);
+    let isRemoved = false;
+    return () => {
+      if (isRemoved) {
+        return;
+      }
+      isRemoved = true;
+      this.listeners.delete(listener);
+    };
   }
 
-  async minimizeApp(): Promise<void> {}
+  async minimizeApp(): Promise<void> {
+    this.minimizeAppCalled = true;
+    this.minimizeAppCount += 1;
+  }
 
   getMinimizeAppCallCount(): number {
-    return 0;
+    return this.minimizeAppCount;
   }
 
-  async triggerBackButton(_canGoBack = false): Promise<void> {}
+  async triggerBackButton(canGoBack = false): Promise<void> {
+    const event: BackButtonEvent = { canGoBack };
+    for (const listener of Array.from(this.listeners)) {
+      await listener(event);
+    }
+  }
 
-  reset(): void {}
+  reset(): void {
+    this.listeners.clear();
+    this.minimizeAppCalled = false;
+    this.minimizeAppCount = 0;
+  }
 }

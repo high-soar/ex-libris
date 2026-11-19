@@ -1,4 +1,4 @@
-import { createContext } from "react";
+import { createContext, useContext } from "react";
 import type { AppBridge } from "../bridges/app/types";
 import type { CoordinatorSessionHandle } from "./coordinatorClient";
 
@@ -10,5 +10,9 @@ export interface ServiceContextValue {
 export const ServiceContext = createContext<ServiceContextValue | null>(null);
 
 export function useServices(): ServiceContextValue {
-  throw new Error("Not implemented");
+  const context = useContext(ServiceContext);
+  if (!context) {
+    throw new Error("useServices must be used within a ServiceProvider");
+  }
+  return context;
 }

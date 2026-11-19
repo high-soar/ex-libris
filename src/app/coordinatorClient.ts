@@ -1,5 +1,6 @@
 import * as Comlink from "comlink";
 import type { CoordinatorWorkerApi } from "../engine/types";
+import { registerZipArchiveErrorTransferHandler } from "../engine/workers/comlinkErrorHandler";
 
 export interface CoordinatorWorkerHandle {
   terminate(): void;
@@ -22,11 +23,44 @@ export interface CreateCoordinatorSessionDeps {
   readonly registerErrorHandler?: () => void;
 }
 
+function defaultCreateWorker(): Worker {
+  return new Worker(
+    new URL("../engine/workers/coordinator.worker.ts", import.meta.url),
+    { type: "module" },
+  );
+}
+
+function defaultWrapWorker(
+  worker: CoordinatorWorkerHandle,
+): CoordinatorRemoteProxy {
+  return Comlink.wrap<CoordinatorWorkerApi>(
+    worker as unknown as Comlink.Endpoint,
+  );
+}
+
 export function createCoordinatorSession(
-  _deps: CreateCoordinatorSessionDeps = {},
+  deps: CreateCoordinatorSessionDeps = {},
 ): CoordinatorSessionHandle {
+  const registerErrorHandler =
+    deps.registerErrorHandler ?? registerZipArchiveErrorTransferHandler;
+  registerErrorHandler();
+
+  const worker = (deps.createWorker ?? defaultCreateWorker)();
+  const api = (deps.wrapWorker ?? defaultWrapWorker)(worker);
+  let disposed = false;
+
   return {
-    api: {} as CoordinatorWorkerApi,
-    dispose: () => {},
+    api,
+    dispose: () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      try {
+        api[Comlink.releaseProxy]?.();
+      } finally {
+        worker.terminate();
+      }
+    },
   };
 }
