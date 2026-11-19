@@ -212,11 +212,25 @@ describe("BookshelfPage", () => {
     expect(getLatestEmptyStateProps().isDragActive).toBe(true);
 
     // 子要素への dragLeave では isDragActive を解除しない
-    fireEvent.dragLeave(main, { relatedTarget: innerInput });
+    const dragLeaveToChildEvent = new Event("dragleave", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(dragLeaveToChildEvent, "relatedTarget", {
+      value: innerInput,
+    });
+    fireEvent(main, dragLeaveToChildEvent);
     expect(getLatestEmptyStateProps().isDragActive).toBe(true);
 
     // 領域外（relatedTarget: null）への dragLeave で isDragActive=false
-    fireEvent.dragLeave(main, { relatedTarget: null });
+    const dragLeaveOutsideEvent = new Event("dragleave", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(dragLeaveOutsideEvent, "relatedTarget", {
+      value: null,
+    });
+    fireEvent(main, dragLeaveOutsideEvent);
     expect(getLatestEmptyStateProps().isDragActive).toBe(false);
 
     // drop（files が空）で isDragActive=false のまま遷移しない
