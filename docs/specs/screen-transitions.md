@@ -14,10 +14,13 @@ related_specs:
   - docs/specs/features/reader.md
   - docs/guidelines/testing.md
 related_tests:
+  - scripts/android-build-config.test.ts
   - src/App.test.tsx
   - src/bridges/app/capacitorAppBridge.test.ts
   - src/bridges/app/mockAppBridge.test.ts
+  - src/features/bookshelf/BookshelfHeader.test.tsx
   - src/features/bookshelf/BookshelfPage.test.tsx
+  - src/features/reader/ReaderHudOverlay.test.tsx
   - src/features/reader/ReaderPage.test.tsx
   - src/features/reader/localReaderSessionStore.test.ts
   - src/shared/router/RouterProvider.test.tsx
@@ -43,6 +46,10 @@ related_tests:
 3. **`SCR-03`（リーダー）の完全フルスクリーン没入表示**:
    - 読書中は上下バーを含むすべての UI 装飾を非表示にし、画面全体を生 WebGL2 キャンバス（純黒 `#000000` 背景）に割り当てる。
    - **画面中央タップゾーン**（Phase 3 基本分割: 左 30%＝次頁 / 中央 40%＝HUD 開閉 / 右 30%＝前頁、右開き `rtl` 固定）のタップでのみ、上部オーバーレイ（戻る・ファイル名/巻タイトル・画質補正シート・しおり）および下部オーバーレイ（ページ番号・次/前ボタン・シークバー・見開き/1ページずらし・右/左開き切替）を開閉する。
+4. **Android Edge-to-Edge システムバー非重複・黒余白＆白アイコン統一**:
+   - Android 15/16（`targetSdkVersion = 35` 以降の強制 Edge-to-Edge 環境）において WebView が OS ステータスバーおよびナビゲーションバー（3 ボタン / ジェスチャー）領域と重なってタッチ操作を奪われないよう、`capacitor.config.ts` で `backgroundColor: "#000000"` および `android: { backgroundColor: "#000000", adjustMarginsForEdgeToEdge: "auto" }` を設定してシステムバー／ディスプレイカットアウト分の WebView マージンを自動確保する。
+   - `MainActivity.java` にて Window 背景色を `Color.BLACK` に統一し、`WindowCompat.getInsetsController` / `WindowInsetsControllerCompat` で `setAppearanceLightStatusBars(false)` および `setAppearanceLightNavigationBars(false)` を設定することで、黒余白上のシステムバーアイコンを白表示に固定する。
+   - あわせて `SCR-01` 上部ヘッダーおよび `SCR-03` 上下オーバーレイ HUD に `env(safe-area-inset-top, 0px)` / `env(safe-area-inset-bottom, 0px)` によるセーフエリアパディングを併用し、デスクトップ Web 環境（`0px`）でのレイアウトを維持しつつシステムバーとの非重複を二重に担保する。
 
 ---
 

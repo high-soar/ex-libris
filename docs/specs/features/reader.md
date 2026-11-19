@@ -14,6 +14,7 @@ related_specs:
   - docs/specs/features/bookshelf.md
   - docs/guidelines/testing.md
 related_tests:
+  - scripts/android-build-config.test.ts
   - src/App.test.tsx
   - src/features/reader/ReaderPage.test.tsx
   - src/features/reader/ReaderHudOverlay.test.tsx
@@ -77,6 +78,9 @@ related_tests:
 3. **下部バー（`data-testid="reader-hud-bottom"`）**:
    - 右開き（`rtl`）の視覚順に合わせ、**左側に「← 次へ」ボタン**（`data-testid="reader-next-button"`）、**中央に 1 始まりのページ表示 `N / Total`**（`data-testid="reader-page-indicator"`）、**右側に「前へ →」ボタン**（`data-testid="reader-prev-button"`）を配置する。
    - 先頭ページ（`0`）では「前へ →」を `disabled`、最終ページ（`totalPages - 1`）では「← 次へ」を `disabled` とする。
+4. **システムバー非重複・セーフエリア＆タッチ応答保護**:
+   - Android Edge-to-Edge 環境で OS ステータスバー／ナビゲーションバーと重なってタップ操作を阻害しないよう（`screen-transitions.md §1` の WebView マージン設定と併用）、上部バーは `paddingTop: "calc(0.75rem + env(safe-area-inset-top, 0px))"`、下部バーは `paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))"` によりセーフエリア余白を確保する（`env(..., 0px)` が `0px` の環境では上下 `0.75rem` を維持）。
+   - 各 HUD ボタン（`reader-back-button`, `reader-next-button`, `reader-prev-button`）には `touch-manipulation` を付与し、WebView 上の即時タップ応答を担保する。
 
 ---
 
