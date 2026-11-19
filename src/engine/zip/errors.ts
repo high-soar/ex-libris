@@ -4,9 +4,8 @@ export class ZipArchiveError extends Error {
   readonly code: ZipErrorCode;
 
   constructor(code: ZipErrorCode, message: string, cause?: unknown) {
-    super(message);
-    void cause;
+    super(message, cause !== undefined ? { cause } : undefined);
+    this.name = "ZipArchiveError";
     this.code = code;
-    throw new Error("Not implemented");
   }
 }
