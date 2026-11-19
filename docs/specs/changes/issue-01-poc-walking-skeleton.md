@@ -33,14 +33,15 @@ related_tests:
 
 ## 2. 変更対象の App 全体正本一覧
 
-|   種別   | 正本ファイル                                       | 変更概要                                                                                                                                                              |
-| :------: | :------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **新設** | [zip-streaming.md](../engine/zip-streaming.md)     | `LocalFileReader`、標準 ZIP パーサー（UTF-8 非厳格デコード、自然順ソート、LFH 1 RTT）、`DecodeWorkerCore`、`CoordinatorCore` の `AC-ENG-01`〜`08` 定義                |
-| **新設** | [webgl2-renderer.md](../engine/webgl2-renderer.md) | `L1PageCache`（5P 上限・`bitmap.close()`）、`WebGLRendererCore`（純黒背景・Mipmap・DPR 追従・`webglcontextlost` 復帰）、`<ReaderCanvas>` の `AC-GL-01`〜`06` 定義     |
-| **新設** | [bookshelf.md](../features/bookshelf.md)           | `SCR-01`（`/`）ローカル ZIP/CBZ オープン導線（ヘッダー＋カード＋D&D＋Android SAF 互換）、診断ログコピーの `AC-BS-01`〜`05` 定義                                       |
-| **新設** | [reader.md](../features/reader.md)                 | `SCR-03`（`/read/local`）右開き単ページ閲覧、タップ（30/40/30%）・スワイプ・矢印キー/`Escape`、最小 HUD、エラー復帰、`TR-08`/`TR-10` 解放の `AC-RD-01`〜`09` 定義     |
-| **更新** | [architecture.md](../architecture.md)              | Layer 4 へカスタムルーター（`src/shared/router/`）・ローカルセッションストア・`L1PageCache`・`AppBridge` を明記し、WebGL2 純黒背景・`webglcontextlost` 復帰契約を追記 |
-| **更新** | [screen-transitions.md](../screen-transitions.md)  | Phase 3 ローカル一時セッションのオンメモリ完結（`pageIndex = 0` 開始、`v0.1` で Dexie レジューム導入）と `SCR-03` 右開き操作詳細を明確化                              |
+|   種別   | 正本ファイル                                       | 変更概要                                                                                                                                                                                                           |
+| :------: | :------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **新設** | [zip-streaming.md](../engine/zip-streaming.md)     | `LocalFileReader`、標準 ZIP パーサー（UTF-8 非厳格デコード、自然順ソート、LFH 1 RTT）、`DecodeWorkerCore`、`CoordinatorCore` の `AC-ENG-01`〜`08` 定義                                                             |
+| **新設** | [webgl2-renderer.md](../engine/webgl2-renderer.md) | `L1PageCache`（5P 上限・`bitmap.close()`）、`WebGLRendererCore`（純黒背景・Mipmap・DPR 追従・`webglcontextlost` 復帰）、`<ReaderCanvas>` の `AC-GL-01`〜`06` 定義                                                  |
+| **新設** | [bookshelf.md](../features/bookshelf.md)           | `SCR-01`（`/`）ローカル ZIP/CBZ オープン導線（ヘッダー＋カード＋D&D＋Android SAF 互換）、診断ログコピーの `AC-BS-01`〜`05` 定義                                                                                    |
+| **新設** | [reader.md](../features/reader.md)                 | `SCR-03`（`/read/local`）右開き単ページ閲覧、タップ（30/40/30%）・スワイプ・矢印キー/`Escape`、最小 HUD、エラー復帰、`TR-08`/`TR-10` 解放の `AC-RD-01`〜`09` 定義                                                  |
+| **更新** | [requirements.md](../requirements.md)              | Phase 3 のローカル一時セッションオンメモリ完結（`v0.1` で永続化）および `L1(5P)` 最小窓先読みの `Phase 3` 先行実装を備考へ同期                                                                                     |
+| **更新** | [architecture.md](../architecture.md)              | `ZipPageEntry.entryNameByteLength`・`ZipErrorCode`・`DecodedPageFrame`（`ready` / `error`）契約、Layer 4 ルーター/ローカルセッション/`L1PageCache`/`AppBridge`、WebGL2 純黒背景・`webglcontextlost` 復帰契約を追記 |
+| **更新** | [screen-transitions.md](../screen-transitions.md)  | Phase 3 ローカル一時セッションのオンメモリ完結（`pageIndex = 0` 開始、`v0.1` で Dexie レジューム導入）と `SCR-03` 右開き操作詳細を明確化                                                                           |
 
 ---
 
@@ -49,8 +50,8 @@ related_tests:
 ### 3.1 Streaming & Engine Worker 層（`AC-ENG-01`〜`08`）
 
 - `LocalFileReader`: `File.slice` ベースの `RandomAccessReader` 実装（終端クランプ、`AbortSignal` 対応）。
-- `ZipParserCore`: 末尾 `128KB` 取得（超過時は CD 追加 1 RTT）、`TextDecoder("utf-8", { fatal: false })` 非厳格デコード、`.jpg/.jpeg/.png/.webp/.avif` 抽出、`__MACOSX/`・`._*`・`Thumbs.db`・`.DS_Store`・`desktop.ini`・ディレクトリ除外、`Intl.Collator("ja", { numeric: true, sensitivity: "base" })` 自然順ソート、LFH 可変長対応 1 RTT スライス抽出、明示的 `ZipErrorCode`（`CORRUPT_ZIP` / `EMPTY_ARCHIVE` / `ENCRYPTED_ZIP` / `UNSUPPORTED_COMPRESSION` / `ZIP64_NOT_SUPPORTED`）。
-- `DecodeWorkerPool`（x2）＋ `CoordinatorCore`: Store (`0`) / Deflate (`8`: `DecompressionStream('deflate-raw')` ＋ `fflate` フォールバック)、Transferable `ImageBitmap` Zero-Copy 転送、Fast-Path 現在ページ最優先＋近傍先読み（`[N+1, N+2, N-1]`）、`requestEpoch` 世代キャンセル＆遅延到着 `bitmap.close()` 即時破棄。
+- `ZipParserCore`: 末尾 `128KB` 取得（超過時は CD 追加 1 RTT）、`TextDecoder("utf-8", { fatal: false })` 非厳格デコード＋元バイト長 `entryNameByteLength` 保持、`.jpg/.jpeg/.png/.webp/.avif` 抽出、`__MACOSX/`・`._*`・`Thumbs.db`・`.DS_Store`・`desktop.ini`・ディレクトリ除外、`Intl.Collator("ja", { numeric: true, sensitivity: "base" })` 自然順ソート、LFH 可変長対応 1 RTT スライス抽出（`maxSpan < 30` / 境界違反時は `CORRUPT_ZIP`）、明示的 `ZipErrorCode`（`CORRUPT_ZIP` / `EMPTY_ARCHIVE` / `ENCRYPTED_ZIP` / `UNSUPPORTED_COMPRESSION` / `ZIP64_NOT_SUPPORTED` / `DECODE_FAILED` / `READ_ERROR`）。
+- `DecodeWorkerPool`（x2）＋ `CoordinatorCore`: Store (`0`) / Deflate (`8`: `DecompressionStream('deflate-raw')` ＋ `fflate` フォールバック)、`DecodedPageFrame`（`ready`＋Transferable `ImageBitmap` Zero-Copy 転送 / `error` 個別ページエラー）、Fast-Path `requestVisiblePages([N], [], epoch)` 優先描画後の近傍ページ単位 `[N+1]`, `[N+2]`, `[N-1]` バックグラウンド L1 供給、`requestEpoch` 世代キャンセル＆遅延到着 `bitmap.close()` 即時破棄。
 
 ### 3.2 WebGL2・L1 キャッシュ・Router・Bridge 層（`AC-GL-01`〜`06`）
 
