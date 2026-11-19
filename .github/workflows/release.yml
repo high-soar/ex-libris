@@ -92,9 +92,19 @@ jobs:
           distribution: "temurin"
           java-version: "21"
 
+      - name: Build Web Assets and Sync Capacitor Android
+        if: steps.check_existing.outputs.exists == 'false'
+        run: |
+          npm ci
+          npm run build
+          npx cap sync android
+
       - name: Setup Gradle
         if: steps.check_existing.outputs.exists == 'false'
         uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-cleanup: never
+          gradle-home-cache-strict-match: true
 
       - name: Build Signed Release APK
         if: steps.check_existing.outputs.exists == 'false'
@@ -106,9 +116,6 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          npm ci
-          npm run build
-          npx cap sync android
           chmod +x android/gradlew
           (cd android && ./gradlew assembleRelease)
           cp android/app/build/outputs/apk/release/app-release.apk "ex-libris-${TAG}.apk"
