@@ -13,7 +13,14 @@ related_specs:
   - docs/guidelines/testing.md
 related_tests:
   - src/App.test.tsx
+  - src/features/bookshelf/BookshelfPage.test.tsx
+  - src/features/bookshelf/BookshelfHeader.test.tsx
+  - src/features/bookshelf/LocalArchiveEmptyState.test.tsx
+  - src/features/reader/localReaderSessionStore.test.ts
+  - src/diagnostics/diagnosticLogger.test.ts
+  - test/vrt/vrt.spec.ts
   - test/it/smoke.spec.ts
+  - test/it/local-reader.spec.ts
 ---
 
 # 仮想本棚ホーム画面仕様書（`SCR-01`: Bookshelf）

@@ -11,7 +11,17 @@ related_specs:
   - docs/specs/architecture.md
   - docs/specs/engine/webgl2-renderer.md
   - docs/guidelines/testing.md
-related_tests: []
+related_tests:
+  - src/engine/constants.test.ts
+  - src/engine/io/LocalFileReader.test.ts
+  - src/engine/zip/errors.test.ts
+  - src/engine/zip/zipParser.test.ts
+  - src/engine/workers/DecodeWorkerCore.test.ts
+  - src/engine/workers/DecodeWorkerPool.test.ts
+  - src/engine/workers/CoordinatorCore.test.ts
+  - src/engine/workers/comlinkErrorHandler.test.ts
+  - src/app/coordinatorClient.test.ts
+  - test/it/local-reader.spec.ts
 ---
 
 # ZIP ストリーミング・I/O・Worker エンジン仕様書

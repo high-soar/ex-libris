@@ -13,7 +13,18 @@ related_specs:
   - docs/specs/engine/webgl2-renderer.md
   - docs/specs/features/bookshelf.md
   - docs/guidelines/testing.md
-related_tests: []
+related_tests:
+  - src/App.test.tsx
+  - src/features/reader/ReaderPage.test.tsx
+  - src/features/reader/ReaderHudOverlay.test.tsx
+  - src/features/reader/ReaderErrorView.test.tsx
+  - src/features/reader/localReaderSessionStore.test.ts
+  - src/features/reader/readerErrors.test.ts
+  - src/webgl/ReaderCanvas.test.tsx
+  - src/bridges/app/capacitorAppBridge.test.ts
+  - src/bridges/app/mockAppBridge.test.ts
+  - test/vrt/vrt.spec.ts
+  - test/it/local-reader.spec.ts
 ---
 
 # WebGL2 ストリーミングリーダー画面仕様書（`SCR-03`: Reader）

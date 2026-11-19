@@ -15,7 +15,16 @@ related_specs:
   - docs/guidelines/testing.md
 related_tests:
   - src/App.test.tsx
+  - src/bridges/app/capacitorAppBridge.test.ts
+  - src/bridges/app/mockAppBridge.test.ts
+  - src/features/bookshelf/BookshelfPage.test.tsx
+  - src/features/reader/ReaderPage.test.tsx
+  - src/features/reader/localReaderSessionStore.test.ts
+  - src/shared/router/RouterProvider.test.tsx
+  - src/shared/router/routeMatcher.test.ts
+  - src/shared/router/routerContext.test.ts
   - test/it/smoke.spec.ts
+  - test/it/local-reader.spec.ts
 ---
 
 # ExLibris 主要画面一覧（`SCR-xx`）と画面遷移（`TR-xx`）
