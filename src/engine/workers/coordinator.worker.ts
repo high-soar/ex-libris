@@ -7,6 +7,9 @@ import type {
 } from "../types";
 import { CoordinatorCore } from "./CoordinatorCore";
 import { DecodeWorkerPool, type DecodeWorkerHandle } from "./DecodeWorkerPool";
+import { registerZipArchiveErrorTransferHandler } from "./comlinkErrorHandler";
+
+registerZipArchiveErrorTransferHandler();
 
 const workerHandles: DecodeWorkerHandle[] = Array.from(
   { length: ENGINE_BUDGETS.DECODE_WORKER_POOL_SIZE },

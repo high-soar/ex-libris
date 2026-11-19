@@ -1,6 +1,9 @@
 import * as Comlink from "comlink";
 import type { DecodeWorkerApi, ZipCompressionMethod } from "../types";
 import { DecodeWorkerCore } from "./DecodeWorkerCore";
+import { registerZipArchiveErrorTransferHandler } from "./comlinkErrorHandler";
+
+registerZipArchiveErrorTransferHandler();
 
 const core = new DecodeWorkerCore();
 
