@@ -1,0 +1,3 @@
+{
+  "install": "git config --local core.hooksPath .githooks || true; if [ -f package.json ]; then npm ci && npx playwright install chromium; fi"
+}

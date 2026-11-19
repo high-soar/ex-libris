@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ExLibris</string>
+    <string name="title_activity_main">ExLibris</string>
+    <string name="package_name">com.highsoar.exlibris</string>
+    <string name="custom_url_scheme">com.highsoar.exlibris</string>
+</resources>
