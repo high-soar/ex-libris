@@ -1,4 +1,5 @@
 import {
+  type MouseEvent,
   type PointerEvent,
   type ReactNode,
   useCallback,
@@ -19,11 +20,15 @@ import { useRouter } from "../../shared/router/routerContext";
 import {
   ReaderCanvas,
   type ReaderCanvasHandle,
+  type WebGLFatalErrorCode,
 } from "../../webgl/ReaderCanvas";
 import { L1PageCache } from "../../webgl/l1PageCache";
 import { ReaderErrorView } from "./ReaderErrorView";
 import { ReaderHudOverlay } from "./ReaderHudOverlay";
-import { useLocalReaderSessionStore } from "./localReaderSessionStore";
+import {
+  type LocalReaderSession,
+  useLocalReaderSessionStore,
+} from "./localReaderSessionStore";
 import {
   type ExtractedReaderError,
   type ReaderFatalErrorCode,
@@ -66,6 +71,20 @@ const PAGE_ERROR_CODE_MAP: Record<ReaderFatalErrorCode, ZipErrorCode> = {
   WEBGL_INIT_FAILED: "READ_ERROR",
 };
 
+function buildLocalArchiveSource(
+  session: LocalReaderSession,
+): ArchiveSourceDescriptor {
+  const sessionKey = `local:${session.fileName}:${session.fileSize}`;
+  return {
+    kind: "local-session",
+    file: session.file,
+    rawFileName: session.fileName,
+    fileSize: session.fileSize,
+    indexCacheKey: sessionKey,
+    progressTargetKey: sessionKey,
+  };
+}
+
 function buildProtectedWindow(pageIndex: number, totalPages: number): number[] {
   return [pageIndex - 1, pageIndex, pageIndex + 1, pageIndex + 2].filter(
     (candidate) => candidate >= 0 && candidate < totalPages,
@@ -84,6 +103,10 @@ function resolveTapRatio(clientX: number, rect: DOMRect): number {
   }
   const raw = (clientX - rect.left) / rect.width;
   return Math.min(1, Math.max(0, raw));
+}
+
+function isHorizontalSwipe(dx: number, dy: number): boolean {
+  return Math.abs(dx) >= SWIPE_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy);
 }
 
 function closeReadyFrames(frames: readonly DecodedPageFrame[]): void {
@@ -151,6 +174,17 @@ export function ReaderPage({
     rendererHandleRef.current?.clearAllTextures();
     runtime.coordinator.dispose();
   }, []);
+
+  const reportArchiveError = useCallback(
+    (errorState: ExtractedReaderError, detail: string) => {
+      diagnosticLogger.error("reader", errorState.message, detail);
+      archiveErrorRef.current = errorState;
+      setArchiveError(errorState);
+      isOpeningRef.current = false;
+      setIsOpening(false);
+    },
+    [],
+  );
 
   const handleClose = useCallback(() => {
     if (isClosingRef.current) {
@@ -318,14 +352,7 @@ export function ReaderPage({
     totalPagesRef.current = 0;
     setTotalPages(0);
 
-    const source: ArchiveSourceDescriptor = {
-      kind: "local-session",
-      file: session.file,
-      rawFileName: session.fileName,
-      fileSize: session.fileSize,
-      indexCacheKey: `local:${session.fileName}:${session.fileSize}`,
-      progressTargetKey: `local:${session.fileName}:${session.fileSize}`,
-    };
+    const source = buildLocalArchiveSource(session);
 
     void (async () => {
       try {
@@ -357,15 +384,7 @@ export function ReaderPage({
           return;
         }
         const extracted = extractReaderError(error);
-        diagnosticLogger.error(
-          "reader",
-          extracted.message,
-          `${extracted.code}: ${session.fileName}`,
-        );
-        archiveErrorRef.current = extracted;
-        setArchiveError(extracted);
-        isOpeningRef.current = false;
-        setIsOpening(false);
+        reportArchiveError(extracted, `${extracted.code}: ${session.fileName}`);
       }
     })();
 
@@ -381,6 +400,7 @@ export function ReaderPage({
     loadPageWindow,
     releaseRuntime,
     replace,
+    reportArchiveError,
   ]);
 
   const goToPage = useCallback(
@@ -490,7 +510,7 @@ export function ReaderPage({
       const dx = event.clientX - start.x;
       const dy = event.clientY - start.y;
 
-      if (Math.abs(dx) >= SWIPE_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
+      if (isHorizontalSwipe(dx, dy)) {
         if (dx > 0) {
           goNextPage();
         } else {
@@ -505,7 +525,7 @@ export function ReaderPage({
   );
 
   const handleClick = useCallback(
-    (event: React.MouseEvent<HTMLDivElement>) => {
+    (event: MouseEvent<HTMLDivElement>) => {
       if (suppressNextClickRef.current) {
         suppressNextClickRef.current = false;
         return;
@@ -523,19 +543,13 @@ export function ReaderPage({
   );
 
   const handleWebGLFatalError = useCallback(
-    (code: "WEBGL_UNSUPPORTED" | "WEBGL_INIT_FAILED", message: string) => {
-      const userMessage = getReaderErrorMessage(code);
-      diagnosticLogger.error("reader", userMessage, `${code}: ${message}`);
-      const errorState: ExtractedReaderError = {
-        code,
-        message: userMessage,
-      };
-      archiveErrorRef.current = errorState;
-      setArchiveError(errorState);
-      isOpeningRef.current = false;
-      setIsOpening(false);
+    (code: WebGLFatalErrorCode, message: string) => {
+      reportArchiveError(
+        { code, message: getReaderErrorMessage(code) },
+        `${code}: ${message}`,
+      );
     },
-    [],
+    [reportArchiveError],
   );
 
   if (session === null) {
