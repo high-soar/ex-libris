@@ -189,6 +189,16 @@ describe("App", () => {
     expect(exitSpy).toHaveBeenCalledTimes(1);
     expect(bridge.getMinimizeAppCallCount()).toBe(1);
 
+    // 登録解除 (null) 後の backButton は安全にノーオペとなること
+    act(() => {
+      getLatestReaderProps().onRegisterExit?.(null);
+    });
+    await act(async () => {
+      await bridge.triggerBackButton();
+    });
+    expect(exitSpy).toHaveBeenCalledTimes(1);
+    expect(bridge.getMinimizeAppCallCount()).toBe(1);
+
     // アンマウント後はバックキーリスナーが解除されること
     unmount();
     await act(async () => {

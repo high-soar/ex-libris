@@ -20,10 +20,10 @@ export interface AppProps {
 }
 
 interface AppShellProps {
-  readonly initialCopyStatus?: CopyStatus;
+  readonly initialCopyStatus: CopyStatus;
 }
 
-function AppShell({ initialCopyStatus = "idle" }: AppShellProps) {
+function AppShell({ initialCopyStatus }: AppShellProps) {
   const { appBridge } = useServices();
   const { route } = useRouter();
   const readerExitRef = useRef<(() => void) | null>(null);
