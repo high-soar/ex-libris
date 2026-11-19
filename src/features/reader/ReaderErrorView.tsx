@@ -7,6 +7,27 @@ export interface ReaderErrorViewProps {
   readonly onBackToHome?: () => void;
 }
 
+function ErrorCodeCaption({
+  errorCode,
+  marginClass,
+}: {
+  readonly errorCode?: string;
+  readonly marginClass: string;
+}): ReactNode {
+  if (errorCode === undefined) {
+    return null;
+  }
+
+  return (
+    <p
+      data-testid="reader-error-code"
+      className={`${marginClass} font-mono text-xs text-slate-400`}
+    >
+      エラーコード: {errorCode}
+    </p>
+  );
+}
+
 export function ReaderErrorView({
   mode,
   message,
@@ -30,14 +51,7 @@ export function ReaderErrorView({
           <p className="mt-3 text-sm leading-relaxed text-slate-200">
             {message}
           </p>
-          {errorCode !== undefined && (
-            <p
-              data-testid="reader-error-code"
-              className="mt-3 font-mono text-xs text-slate-400"
-            >
-              エラーコード: {errorCode}
-            </p>
-          )}
+          <ErrorCodeCaption errorCode={errorCode} marginClass="mt-3" />
           <button
             type="button"
             data-testid="reader-error-back-button"
@@ -62,14 +76,7 @@ export function ReaderErrorView({
           ページ読込エラー
         </p>
         <p className="mt-2 text-sm leading-relaxed text-slate-200">{message}</p>
-        {errorCode !== undefined && (
-          <p
-            data-testid="reader-error-code"
-            className="mt-2 font-mono text-xs text-slate-400"
-          >
-            エラーコード: {errorCode}
-          </p>
-        )}
+        <ErrorCodeCaption errorCode={errorCode} marginClass="mt-2" />
         <p className="mt-4 text-xs text-slate-400">
           左右のタップ・スワイプまたは矢印キーで前後のページへ移動できます
         </p>
