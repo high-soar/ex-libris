@@ -239,15 +239,21 @@ describe("zipParser", () => {
           cdhExtra: new Uint8Array(0),
           lfhExtra: new Uint8Array(1_500).fill(0xaa),
         },
+        {
+          name: "002.jpg",
+          data: payload,
+          cdhExtra: new Uint8Array(0),
+          lfhExtra: new Uint8Array(5_000).fill(0xbb),
+        },
       ],
     });
     const reader = createMemoryReader(zipBytes);
     const entries = await parseZipDirectory(reader);
     reader.reads.length = 0;
 
-    const slice = await readCompressedPageSlice(reader, entries[0]);
+    const slice1 = await readCompressedPageSlice(reader, entries[0]);
 
-    expect(slice).toEqual(payload);
+    expect(slice1).toEqual(payload);
     expect(reader.reads).toHaveLength(2);
     expect(reader.reads[0].length).toBe(
       30 +
@@ -255,6 +261,18 @@ describe("zipParser", () => {
         entries[0].compressedSize +
         ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES,
     );
+
+    const slice2 = await readCompressedPageSlice(reader, entries[1]);
+    expect(slice2).toEqual(payload);
+
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(
+      parseZipDirectory(reader, aborted.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    await expect(
+      readCompressedPageSlice(reader, entries[0], aborted.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("空アーカイブ・暗号化・未対応圧縮・ZIP64に明示的ZipErrorCodeを送出すること (AC-ENG-04)", async () => {

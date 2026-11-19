@@ -14,6 +14,12 @@ const LFH_SIGNATURE = 0x04034b50;
 const JUNK_BASENAMES = new Set([".ds_store", "thumbs.db", "desktop.ini"]);
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".avif"]);
 
+interface EocdInfo {
+  readonly totalEntries: number;
+  readonly cdSize: number;
+  readonly cdOffset: number;
+}
+
 interface ParsedCandidate {
   readonly entryName: string;
   readonly entryNameByteLength: number;
@@ -23,6 +29,10 @@ interface ParsedCandidate {
   readonly localHeaderOffset: number;
   physicalEnd: number;
   readonly crc32: number;
+}
+
+function createDataView(bytes: Uint8Array): DataView {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }
 
 function isJunkOrNonImageEntry(
@@ -61,40 +71,21 @@ function isJunkOrNonImageEntry(
   return !IMAGE_EXTENSIONS.has(lowerBaseName.slice(dotIndex));
 }
 
-export async function parseZipDirectory(
-  reader: RandomAccessReader,
-  signal?: AbortSignal,
-): Promise<ZipPageEntry[]> {
-  const tailLength = Math.min(
-    reader.totalSize,
-    ENGINE_BUDGETS.INITIAL_TAIL_READ_BYTES,
-  );
-  const tailStart = reader.totalSize - tailLength;
-  const tailBuf = await reader.readRange(tailStart, tailLength, signal);
-
-  if (tailBuf.byteLength !== tailLength || tailBuf.byteLength < 22) {
-    throw new ZipArchiveError(
-      "CORRUPT_ZIP",
-      "ZIP末尾のEOCD領域を読み取れません",
-    );
-  }
-
-  const tailView = new DataView(
-    tailBuf.buffer,
-    tailBuf.byteOffset,
-    tailBuf.byteLength,
-  );
-
-  let eocdRelOffset = -1;
-  for (let i = tailBuf.byteLength - 22; i >= 0; i -= 1) {
+function findEocdOffset(tailView: DataView, byteLength: number): number {
+  for (let i = byteLength - 22; i >= 0; i -= 1) {
     if (tailView.getUint32(i, true) === EOCD_SIGNATURE) {
       const commentLength = tailView.getUint16(i + 20, true);
-      if (i + 22 + commentLength === tailBuf.byteLength) {
-        eocdRelOffset = i;
-        break;
+      if (i + 22 + commentLength === byteLength) {
+        return i;
       }
     }
   }
+  return -1;
+}
+
+function readEocdInfo(tailBuf: Uint8Array, tailStart: number): EocdInfo {
+  const tailView = createDataView(tailBuf);
+  const eocdRelOffset = findEocdOffset(tailView, tailBuf.byteLength);
 
   if (eocdRelOffset < 0) {
     throw new ZipArchiveError("CORRUPT_ZIP", "EOCDシグネチャが見つかりません");
@@ -139,21 +130,37 @@ export async function parseZipDirectory(
     );
   }
 
-  let cdBuf: Uint8Array;
-  if (cdOffset >= tailStart) {
-    const cdRelStart = cdOffset - tailStart;
-    cdBuf = tailBuf.subarray(cdRelStart, cdRelStart + cdSize);
-  } else {
-    cdBuf = await reader.readRange(cdOffset, cdSize, signal);
-    if (cdBuf.byteLength !== cdSize) {
-      throw new ZipArchiveError(
-        "CORRUPT_ZIP",
-        "Central Directoryの追加読込サイズが不足しています",
-      );
-    }
+  return { totalEntries, cdSize, cdOffset };
+}
+
+async function readCentralDirectoryBuffer(
+  reader: RandomAccessReader,
+  eocd: EocdInfo,
+  tailBuf: Uint8Array,
+  tailStart: number,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  if (eocd.cdOffset >= tailStart) {
+    const cdRelStart = eocd.cdOffset - tailStart;
+    return tailBuf.subarray(cdRelStart, cdRelStart + eocd.cdSize);
   }
 
-  const cdView = new DataView(cdBuf.buffer, cdBuf.byteOffset, cdBuf.byteLength);
+  const cdBuf = await reader.readRange(eocd.cdOffset, eocd.cdSize, signal);
+  if (cdBuf.byteLength !== eocd.cdSize) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      "Central Directoryの追加読込サイズが不足しています",
+    );
+  }
+  return cdBuf;
+}
+
+function parseCentralDirectoryCandidates(
+  cdBuf: Uint8Array,
+  totalEntries: number,
+  cdOffset: number,
+): ParsedCandidate[] {
+  const cdView = createDataView(cdBuf);
   const utf8Decoder = new TextDecoder("utf-8", { fatal: false });
   const candidates: ParsedCandidate[] = [];
   let cursor = 0;
@@ -244,6 +251,13 @@ export async function parseZipDirectory(
     });
   }
 
+  return candidates;
+}
+
+function buildLogicalPageEntries(
+  candidates: ParsedCandidate[],
+  cdOffset: number,
+): ZipPageEntry[] {
   if (candidates.length === 0) {
     throw new ZipArchiveError(
       "EMPTY_ARCHIVE",
@@ -282,6 +296,41 @@ export async function parseZipDirectory(
   }));
 }
 
+export async function parseZipDirectory(
+  reader: RandomAccessReader,
+  signal?: AbortSignal,
+): Promise<ZipPageEntry[]> {
+  const tailLength = Math.min(
+    reader.totalSize,
+    ENGINE_BUDGETS.INITIAL_TAIL_READ_BYTES,
+  );
+  const tailStart = reader.totalSize - tailLength;
+  const tailBuf = await reader.readRange(tailStart, tailLength, signal);
+
+  if (tailBuf.byteLength !== tailLength || tailBuf.byteLength < 22) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      "ZIP末尾のEOCD領域を読み取れません",
+    );
+  }
+
+  const eocd = readEocdInfo(tailBuf, tailStart);
+  const cdBuf = await readCentralDirectoryBuffer(
+    reader,
+    eocd,
+    tailBuf,
+    tailStart,
+    signal,
+  );
+  const candidates = parseCentralDirectoryCandidates(
+    cdBuf,
+    eocd.totalEntries,
+    eocd.cdOffset,
+  );
+
+  return buildLogicalPageEntries(candidates, eocd.cdOffset);
+}
+
 export async function readCompressedPageSlice(
   reader: RandomAccessReader,
   entry: ZipPageEntry,
@@ -315,11 +364,7 @@ export async function readCompressedPageSlice(
     );
   }
 
-  const lfhView = new DataView(
-    initialBuf.buffer,
-    initialBuf.byteOffset,
-    initialBuf.byteLength,
-  );
+  const lfhView = createDataView(initialBuf);
   if (lfhView.getUint32(0, true) !== LFH_SIGNATURE) {
     throw new ZipArchiveError(
       "CORRUPT_ZIP",
