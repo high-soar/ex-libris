@@ -145,11 +145,22 @@ export interface RandomAccessReader {
 ```ts
 export type ZipCompressionMethod = 0 | 8; // 0: Store (無圧縮), 8: Deflate
 
+export type ZipErrorCode =
+  | "CORRUPT_ZIP"
+  | "EMPTY_ARCHIVE"
+  | "ENCRYPTED_ZIP"
+  | "UNSUPPORTED_COMPRESSION"
+  | "ZIP64_NOT_SUPPORTED"
+  | "DECODE_FAILED"
+  | "READ_ERROR";
+
 export interface ZipPageEntry {
   /** ゴミ除外・自然順ソート後の 0 始まり論理ページ番号 */
   readonly pageIndex: number;
   /** UTF-8 または Shift_JIS デコード後のエントリパス */
   readonly entryName: string;
+  /** CDH 記載の元ファイル名バイト長（LFH 1 RTT スライス長計算用） */
+  readonly entryNameByteLength: number;
   readonly compressionMethod: ZipCompressionMethod;
   /** Central Directory 記載の正確な圧縮サイズ（Bit 3 有効時も信頼できる正値） */
   readonly compressedSize: number;
@@ -161,14 +172,23 @@ export interface ZipPageEntry {
   readonly crc32: number;
 }
 
-export interface DecodedPageFrame {
-  readonly pageIndex: number;
-  readonly epoch: number;
-  readonly width: number;
-  readonly height: number;
-  /** Transferable Object として所有権ごと UI スレッドへ Zero-Copy 転送される */
-  readonly bitmap: ImageBitmap;
-}
+export type DecodedPageFrame =
+  | {
+      readonly status: "ready";
+      readonly pageIndex: number;
+      readonly epoch: number;
+      readonly width: number;
+      readonly height: number;
+      /** Transferable Object として所有権ごと UI スレッドへ Zero-Copy 転送される */
+      readonly bitmap: ImageBitmap;
+    }
+  | {
+      readonly status: "error";
+      readonly pageIndex: number;
+      readonly epoch: number;
+      readonly errorCode: ZipErrorCode;
+      readonly message: string;
+    };
 
 export interface OpenArchiveResult {
   readonly pageCount: number;
@@ -184,8 +204,11 @@ export interface CoordinatorWorkerApi {
   ): Promise<OpenArchiveResult>;
 
   /**
-   * Fast-Path で現在表示に必要なページ（単頁1枚 or 見開き2枚）を最優先返却し、
-   * 非同期で後続ページの Warm Prefetch（10MB 予算 L2 格納）をスケジュールする。
+   * `pageIndices` に指定されたページの `DecodedPageFrame[]`（成功時は `ready`＋Transferable `ImageBitmap`、
+   * 個別ページ失敗時は `error`）を最優先で返却する。
+   * Phase 3 では UI スレッド側が Fast-Path として `requestVisiblePages([N], [], epoch)` を先に呼び出し、
+   * 完了後に L1 窓用の近傍ページ単位 `[N+1]`, `[N+2]`, `[N-1]` をバックグラウンド呼び出しする。
+   * v0.1 以降は `prefetchIndices` に基づく 10MB 予算 Warm Prefetch（Worker L2 格納）も非同期スケジュールする。
    */
   requestVisiblePages(
     pageIndices: readonly number[],

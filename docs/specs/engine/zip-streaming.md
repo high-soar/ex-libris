@@ -103,10 +103,13 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 ### 3.4 LFH 可変長 1 RTT スライス切り出し
 
 1. `readCompressedPageSlice(reader, entry, signal?)`:
-   - 取得長 `fetchLength = Math.min(entry.physicalEnd - entry.localHeaderOffset, 30 + entry.entryNameByteLength + entry.compressedSize + ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES)`（最低 30 バイト、かつ `entry.physicalEnd` を上限クランプ）を計算し、`readRange(entry.localHeaderOffset, fetchLength, signal)` を 1 回だけ呼び出す。
-   - Local File Header シグネチャ `0x04034b50` を検証し、LFH 側の `fileNameLength`（offset 26）と `extraFieldLength`（offset 28）を読み取って実データ開始相対位置 `dataStart = 30 + lfhFileNameLength + lfhExtraFieldLength` を算出する（CDH と LFH の `extraFieldLength` が異なる ZIP にも対応）。
-   - `dataStart + entry.compressedSize` が取得バッファを超えた場合（LFH `extraField` が 1KB マージン超の場合）は、不足分のみ `readRange(entry.localHeaderOffset + dataStart, entry.compressedSize, signal)` で補完するか、`physicalEnd` 超過時は `CORRUPT_ZIP` とする。
-   - 切り出した `Uint8Array`（`entry.compressedSize` バイト）を返す。
+   - まず `maxSpan = entry.physicalEnd - entry.localHeaderOffset` を算出し、`entry.localHeaderOffset < 0 || maxSpan < 30` の場合は即座に `ZipArchiveError("CORRUPT_ZIP")` を送出する。
+   - 取得長 `fetchLength = Math.min(maxSpan, 30 + entry.entryNameByteLength + entry.compressedSize + ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES)` を算出し、`readRange(entry.localHeaderOffset, fetchLength, signal)` を 1 回だけ呼び出す。
+   - `initialBuf.byteLength < 30` または Local File Header シグネチャ `0x04034b50` 不一致の場合は `CORRUPT_ZIP` を送出する。
+   - LFH 側の `fileNameLength`（offset 26）と `extraFieldLength`（offset 28）を読み取って実データ開始相対位置 `dataStart = 30 + lfhFileNameLength + lfhExtraFieldLength` を算出する（CDH と LFH の `extraFieldLength` が異なる ZIP にも対応）。
+   - `dataStart + entry.compressedSize > maxSpan` の場合は境界違反として `ZipArchiveError("CORRUPT_ZIP")` を送出する。
+   - `dataStart + entry.compressedSize <= initialBuf.byteLength` であれば `initialBuf.subarray(dataStart, dataStart + entry.compressedSize)` を返却する（1 RTT 完了）。
+   - LFH `extraField` が 1KB マージンを超過し（かつ `maxSpan` 内に収まり）`dataStart + entry.compressedSize > initialBuf.byteLength` となった場合は、未取得の末尾差分 `[entry.localHeaderOffset + initialBuf.byteLength, (dataStart + entry.compressedSize) - initialBuf.byteLength]` のみを `readRange` で追加取得し、`initialBuf` と結合して `[dataStart, dataStart + entry.compressedSize)` を返却する。
 
 ---
 
@@ -118,7 +121,7 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
    - `compressionMethod === 0`（Store）: `compressedData` をそのまま画像 Blob 化。
    - `compressionMethod === 8`（Deflate）: `DecompressionStream("deflate-raw")` が利用可能であれば優先使用し、非対応環境（テスト JSDOM 等）や失敗時の互換フォールバックとして `fflate.inflateSync` を使用する。
    - 伸長済みバイト列から `new Blob([rawBytes])` を生成し、`createImageBitmap(blob)` でオフスレッドデコードを行う（失敗時は `ZipArchiveError("DECODE_FAILED")`）。
-   - 返却値 `{ bitmap, width: bitmap.width, height: bitmap.height }`。Worker ラッパー側では `Comlink.transfer(result, [result.bitmap])` で所有権ごと UI スレッドへ Zero-Copy 転送する。
+   - 返却値 `{ bitmap, width: bitmap.width, height: bitmap.height }`。Worker ラッパー側では `Comlink.transfer(result, [result.bitmap])` で所有権ごと親側へ Zero-Copy 転送する。
 
 ### 4.2 `CoordinatorCore`（Phase 3 最小実行モデル ＋ 世代キャンセル）
 
@@ -132,11 +135,15 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
    - 既存アーカイブがあれば `closeArchive()` 相当のクリーンアップを実施。
    - `source.kind === "local-session"` に対し `LocalFileReader(source.file)` を生成し、ZIP パーサーで `entries` を構築する（`Phase 3` では `cachedEntries` は常に `null`、`fromIndexCache: false`）。
 3. **`requestVisiblePages(pageIndices, prefetchIndices, epoch)`**:
-   - `epoch < minActiveEpoch` の場合は `[]` を返却（またはキャンセル）。
-   - `pageIndices`（現在表示ページ `N`）を **Fast-Path 最優先** で切り出し・`DecodeWorkerPool` へ投入し、完了した `DecodedPageFrame[]`（Transferable `ImageBitmap` 付き）を優先返却する。
-   - `prefetchIndices`（`[N+1, N+2, N-1]` 等）も同一 Worker プールへ非同期またはバッチ投入して L1 窓用 `DecodedPageFrame` を供給する。
+   - `epoch < minActiveEpoch` の場合は `[]` を返却する。
+   - `pageIndices` の各ページを `readCompressedPageSlice` ＋ `DecodeWorkerPool`（2 Worker）で処理し、`DecodedPageFrame[]` として返却する：
+     - 成功時: `{ status: "ready", pageIndex, epoch, width, height, bitmap }`
+     - 個別ページ失敗時（`DECODE_FAILED` / `CORRUPT_ZIP` / `READ_ERROR` 等、`AbortError` 除く）: 同一バッチ内の他ページを巻き込まず `{ status: "error", pageIndex, epoch, errorCode, message }` を返却する。
+   - **Phase 3 における Fast-Path と L1 先読みの呼び出し契約**:
+     - `Phase 3` では L2 キャッシュ未実装のため、UI スレッド（`ReaderPage`）が先に Fast-Path として `requestVisiblePages([N], [], epoch)` を実行して現在ページ `N` を即時描画し、その完了後に L1 窓用の近傍ページ（`[N+1]`, `[N+2]`, `[N-1]`）を個別に `requestVisiblePages([neighbor], [], epoch)` としてバックグラウンド呼び出しする（`DecodeWorkerPool` x2 で並列処理され、完了順に `L1PageCache` へ格納される）。
+     - `prefetchIndices` 引数は `v0.1` の 10MB バイト予算 L2 Warm Prefetch 起動用として契約を維持し、`Phase 3` では空配列または無視（no-op）とする。
    - **世代チェックと即時破棄**: `DecodeWorker` から `ImageBitmap` が戻った時点で `epoch < minActiveEpoch` になっていた場合、**UI スレッドへ返却せず Coordinator 側で即座に `bitmap.close()` を実行して破棄する**。
-   - ※10MB Warm Prefetch 結合および 80MB L2 LRU 圧縮バイトキャッシュは `v0.1` で `CoordinatorCore` へ追加統合する。
+   - **Zero-Copy 転送**: `coordinator.worker.ts` ラッパーは返却配列から `frame.status === "ready"` の `frame.bitmap` のみを抽出して `Comlink.transfer(frames, transferables)` で UI スレッドへ転送する。
 4. **`cancelEpochBelow(minActiveEpoch)` / `closeArchive()`**:
    - `minActiveEpoch` 未満のすべての `AbortController.abort()` を即時発火する。
    - `closeArchive()` 時は進行中全ジョブを中断し、`activeReader` および `entries` を解放する。

@@ -38,14 +38,14 @@ WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React D
 ### 2.1 保持上限と状態モデル
 
 - 上限ページ数: `ENGINE_BUDGETS.L1_MAX_PAGES = 5`（現在ページ `N` ＋ 進行方向 `N+1`, `N+2` ＋ 逆方向 `N-1` 等を保持）。
-- エントリ状態:
+- エントリ状態（`architecture.md §2.3` の `DecodedPageFrame` ユニオンと 1 対 1 対応）:
   - `ready`: `{ status: "ready", pageIndex, epoch, bitmap, width, height }`
-  - `error`: `{ status: "error", pageIndex, epoch, errorCode, message }`（特定ページ破損時。前後ページへのスキップを阻害しない）
+  - `error`: `{ status: "error", pageIndex, epoch, errorCode, message }`（特定ページ読込・デコード破損時。前後ページへのスキップを阻害しない）
 
 ### 2.2 退避・解放ルール（`bitmap.close()` 不変条件）
 
 1. **同一ページ上書き時**: 既存の `ready` エントリが存在する場合は、新しい `bitmap` に差し替える前に旧 `bitmap.close()` と WebGL テクスチャ解放コールバック（`onEvictTexture(pageIndex)`）を必ず実行する。
-2. **古い `requestEpoch` 破棄時**: 現在の有効世代（`minEpoch`）未満の `DecodedPageFrame` が登録要求された場合は、キャッシュへ入れず即座に `frame.bitmap.close()` を実行して無視する。
+2. **古い `requestEpoch` 破棄時**: 現在の有効世代（`minEpoch`）未満の `DecodedPageFrame` が登録要求された場合は、キャッシュへ入れず（`status === "ready"` であれば即座に `frame.bitmap.close()` を実行して）無視する。
 3. **上限超過（Eviction）時**: キャッシュ件数が `L1_MAX_PAGES`（5 枚）を超えた場合、現在保護対象ウィンドウ（例: `[N-1, N, N+1, N+2]`）外の最古 LRU エントリから退避し、即座に `onEvictTexture(evictedPageIndex)` および `evicted.bitmap.close()` を実行する。
 4. **全解放（`clear()` / 巻クローズ / アンマウント時）**: 保持中の全エントリに対して `onEvictTexture` と `bitmap.close()` を実行し、参照を空にする。
 
