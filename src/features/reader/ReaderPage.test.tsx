@@ -1,5 +1,11 @@
 import { composeStories } from "@storybook/react";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { type ReactElement, StrictMode } from "react";
 import {
   afterEach,
@@ -85,6 +91,20 @@ function flushMicrotasks(): Promise<void> {
   });
 }
 
+function dispatchPointer(
+  target: HTMLElement,
+  type: "pointerdown" | "pointerup" | "pointercancel",
+  coords: { clientX?: number; clientY?: number } = {},
+): void {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: coords.clientX ?? 0,
+    clientY: coords.clientY ?? 0,
+  });
+  fireEvent(target, event);
+}
+
 function createMockCoordinatorSession(
   overrides: Partial<CoordinatorWorkerApi> = {},
 ) {
@@ -152,6 +172,7 @@ describe("ReaderPage", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
     useLocalReaderSessionStore.setState({ session: null });
     window.history.replaceState(null, "", originalUrl || "/");
@@ -219,6 +240,10 @@ describe("ReaderPage", () => {
       currentPageIndex: 11,
       totalPages: 24,
     });
+    act(() => {
+      getLatestHudProps().onNextPage();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(12);
     unmountHud();
 
     errorViewSpy.mockClear();
@@ -539,7 +564,10 @@ describe("ReaderPage", () => {
     mockSurfaceRect(surface, { left: 100, width: 1000 });
 
     // 左端タップ (ratio = 0.299 < 0.30) -> 次頁 (0 -> 1)
-    fireEvent.click(surface, { clientX: 399 });
+    await act(async () => {
+      fireEvent.click(surface, { clientX: 399 });
+      await flushMicrotasks();
+    });
     expect(getLatestHudProps().currentPageIndex).toBe(1);
 
     // 中央境界 (ratio = 0.30, 0.70) -> HUD トグル (true -> false -> true)
@@ -549,7 +577,10 @@ describe("ReaderPage", () => {
     expect(getLatestHudProps().isOpen).toBe(true);
 
     // 右端タップ (ratio = 0.701 > 0.70) -> 前頁 (1 -> 0)
-    fireEvent.click(surface, { clientX: 801 });
+    await act(async () => {
+      fireEvent.click(surface, { clientX: 801 });
+      await flushMicrotasks();
+    });
     expect(getLatestHudProps().currentPageIndex).toBe(0);
 
     // 先頭ページでさらに前頁・末尾ページでさらに次頁は境界クランプされる
@@ -557,45 +588,63 @@ describe("ReaderPage", () => {
     expect(getLatestHudProps().currentPageIndex).toBe(0);
 
     // pointerdown -> pointerup -> click の連続発火時は二重実行されない
-    fireEvent.pointerDown(surface, { clientX: 200, clientY: 300 });
-    fireEvent.pointerUp(surface, { clientX: 205, clientY: 302 });
-    fireEvent.click(surface, { clientX: 205, clientY: 302 });
+    await act(async () => {
+      dispatchPointer(surface, "pointerdown", { clientX: 200, clientY: 300 });
+      dispatchPointer(surface, "pointerup", { clientX: 205, clientY: 302 });
+      fireEvent.click(surface, { clientX: 205, clientY: 302 });
+      await flushMicrotasks();
+    });
     expect(getLatestHudProps().currentPageIndex).toBe(1);
 
     // pointercancel で開始座標がクリアされ、直後の pointerup は無反応になる
-    fireEvent.pointerDown(surface, { clientX: 200, clientY: 300 });
-    fireEvent.pointerCancel(surface);
-    fireEvent.pointerUp(surface, { clientX: 350, clientY: 300 });
+    dispatchPointer(surface, "pointerdown", { clientX: 200, clientY: 300 });
+    dispatchPointer(surface, "pointercancel");
+    dispatchPointer(surface, "pointerup", { clientX: 350, clientY: 300 });
     expect(getLatestHudProps().currentPageIndex).toBe(1);
 
     // 横スワイプ dx >= 40 かつ |dx| > |dy|: 左→右 (dx > 0) で次頁 (1 -> 2)
-    fireEvent.pointerDown(surface, { clientX: 500, clientY: 300 });
-    fireEvent.pointerUp(surface, { clientX: 560, clientY: 310 });
+    await act(async () => {
+      dispatchPointer(surface, "pointerdown", { clientX: 500, clientY: 300 });
+      dispatchPointer(surface, "pointerup", { clientX: 560, clientY: 310 });
+      await flushMicrotasks();
+    });
     expect(getLatestHudProps().currentPageIndex).toBe(2);
 
     // 横スワイプ右→左 (dx < 0) で前頁 (2 -> 1)
-    fireEvent.pointerDown(surface, { clientX: 560, clientY: 300 });
-    fireEvent.pointerUp(surface, { clientX: 500, clientY: 310 });
+    await act(async () => {
+      dispatchPointer(surface, "pointerdown", { clientX: 560, clientY: 300 });
+      dispatchPointer(surface, "pointerup", { clientX: 500, clientY: 310 });
+      await flushMicrotasks();
+    });
     expect(getLatestHudProps().currentPageIndex).toBe(1);
 
     // 縦移動が大きい斜めドラッグ (|dx| >= 40 だが |dx| <= |dy|) はスワイプ扱いせずタップ判定
-    fireEvent.pointerDown(surface, { clientX: 600, clientY: 200 });
-    fireEvent.pointerUp(surface, { clientX: 650, clientY: 260 }); // clientX=650 => ratio=0.55 => HUDトグル
+    dispatchPointer(surface, "pointerdown", { clientX: 600, clientY: 200 });
+    dispatchPointer(surface, "pointerup", { clientX: 650, clientY: 260 }); // clientX=650 => ratio=0.55 => HUDトグル
     expect(getLatestHudProps().isOpen).toBe(false);
 
     // キーボード ArrowLeft (次頁) / ArrowRight (前頁) / その他キー(無反応)
     fireEvent.keyDown(window, { key: "Enter" });
     expect(getLatestHudProps().currentPageIndex).toBe(1);
 
-    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "ArrowLeft" });
+      await flushMicrotasks();
+    });
     expect(getLatestHudProps().currentPageIndex).toBe(2);
-    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "ArrowLeft" });
+      await flushMicrotasks();
+    });
     expect(getLatestHudProps().currentPageIndex).toBe(3);
     // 最終ページ上限クランプ
     fireEvent.keyDown(window, { key: "ArrowLeft" });
     expect(getLatestHudProps().currentPageIndex).toBe(3);
 
-    fireEvent.keyDown(window, { key: "ArrowRight" });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+      await flushMicrotasks();
+    });
     expect(getLatestHudProps().currentPageIndex).toBe(2);
   });
 
@@ -653,6 +702,7 @@ describe("ReaderPage", () => {
 
       // initialSnapshot 状態（runtime === null）でも登録済み exitFn で安全に TR-08 実行できること
       window.history.replaceState(null, "", "/read/local");
+      const snapshotClearAllTextures = vi.fn();
       const registeredExit: { current: (() => void) | null } = {
         current: null,
       };
@@ -667,10 +717,17 @@ describe("ReaderPage", () => {
           isHudOpen: false,
         },
       });
+      act(() => {
+        getLatestCanvasProps().onRendererReady?.({
+          deletePageTexture: vi.fn(),
+          clearAllTextures: snapshotClearAllTextures,
+        });
+      });
       expect(registeredExit.current).not.toBeNull();
       act(() => {
         registeredExit.current?.();
       });
+      expect(snapshotClearAllTextures).toHaveBeenCalledTimes(1);
       expect(useLocalReaderSessionStore.getState().session).toBeNull();
       expect(window.location.pathname).toBe("/");
     } finally {
@@ -802,6 +859,7 @@ describe("ReaderPage", () => {
     unmountEmpty();
 
     // 3. openArchive が AbortError を投げた場合や遅延解決は無視される
+    errorViewSpy.mockClear();
     const openDeferred = createDeferred<OpenArchiveResult>();
     const abortSession = createMockCoordinatorSession({
       openArchive: vi.fn(async () => {
@@ -862,11 +920,10 @@ describe("ReaderPage", () => {
     });
     unmountWebgl();
 
-    // 5. totalPages === 0 かつ isOpening=false の境界でもページ移動しない
+    // 5. totalPages === 0 かつ isOpening省略(=false)の境界でもページ移動しない
     renderWithSession({
       initialSnapshot: {
         totalPages: 0,
-        isOpening: false,
       },
     });
     fireEvent.keyDown(window, { key: "ArrowLeft" });
