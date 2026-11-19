@@ -1,0 +1,108 @@
+import groovy.json.JsonSlurper
+
+apply plugin: 'com.android.application'
+
+android {
+    namespace = "com.yommy.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+
+    // AC-APK-02: CI ランナー (BUILD_NUMBER / BUILD_NAME)、Gradle プロパティ、または package.json (SSOT) から versionCode / versionName を動的に解決
+    def packageJson = new JsonSlurper().parse(file('../../package.json'))
+    def appVersionCode = Integer.parseInt(System.getenv("BUILD_NUMBER") ?: (project.findProperty("versionCode") ?: "1"))
+    def appVersionName = System.getenv("BUILD_NAME") ?: (project.findProperty("versionName") ?: packageJson.version)
+
+    defaultConfig {
+        applicationId "com.yommy.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode appVersionCode
+        versionName appVersionName
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    // AC-APK-01: 上書きインストール互換性を保つための共通固定デバッグ署名
+    // CI 署名設定: 環境変数（ANDROID_KEYSTORE_BASE64 等）が存在する場合は Base64 デコードされた Keystore で署名し、未設定時は debug.keystore へ安全にフォールバック
+    def keystoreBase64 = System.getenv("ANDROID_KEYSTORE_BASE64")
+    def defaultDebugKeystore = file('../debug.keystore')
+    def resolvedKeystore = defaultDebugKeystore
+    def resolvedStorePassword = 'android'
+    def resolvedKeyAlias = 'androiddebugkey'
+    def resolvedKeyPassword = 'android'
+
+    if (keystoreBase64) {
+        def ciKeystoreFile = file("${buildDir}/ci-signing.keystore")
+        if (!ciKeystoreFile.parentFile.exists()) {
+            ciKeystoreFile.parentFile.mkdirs()
+        }
+        ciKeystoreFile.bytes = keystoreBase64.decodeBase64()
+        resolvedKeystore = ciKeystoreFile
+        resolvedStorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: 'android'
+        resolvedKeyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: 'androiddebugkey'
+        resolvedKeyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: resolvedStorePassword
+    }
+
+    signingConfigs {
+        debug {
+            storeFile file('../debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+            if (keystoreBase64) {
+                storeFile resolvedKeystore
+                storePassword resolvedStorePassword
+                keyAlias resolvedKeyAlias
+                keyPassword resolvedKeyPassword
+            }
+        }
+        release {
+            storeFile resolvedKeystore
+            storePassword resolvedStorePassword
+            keyAlias resolvedKeyAlias
+            keyPassword resolvedKeyPassword
+        }
+    }
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    implementation "com.google.android.gms:play-services-auth:21.4.0"
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
