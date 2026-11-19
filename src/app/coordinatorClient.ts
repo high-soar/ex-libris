@@ -38,6 +38,18 @@ function defaultWrapWorker(
   );
 }
 
+function wrapCoordinatorWorker(
+  worker: CoordinatorWorkerHandle,
+  wrapWorker: (worker: CoordinatorWorkerHandle) => CoordinatorRemoteProxy,
+): CoordinatorRemoteProxy {
+  try {
+    return wrapWorker(worker);
+  } catch (error) {
+    worker.terminate();
+    throw error;
+  }
+}
+
 export function createCoordinatorSession(
   deps: CreateCoordinatorSessionDeps = {},
 ): CoordinatorSessionHandle {
@@ -46,7 +58,10 @@ export function createCoordinatorSession(
   registerErrorHandler();
 
   const worker = (deps.createWorker ?? defaultCreateWorker)();
-  const api = (deps.wrapWorker ?? defaultWrapWorker)(worker);
+  const api = wrapCoordinatorWorker(
+    worker,
+    deps.wrapWorker ?? defaultWrapWorker,
+  );
   let disposed = false;
 
   return {

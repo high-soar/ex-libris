@@ -15,6 +15,12 @@ export interface ServiceProviderProps {
   readonly createCoordinatorSession?: () => CoordinatorSessionHandle;
 }
 
+function createDefaultAppBridge(): AppBridge {
+  return Capacitor.isNativePlatform()
+    ? new CapacitorAppBridge()
+    : new MockAppBridge();
+}
+
 export function ServiceProvider({
   children,
   appBridge,
@@ -27,9 +33,7 @@ export function ServiceProvider({
       return appBridge;
     }
     if (!fallbackAppBridgeRef.current) {
-      fallbackAppBridgeRef.current = Capacitor.isNativePlatform()
-        ? new CapacitorAppBridge()
-        : new MockAppBridge();
+      fallbackAppBridgeRef.current = createDefaultAppBridge();
     }
     return fallbackAppBridgeRef.current;
   }, [appBridge]);

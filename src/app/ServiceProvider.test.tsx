@@ -59,10 +59,13 @@ describe("ServiceProvider", () => {
 
     render(<InjectedServices />);
     expect(screen.getByTestId("story-bridge-kind")).toHaveTextContent(
-      "MockAppBridge",
+      "CustomAppBridge",
     );
     expect(window.__exLibrisServices?.isReady).toBe(true);
-    expect(window.__exLibrisServices?.appBridge).toBeInstanceOf(MockAppBridge);
+    expect(window.__exLibrisServices?.appBridge).toBeDefined();
+    expect(window.__exLibrisServices?.appBridge).not.toBeInstanceOf(
+      MockAppBridge,
+    );
   });
 
   it("Capacitor.isNativePlatform()がfalseのときはMockAppBridgeを自動構築し参照を安定維持すること", () => {

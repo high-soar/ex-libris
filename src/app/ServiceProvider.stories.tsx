@@ -43,7 +43,10 @@ function ServiceStatusPreview() {
   );
 }
 
-const injectedMockBridge = new MockAppBridge();
+const injectedCustomBridge = {
+  addBackButtonListener: () => () => {},
+  minimizeApp: async () => {},
+};
 const injectedCreateCoordinatorSession = () => ({
   api: {} as CoordinatorWorkerApi,
   dispose: () => {},
@@ -72,7 +75,7 @@ export const Default: Story = {
 export const InjectedServices: Story = {
   name: "カスタムDIブリッジ注入状態",
   args: {
-    appBridge: injectedMockBridge,
+    appBridge: injectedCustomBridge,
     createCoordinatorSession: injectedCreateCoordinatorSession,
     children: <ServiceStatusPreview />,
   },

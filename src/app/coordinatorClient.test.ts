@@ -171,5 +171,18 @@ describe("coordinatorClient", () => {
     // 2回目の dispose() は disposed 済みのため再送出せずノーオペ
     expect(() => throwingSession.dispose()).not.toThrow();
     expect(terminateAfterError).toHaveBeenCalledTimes(1);
+
+    // wrapWorker が失敗した場合は生成済み Worker を即座に terminate して再送出すること
+    const terminateOnWrapFail = vi.fn();
+    expect(() =>
+      createCoordinatorSession({
+        registerErrorHandler: vi.fn(),
+        createWorker: () => ({ terminate: terminateOnWrapFail }),
+        wrapWorker: () => {
+          throw new Error("wrap failure");
+        },
+      }),
+    ).toThrow("wrap failure");
+    expect(terminateOnWrapFail).toHaveBeenCalledTimes(1);
   });
 });
