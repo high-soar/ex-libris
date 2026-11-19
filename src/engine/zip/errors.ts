@@ -9,3 +9,10 @@ export class ZipArchiveError extends Error {
     this.code = code;
   }
 }
+
+export function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException || error instanceof Error) &&
+    error.name === "AbortError"
+  );
+}

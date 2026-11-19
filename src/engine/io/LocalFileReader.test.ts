@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ZipArchiveError } from "../zip/errors";
 import { LocalFileReader } from "./LocalFileReader";
 
@@ -9,6 +9,10 @@ function createTestFile(bytes: Uint8Array, name = "comic.cbz"): File {
 }
 
 describe("LocalFileReader", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("sourceIdとtotalSizeをFile情報から正しく構築すること (AC-ENG-01)", () => {
     const file = createTestFile(new Uint8Array([1, 2, 3, 4]), "vol01.zip");
     const reader = new LocalFileReader(file);

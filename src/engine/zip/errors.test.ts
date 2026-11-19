@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ZipArchiveError } from "./errors";
+import { ZipArchiveError, isAbortError } from "./errors";
 
 describe("ZipArchiveError", () => {
   it("エラーコード・メッセージ・Error継承を正しく設定すること", () => {
@@ -19,5 +19,21 @@ describe("ZipArchiveError", () => {
 
     expect(error.code).toBe("READ_ERROR");
     expect(error.cause).toBe(rootCause);
+  });
+});
+
+describe("isAbortError", () => {
+  it("DOMExceptionおよびErrorのAbortErrorのみtrueを返しそれ以外はfalseを返すこと", () => {
+    expect(isAbortError(new DOMException("Aborted", "AbortError"))).toBe(true);
+    const namedError = new Error("Aborted");
+    namedError.name = "AbortError";
+    expect(isAbortError(namedError)).toBe(true);
+
+    expect(isAbortError(new DOMException("Denied", "NotAllowedError"))).toBe(
+      false,
+    );
+    expect(isAbortError(new Error("generic"))).toBe(false);
+    expect(isAbortError("AbortError")).toBe(false);
+    expect(isAbortError(null)).toBe(false);
   });
 });

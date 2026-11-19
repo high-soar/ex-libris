@@ -1,12 +1,5 @@
 import type { RandomAccessReader } from "../types";
-import { ZipArchiveError } from "../zip/errors";
-
-function isAbortError(error: unknown): boolean {
-  return (
-    (error instanceof DOMException || error instanceof Error) &&
-    error.name === "AbortError"
-  );
-}
+import { ZipArchiveError, isAbortError } from "../zip/errors";
 
 export class LocalFileReader implements RandomAccessReader {
   readonly sourceId: string;
