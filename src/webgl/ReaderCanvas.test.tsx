@@ -247,6 +247,8 @@ describe("ReaderCanvas", () => {
     );
     expect(canvas).toHaveAttribute("data-rendered-page", "");
     expect(canvas).toHaveAttribute("data-rendered-epoch", "");
+    expect(mocks.createProgram).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteProgram).not.toHaveBeenCalled();
 
     // アンマウント時にハンドルを null 通知し、renderer を dispose する
     unmount();

@@ -58,6 +58,17 @@ function readElementCssSize(
   };
 }
 
+function createRendererHandle(renderer: WebGLRendererCore): ReaderCanvasHandle {
+  return {
+    deletePageTexture: (pageIndex) => {
+      renderer.deletePageTexture(pageIndex);
+    },
+    clearAllTextures: () => {
+      renderer.clearAllTextures();
+    },
+  };
+}
+
 export function ReaderCanvas({
   frame,
   onRendererReady,
@@ -108,20 +119,27 @@ export function ReaderCanvas({
 
   useEffect(() => {
     const canvas = canvasRef.current as HTMLCanvasElement;
+    const reportFatalError = (
+      code: WebGLFatalErrorCode,
+      logMessage: string,
+      detail: string,
+      userMessage: string,
+    ) => {
+      diagnosticLogger.error("webgl2", logMessage, detail);
+      setStatus("error");
+      onRendererReadyRef.current?.(null);
+      onFatalErrorRef.current?.(code, userMessage);
+    };
+
     const resolveContext =
       getWebGL2ContextRef.current ?? defaultGetWebGL2Context;
     const gl = resolveContext(canvas);
 
     if (!gl) {
-      diagnosticLogger.error(
-        "webgl2",
+      reportFatalError(
+        "WEBGL_UNSUPPORTED",
         DEFAULT_INIT_ERROR_MESSAGE,
         "WebGL2 context unavailable",
-      );
-      setStatus("error");
-      onRendererReadyRef.current?.(null);
-      onFatalErrorRef.current?.(
-        "WEBGL_UNSUPPORTED",
         DEFAULT_INIT_ERROR_MESSAGE,
       );
       return;
@@ -132,29 +150,19 @@ export function ReaderCanvas({
       renderer = new WebGLRendererCore(gl);
     } catch (error) {
       const message = getWebGLInitErrorMessage(error);
-      diagnosticLogger.error(
-        "webgl2",
+      reportFatalError(
+        "WEBGL_INIT_FAILED",
         "WebGLRendererCore initialization failed",
         message,
+        message,
       );
-      setStatus("error");
-      onRendererReadyRef.current?.(null);
-      onFatalErrorRef.current?.("WEBGL_INIT_FAILED", message);
       return;
     }
 
     rendererRef.current = renderer;
     isContextLostRef.current = false;
 
-    const handle: ReaderCanvasHandle = {
-      deletePageTexture: (pageIndex) => {
-        renderer.deletePageTexture(pageIndex);
-      },
-      clearAllTextures: () => {
-        renderer.clearAllTextures();
-      },
-    };
-
+    const handle = createRendererHandle(renderer);
     const syncSize = (entry?: ResizeObserverEntry): boolean => {
       const { width, height } = readElementCssSize(canvas, entry);
       const dpr = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
@@ -182,14 +190,12 @@ export function ReaderCanvas({
         renderer.reinitializeAfterContextLost();
       } catch (error) {
         const message = getWebGLInitErrorMessage(error);
-        diagnosticLogger.error(
-          "webgl2",
+        reportFatalError(
+          "WEBGL_INIT_FAILED",
           "WebGL2 context restoration failed",
           message,
+          message,
         );
-        setStatus("error");
-        onRendererReadyRef.current?.(null);
-        onFatalErrorRef.current?.("WEBGL_INIT_FAILED", message);
         return;
       }
 
