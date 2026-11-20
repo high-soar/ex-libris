@@ -2,8 +2,8 @@
 type: spec-feature
 title: "仮想本棚ホーム画面仕様書（SCR-01: Bookshelf）"
 description: "SCR-01（/）のダークテーマシェル、ローカルZIP/CBZ選択導線（Web D&D・Android SAF互換）、診断ログコピー、およびTR-02a遷移仕様の正本"
-status: "Review (#1)"
-updated: "2026-11-19"
+status: "Approved"
+updated: "2026-11-20"
 tags: [feature, bookshelf, scr-01, local-zip, saf, diagnostics, ui]
 related_specs:
   - docs/index.md
