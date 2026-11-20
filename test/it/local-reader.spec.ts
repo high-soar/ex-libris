@@ -5,6 +5,7 @@ import {
   buildPartialCorruptArchive,
   buildSyntheticThreePageArchive,
   readPngCenterPixel,
+  resetTestDatabase,
   trackPageErrors,
   waitForServicesReady,
 } from "./helpers";
@@ -16,6 +17,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     const pageErrors = trackPageErrors(page);
     await page.goto("/");
     await waitForServicesReady(page);
+    await resetTestDatabase(page);
 
     const archiveBytes = buildSyntheticThreePageArchive();
     await page.getByTestId("local-zip-file-input").setInputFiles({
@@ -162,6 +164,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     const pageErrors = trackPageErrors(page);
     await page.goto("/");
     await waitForServicesReady(page);
+    await resetTestDatabase(page);
 
     await page.getByTestId("local-zip-file-input").setInputFiles({
       name: "comic-vol02.zip",
@@ -202,6 +205,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     const pageErrors = trackPageErrors(page);
     await page.goto("/read/local");
     await waitForServicesReady(page);
+    await resetTestDatabase(page);
 
     await expect(page).toHaveURL(/\/$/);
     await expect(page.getByTestId("bookshelf-empty")).toBeVisible();
@@ -234,6 +238,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     const pageErrors = trackPageErrors(page);
     await page.goto("/");
     await waitForServicesReady(page);
+    await resetTestDatabase(page);
 
     await page.getByTestId("local-zip-file-input").setInputFiles({
       name: "broken.zip",
@@ -264,6 +269,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     const pageErrors = trackPageErrors(page);
     await page.goto("/");
     await waitForServicesReady(page);
+    await resetTestDatabase(page);
 
     await page.getByTestId("local-zip-file-input").setInputFiles({
       name: "partial-corrupt.zip",
@@ -297,6 +303,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     const pageErrors = trackPageErrors(page);
     await page.goto("/");
     await waitForServicesReady(page);
+    await resetTestDatabase(page);
 
     const minimizeCountOnHome = await page.evaluate(async () => {
       const bridge = window.__exLibrisServices?.appBridge as
@@ -333,6 +340,106 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
 
     await expect(page).toHaveURL(/\/$/);
     await expect(page.getByTestId("bookshelf-empty")).toBeVisible();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("閲覧中のブラウザ戻る(popstate)で'/'へ復帰し直後のgoForward()でもセッションクリア済みのためTR-10により'/'に留まること (R1-15)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "popstate-session.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSyntheticThreePageArchive()),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    await page.goBack();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId("bookshelf-empty")).toBeVisible();
+    await expect(page.getByTestId("reader-error-view")).toHaveCount(0);
+
+    await page.goForward();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId("bookshelf-empty")).toBeVisible();
+    await expect(page.getByTestId("reader-error-view")).toHaveCount(0);
+    await expect(page.getByTestId("reader-page")).toHaveCount(0);
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("EscapeおよびHUD戻るボタンによるTR-08終了後にwindow.history上へ'/'が重複蓄積されず戻れること (R1-15)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    const initialHistoryLength = await page.evaluate(
+      () => window.history.length,
+    );
+
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "history-cycle-1.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSyntheticThreePageArchive()),
+    });
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(page.getByTestId("reader-canvas")).toHaveAttribute(
+      "data-rendered-page",
+      "0",
+    );
+
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId("bookshelf-empty")).toBeVisible();
+    expect(await page.evaluate(() => window.history.length)).toBe(
+      initialHistoryLength + 1,
+    );
+
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "history-cycle-2.zip",
+      mimeType: "application/zip",
+      buffer: Buffer.from(buildSyntheticThreePageArchive()),
+    });
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(page.getByTestId("reader-canvas")).toHaveAttribute(
+      "data-rendered-page",
+      "0",
+    );
+
+    const box = await page
+      .getByTestId("reader-interaction-surface")
+      .boundingBox();
+    expect(box).not.toBeNull();
+    const surfaceBox = box!;
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-top")).toBeVisible();
+    await page.getByTestId("reader-back-button").click();
+
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId("bookshelf-empty")).toBeVisible();
+    expect(await page.evaluate(() => window.history.length)).toBe(
+      initialHistoryLength + 1,
+    );
+    expect(await page.evaluate(() => window.history.state)).toBeNull();
+
+    await page.goBack();
+    await expect(page).toHaveURL("about:blank");
 
     expect(pageErrors).toEqual([]);
   });

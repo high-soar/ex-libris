@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useMemo, useRef } from "react";
 import { CapacitorAppBridge } from "../bridges/app/capacitorAppBridge";
 import { MockAppBridge } from "../bridges/app/mockAppBridge";
 import type { AppBridge } from "../bridges/app/types";
+import { resetTestDb } from "../storage/db";
 import {
   createCoordinatorSession as defaultCreateCoordinatorSession,
   type CoordinatorSessionHandle,
@@ -45,6 +46,7 @@ export function ServiceProvider({
     window.__exLibrisServices = {
       isReady: true,
       appBridge: resolvedAppBridge,
+      resetTestDb: () => resetTestDb(),
     };
   }, [resolvedAppBridge]);
 

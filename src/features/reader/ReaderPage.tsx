@@ -425,7 +425,7 @@ export function ReaderPage({
       return;
     }
 
-    const handlePopState = () => {
+    const cleanupIfLeftReaderRoute = () => {
       const windowPath = `${window.location.pathname}${window.location.search}`;
       if (
         matchRoute(windowPath).name !== "reader-local" &&
@@ -437,9 +437,10 @@ export function ReaderPage({
       }
     };
 
-    window.addEventListener("popstate", handlePopState);
+    window.addEventListener("popstate", cleanupIfLeftReaderRoute);
     return () => {
-      window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener("popstate", cleanupIfLeftReaderRoute);
+      cleanupIfLeftReaderRoute();
     };
   }, [clearSession, initialSnapshot, releaseResources, session]);
 

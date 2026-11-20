@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
+import { APP_VERSION } from "../../src/shared/constants/app";
 import {
   buildSyntheticThreePageArchive,
   createFileDataTransfer,
+  resetTestDatabase,
   trackPageErrors,
   waitForServicesReady,
 } from "./helpers";
@@ -15,12 +17,13 @@ test.describe("SCN-01: 初期シェル起動・WebGL2環境・診断ログ・ロ
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await page.goto("/");
     await waitForServicesReady(page);
+    await resetTestDatabase(page);
 
     await expect(page.getByTestId("app-root")).toHaveAttribute(
       "data-app-ready",
       "true",
     );
-    await expect(page.getByTestId("app-version")).toHaveText("v0.0.0");
+    await expect(page.getByTestId("app-version")).toHaveText(`v${APP_VERSION}`);
     await expect(page.getByTestId("bookshelf-empty")).toBeVisible();
     await expect(page.getByTestId("bookshelf-empty")).toHaveAttribute(
       "data-drag-active",
@@ -41,6 +44,13 @@ test.describe("SCN-01: 初期シェル起動・WebGL2環境・診断ログ・ロ
     await expect(page.getByTestId("copy-diagnostics-status")).toHaveText(
       "診断ログをコピーしました",
     );
+    const initialClipboardText = await page.evaluate(() =>
+      navigator.clipboard.readText(),
+    );
+    expect(initialClipboardText).toContain("# ExLibris Diagnostic Report");
+    expect(initialClipboardText).toContain(
+      "[INFO] [app] ExLibris shell initialized",
+    );
 
     const [headerFileChooser] = await Promise.all([
       page.waitForEvent("filechooser"),
@@ -60,6 +70,22 @@ test.describe("SCN-01: 初期シェル起動・WebGL2環境・診断ログ・ロ
       "対応形式は .zip または .cbz ファイルのみです",
     );
 
+    await page.getByTestId("copy-diagnostics-button").click();
+    await expect
+      .poll(async () => page.evaluate(() => navigator.clipboard.readText()))
+      .toContain("[WARN] [bookshelf] Unsupported archive extension");
+    const updatedClipboardText = await page.evaluate(() =>
+      navigator.clipboard.readText(),
+    );
+    expect(updatedClipboardText).toContain("# ExLibris Diagnostic Report");
+    expect(updatedClipboardText).toContain(
+      "[INFO] [app] ExLibris shell initialized",
+    );
+    expect(updatedClipboardText).toContain(
+      "[WARN] [bookshelf] Unsupported archive extension",
+    );
+    expect(updatedClipboardText).toContain("unsupported.pdf");
+
     expect(pageErrors).toEqual([]);
   });
 
@@ -69,6 +95,7 @@ test.describe("SCN-01: 初期シェル起動・WebGL2環境・診断ログ・ロ
     const pageErrors = trackPageErrors(page);
     await page.goto("/");
     await waitForServicesReady(page);
+    await resetTestDatabase(page);
 
     const [cardFileChooser] = await Promise.all([
       page.waitForEvent("filechooser"),
@@ -95,6 +122,7 @@ test.describe("SCN-01: 初期シェル起動・WebGL2環境・診断ログ・ロ
     const pageErrors = trackPageErrors(page);
     await page.goto("/");
     await waitForServicesReady(page);
+    await resetTestDatabase(page);
 
     const mainDropZone = page.locator("main");
     const emptyCard = page.getByTestId("bookshelf-empty");
@@ -144,6 +172,25 @@ test.describe("SCN-01: 初期シェル起動・WebGL2環境・診断ログ・ロ
     await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
     await expect(canvas).toHaveAttribute("data-rendered-page", "0");
     await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("未知パス(/unknown-route)へ直接アクセスしても例外なくSCR-01へ安全フォールバックすること", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.goto("/unknown-route");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    await expect(page.getByTestId("app-root")).toHaveAttribute(
+      "data-app-ready",
+      "true",
+    );
+    await expect(page.getByTestId("bookshelf-empty")).toBeVisible();
+    await expect(page.getByTestId("reader-page")).toHaveCount(0);
+    await expect(page.getByTestId("reader-error-view")).toHaveCount(0);
 
     expect(pageErrors).toEqual([]);
   });

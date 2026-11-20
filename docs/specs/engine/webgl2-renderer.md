@@ -3,13 +3,14 @@ type: spec-engine
 title: "生 WebGL2 レンダラー＆L1キャッシュ仕様書"
 description: "WebGLRendererCore のハードウェア Mipmap 描画、DPR 追従、webglcontextlost 復帰、および L1PageCache の ImageBitmap.close() 厳格解放規約の正本"
 status: "Review (#1)"
-updated: "2026-11-19"
+updated: "2026-11-20"
 tags: [engine, webgl2, mipmap, l1-cache, imagebitmap, vram]
 related_specs:
   - docs/index.md
   - docs/specs/requirements.md
   - docs/specs/architecture.md
   - docs/specs/engine/zip-streaming.md
+  - docs/specs/features/reader.md
   - docs/guidelines/testing.md
 related_tests:
   - src/webgl/l1PageCache.test.ts
@@ -33,7 +34,7 @@ WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React D
 
 | モジュールパス                   | 責務                                                                                                            |
 | :------------------------------- | :-------------------------------------------------------------------------------------------------------------- |
-| `src/webgl/l1PageCache.ts`       | `L1_MAX_PAGES = 5` 上限の L1 `ImageBitmap` ＋ ページ状態（`loading` / `ready` / `error`）管理と即時 `close()`   |
+| `src/webgl/l1PageCache.ts`       | `L1_MAX_PAGES = 5` 上限の L1 `ImageBitmap` ＋ ページ状態（`ready` / `error`）管理と即時 `close()`               |
 | `src/webgl/shaders.ts`           | 生 WebGL2 頂点シェーダー・フラグメントシェーダー GLSL ソース定数（Mipmap 等倍パススルー）                       |
 | `src/webgl/WebGLRendererCore.ts` | WebGL2 パイプライン本体（シェーダー初期化、テクスチャアップロード＋`generateMipmap`、アスペクト維持描画、復帰） |
 | `src/webgl/ReaderCanvas.tsx`     | `<canvas>` マウント、`ResizeObserver` DPR 追従、`webglcontextlost`/`restored` イベント配線、決定論的 DOM 属性   |
@@ -52,9 +53,9 @@ WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React D
 ### 2.2 退避・解放ルール（`bitmap.close()` 不変条件）
 
 1. **同一ページ上書き時**: 既存の `ready` エントリが存在する場合は、新しい `bitmap` に差し替える前に旧 `bitmap.close()` と WebGL テクスチャ解放コールバック（`onEvictTexture(pageIndex)`）を必ず実行する。
-2. **古い `requestEpoch` 破棄時**: 現在の有効世代（`minEpoch`）未満の `DecodedPageFrame` が登録要求された場合は、キャッシュへ入れず（`status === "ready"` であれば即座に `frame.bitmap.close()` を実行して）無視する。
-3. **上限超過（Eviction）時**: キャッシュ件数が `L1_MAX_PAGES`（5 枚）を超えた場合、現在保護対象ウィンドウ（例: `[N-1, N, N+1, N+2]`）外の最古 LRU エントリから退避し、即座に `onEvictTexture(evictedPageIndex)` および `evicted.bitmap.close()` を実行する。
-4. **全解放（`clear()` / 巻クローズ / アンマウント時）**: 保持中の全エントリに対して `onEvictTexture` と `bitmap.close()` を実行し、参照を空にする。
+2. **古い `requestEpoch` 破棄時**: 現在の有効世代（`minActiveEpoch`、`setMinActiveEpoch()` で設定）未満の `DecodedPageFrame` が登録要求された場合は、キャッシュへ入れず（`status === "ready"` であれば即座に `frame.bitmap.close()` を実行して）無視する。
+3. **上限超過（Eviction）時**: キャッシュ件数が `L1_MAX_PAGES`（5 枚）を超えた場合、現在保護対象ウィンドウ（例: `[N-1, N, N+1, N+2]`）外の最古 LRU エントリから退避し、対象エントリが `status === "ready"` の場合に `onEvictTexture(evictedPageIndex)` および `evicted.bitmap.close()` を実行する（`error` エントリは Map からの参照削除のみ）。
+4. **全解放（`clear()` / 巻クローズ / アンマウント時）**: 保持中の全エントリに対して、対象エントリが `status === "ready"` の場合に `onEvictTexture` と `bitmap.close()` を実行し（`error` エントリは Map からの参照削除のみ）、参照を空にする。
 
 ---
 

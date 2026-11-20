@@ -6,6 +6,7 @@ import { CapacitorAppBridge } from "../bridges/app/capacitorAppBridge";
 import { MockAppBridge } from "../bridges/app/mockAppBridge";
 import type { AppBridge } from "../bridges/app/types";
 import type { CoordinatorWorkerApi } from "../engine/types";
+import { db, resetTestDb } from "../storage/db";
 import { ServiceProvider } from "./ServiceProvider";
 import * as stories from "./ServiceProvider.stories";
 import {
@@ -34,13 +35,15 @@ function resetGlobalServices(): void {
 }
 
 describe("ServiceProvider", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetGlobalServices();
+    await resetTestDb();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks();
     resetGlobalServices();
+    await resetTestDb();
   });
 
   it("DefaultおよびInjectedServicesストーリーを描画しグローバル初期化フラグを設定すること", () => {
@@ -53,6 +56,9 @@ describe("ServiceProvider", () => {
     );
     expect(window.__exLibrisServices?.isReady).toBe(true);
     expect(window.__exLibrisServices?.appBridge).toBeInstanceOf(MockAppBridge);
+    expect(window.__exLibrisServices?.resetTestDb).toEqual(
+      expect.any(Function),
+    );
     unmount();
 
     resetGlobalServices();
@@ -65,6 +71,9 @@ describe("ServiceProvider", () => {
     expect(window.__exLibrisServices?.appBridge).toBeDefined();
     expect(window.__exLibrisServices?.appBridge).not.toBeInstanceOf(
       MockAppBridge,
+    );
+    expect(window.__exLibrisServices?.resetTestDb).toEqual(
+      expect.any(Function),
     );
   });
 
@@ -90,6 +99,7 @@ describe("ServiceProvider", () => {
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: captured[0]?.appBridge,
+      resetTestDb: expect.any(Function),
     });
 
     // 再レンダー時も同一の MockAppBridge インスタンスを維持すること
@@ -120,6 +130,7 @@ describe("ServiceProvider", () => {
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: capturedBridge,
+      resetTestDb: expect.any(Function),
     });
   });
 
@@ -156,6 +167,7 @@ describe("ServiceProvider", () => {
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: customBridge1,
+      resetTestDb: expect.any(Function),
     });
 
     rerender(
@@ -171,6 +183,27 @@ describe("ServiceProvider", () => {
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: customBridge2,
+      resetTestDb: expect.any(Function),
     });
+  });
+
+  it("window.__exLibrisServices.resetTestDbが公開され呼び出しによりsyncMeta等のDBテーブルを初期化できること (R1-17)", async () => {
+    render(
+      <ServiceProvider>
+        <div>ready</div>
+      </ServiceProvider>,
+    );
+
+    await db.syncMeta.put({
+      key: "itPollutionGuard",
+      value: "stale-record",
+    });
+    expect(await db.syncMeta.count()).toBe(1);
+
+    const resetFn = window.__exLibrisServices?.resetTestDb;
+    expect(resetFn).toEqual(expect.any(Function));
+    await resetFn!();
+
+    expect(await db.syncMeta.count()).toBe(0);
   });
 });

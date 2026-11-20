@@ -3,11 +3,12 @@ type: spec-feature
 title: "WebGL2 ストリーミングリーダー画面仕様書（SCR-03: Reader）"
 description: "SCR-03（/read/local）の右開き単ページ閲覧、タップ/スワイプ/キー操作、最小HUD開閉、異常系復帰、およびTR-08/TR-10リソース解放仕様の正本"
 status: "Review (#1)"
-updated: "2026-11-19"
+updated: "2026-11-20"
 tags: [feature, reader, scr-03, rtl, hud, touch, webgl2, back-button]
 related_specs:
   - docs/index.md
   - docs/specs/requirements.md
+  - docs/specs/architecture.md
   - docs/specs/screen-transitions.md
   - docs/specs/engine/zip-streaming.md
   - docs/specs/engine/webgl2-renderer.md
@@ -39,13 +40,13 @@ related_tests:
 1. **セッション不在フォールバック（`TR-10`）**:
    - `/read/local` マウント時にオンメモリセッション（`useLocalReaderSessionStore.session`）が `null` の場合（リロードや URL 直接入力時）、エラー画面や空白で停止せず、即座に `router.replace("/")` で `SCR-01` へ遷移する。
 2. **リーダー終了と完全リソース解放（`TR-08`）**:
-   - 上部 HUD の「戻る」ボタン、`Escape` キー、エラー画面の「ホームへ戻る」ボタン、または Android ハードウェア戻るボタン（`AppBridge` `backButton`）で発動する。
+   - 上部 HUD の「戻る」ボタン、`Escape` キー、エラー画面の「ホームへ戻る」ボタン、Android ハードウェア戻るボタン（`AppBridge` `backButton`）、またはブラウザ戻る（`popstate`）によるルート離脱で発動する。
    - 以下の順序でリソースを確定解放した上で `/` へ戻る：
      1. 進行中 `requestEpoch` を無効化（`cancelEpochBelow`）＋ `CoordinatorWorker.closeArchive()` 呼び出し
      2. `L1PageCache.clear()` により保持中の全 `ImageBitmap.close()` ＋ `WebGLRendererCore` 全テクスチャ `gl.deleteTexture()` 実行
      3. `WebGLRendererCore.dispose()` 実行
      4. オンメモリ `File` セッションを `null` へクリア
-     5. `router.navigate("/", { replace: true })`（または適切な履歴戻り）
+     5. `router.back()`（`pushState` 履歴戻り、直接遷移等では `router.replace("/")`、`popstate` 時は現在履歴を維持）
 
 ---
 
@@ -133,7 +134,7 @@ related_tests:
 | `AC-RD-03` | 右開き（`rtl`）ルールで左 30% タップ／左→右スワイプ／`ArrowLeft` が次ページ、右 30% タップ／右→左スワイプ／`ArrowRight` が前ページへ移動する。             |
 | `AC-RD-04` | 下部 HUD に 1 始まりの `N / Total` と「← 次へ」「前へ →」ボタンが表示され、先頭・末尾ページで適切に `disabled` になる。                                    |
 | `AC-RD-05` | 連続めくり時に `requestEpoch` が更新され、古い要求の進行中 I/O 中断および遅延到着 `ImageBitmap` の即時 `close()` が行われる。                              |
-| `AC-RD-06` | 破損・空・暗号化・未対応圧縮・ZIP64・WebGL2 失敗時は診断ログ記録の上で理由別エラー画面と「ホームへ戻る」を表示する。                                       |
+| `AC-RD-06` | 破損・空・暗号化・未対応圧縮・ZIP64・読込失敗（`READ_ERROR`）・WebGL2 失敗時は診断ログ記録の上で理由別エラー画面と「ホームへ戻る」を表示する。             |
 | `AC-RD-07` | 個別ページのみのデコード失敗時は当該ページのみエラー表示とし、前後ページへの移動を阻害しない。                                                             |
 | `AC-RD-08` | 戻るボタン・`Escape` キー・Android ハードウェア戻るボタンで `TR-08`（Worker 停止・L1 `bitmap.close()`・WebGL 破棄・セッションクリア）を実行し `/` へ戻る。 |
 | `AC-RD-09` | 対象 TSX/TS ファイルすべてが 1 対 1 Story/UT・親子分離・C0/C1/Functions/Lines 100%・1280px/375px VRT を PASS する。                                        |
