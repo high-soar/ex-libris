@@ -3,7 +3,7 @@ type: spec-architecture
 title: "4層＋マルチスレッドアーキテクチャと共通インターフェース契約"
 description: "Streaming & Provider・Engine Worker・Storage・Viewer & Bridge の4層責務境界、Zero-Copy 転送、メモリ予算定数、および TypeScript コア契約の正本"
 status: "Review (#1)"
-updated: "2026-11-19"
+updated: "2026-11-20"
 tags: [architecture, web-worker, webgl2, comlink, capacitor, cache, oauth]
 related_specs:
   - docs/index.md
@@ -24,6 +24,7 @@ related_tests:
   - src/engine/io/LocalFileReader.test.ts
   - src/engine/workers/CoordinatorCore.test.ts
   - src/engine/workers/comlinkErrorHandler.test.ts
+  - src/engine/workers/coordinatorTransfer.test.ts
   - src/engine/zip/zipParser.test.ts
   - src/features/reader/localReaderSessionStore.test.ts
   - src/shared/constants/app.test.ts
@@ -59,7 +60,7 @@ flowchart TB
     subgraph CoordThread["Coordinator Worker (Streaming, ZIP64 & L2 Layer)"]
         Coord["CoordinatorCore (Comlink Endpoint + Epoch Guard)"]
         Prefetch["AdaptivePrefetcher (Fast-Path + 10MB Byte Budget / 64KB Gap Coalesce)"]
-        ZipParser["ZipParserCore (Tail 128KB + ZIP64 + CP932 + 1-RTT LFH Slicer)"]
+        ZipParser["ZipParserCore (論理名 / zipParser.ts: parseZipDirectory・readCompressedPageSlice)"]
         L2["L2ByteCache (Compressed Uint8Array: 80MB LRU)"]
         Reader["RandomAccessReader (GoogleDriveRange / LocalFile)"]
     end
