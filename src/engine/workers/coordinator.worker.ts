@@ -1,13 +1,13 @@
 import * as Comlink from "comlink";
 import { ENGINE_BUDGETS } from "../constants";
-import type {
-  CoordinatorWorkerApi,
-  DecodeWorkerApi,
-  DecodedPageFrame,
-} from "../types";
+import type { CoordinatorWorkerApi, DecodeWorkerApi } from "../types";
 import { CoordinatorCore } from "./CoordinatorCore";
 import { DecodeWorkerPool, type DecodeWorkerHandle } from "./DecodeWorkerPool";
 import { registerZipArchiveErrorTransferHandler } from "./comlinkErrorHandler";
+import {
+  collectFrameTransferables,
+  prepareDecodeTransfer,
+} from "./coordinatorTransfer";
 
 registerZipArchiveErrorTransferHandler();
 
@@ -21,14 +21,9 @@ const workerHandles: DecodeWorkerHandle[] = Array.from(
     return {
       api: {
         decodePageSlice(compressedData, compressionMethod) {
-          const sliceCopy =
-            compressedData.byteOffset === 0 &&
-            compressedData.byteLength === compressedData.buffer.byteLength &&
-            compressedData.buffer instanceof ArrayBuffer
-              ? compressedData
-              : compressedData.slice();
+          const { data, transferables } = prepareDecodeTransfer(compressedData);
           return remote.decodePageSlice(
-            Comlink.transfer(sliceCopy, [sliceCopy.buffer as ArrayBuffer]),
+            Comlink.transfer(data, transferables),
             compressionMethod,
           );
         },
@@ -50,12 +45,7 @@ const api: CoordinatorWorkerApi = {
       prefetchIndices,
       epoch,
     );
-    const transferables: Transferable[] = frames
-      .filter(
-        (frame): frame is Extract<DecodedPageFrame, { status: "ready" }> =>
-          frame.status === "ready",
-      )
-      .map((frame) => frame.bitmap);
+    const transferables = collectFrameTransferables(frames);
     return transferables.length > 0
       ? Comlink.transfer(frames, transferables)
       : frames;

@@ -27,8 +27,12 @@ interface ParsedCandidate {
   readonly compressedSize: number;
   readonly uncompressedSize: number;
   readonly localHeaderOffset: number;
-  physicalEnd: number;
   readonly crc32: number;
+}
+
+interface ParsedCentralDirectoryResult {
+  readonly candidates: ParsedCandidate[];
+  readonly physicalOffsets: number[];
 }
 
 function createDataView(bytes: Uint8Array): DataView {
@@ -155,14 +159,15 @@ async function readCentralDirectoryBuffer(
   return cdBuf;
 }
 
-function parseCentralDirectoryCandidates(
+function parseCentralDirectory(
   cdBuf: Uint8Array,
   totalEntries: number,
   cdOffset: number,
-): ParsedCandidate[] {
+): ParsedCentralDirectoryResult {
   const cdView = createDataView(cdBuf);
   const utf8Decoder = new TextDecoder("utf-8", { fatal: false });
   const candidates: ParsedCandidate[] = [];
+  const physicalOffsets: number[] = [];
   let cursor = 0;
 
   for (let i = 0; i < totalEntries; i += 1) {
@@ -202,6 +207,10 @@ function parseCentralDirectoryCandidates(
     const nameBytes = cdBuf.subarray(cursor + 46, cursor + 46 + fileNameLength);
     const entryName = utf8Decoder.decode(nameBytes);
     cursor = nextCursor;
+
+    if (localHeaderOffset < cdOffset) {
+      physicalOffsets.push(localHeaderOffset);
+    }
 
     if (isJunkOrNonImageEntry(entryName, externalAttributes)) {
       continue;
@@ -246,40 +255,57 @@ function parseCentralDirectoryCandidates(
       compressedSize,
       uncompressedSize,
       localHeaderOffset,
-      physicalEnd: 0,
       crc32,
     });
   }
 
-  return candidates;
+  return { candidates, physicalOffsets };
+}
+
+function findNextPhysicalOffset(
+  sortedOffsets: readonly number[],
+  localHeaderOffset: number,
+  cdOffset: number,
+): number {
+  let low = 0;
+  let high = sortedOffsets.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (sortedOffsets[mid] <= localHeaderOffset) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+  return low < sortedOffsets.length ? sortedOffsets[low] : cdOffset;
 }
 
 function buildLogicalPageEntries(
-  candidates: ParsedCandidate[],
+  parsed: ParsedCentralDirectoryResult,
   cdOffset: number,
 ): ZipPageEntry[] {
-  if (candidates.length === 0) {
+  const sortedOffsets = [...parsed.physicalOffsets].sort((a, b) => a - b);
+  for (let i = 1; i < sortedOffsets.length; i += 1) {
+    if (sortedOffsets[i] <= sortedOffsets[i - 1]) {
+      throw new ZipArchiveError(
+        "CORRUPT_ZIP",
+        `CDHのLFHオフセットが重複しています: ${sortedOffsets[i]}`,
+      );
+    }
+  }
+
+  if (parsed.candidates.length === 0) {
     throw new ZipArchiveError(
       "EMPTY_ARCHIVE",
       "有効な画像ファイルが見つかりませんでした",
     );
   }
 
-  const physicalSorted = [...candidates].sort(
-    (a, b) => a.localHeaderOffset - b.localHeaderOffset,
-  );
-  for (let i = 0; i < physicalSorted.length; i += 1) {
-    physicalSorted[i].physicalEnd =
-      i + 1 < physicalSorted.length
-        ? physicalSorted[i + 1].localHeaderOffset
-        : cdOffset;
-  }
-
   const collator = new Intl.Collator("ja", {
     numeric: true,
     sensitivity: "base",
   });
-  const logicalSorted = [...candidates].sort((a, b) =>
+  const logicalSorted = [...parsed.candidates].sort((a, b) =>
     collator.compare(a.entryName, b.entryName),
   );
 
@@ -291,7 +317,11 @@ function buildLogicalPageEntries(
     compressedSize: item.compressedSize,
     uncompressedSize: item.uncompressedSize,
     localHeaderOffset: item.localHeaderOffset,
-    physicalEnd: item.physicalEnd,
+    physicalEnd: findNextPhysicalOffset(
+      sortedOffsets,
+      item.localHeaderOffset,
+      cdOffset,
+    ),
     crc32: item.crc32,
   }));
 }
@@ -322,13 +352,9 @@ export async function parseZipDirectory(
     tailStart,
     signal,
   );
-  const candidates = parseCentralDirectoryCandidates(
-    cdBuf,
-    eocd.totalEntries,
-    eocd.cdOffset,
-  );
+  const parsed = parseCentralDirectory(cdBuf, eocd.totalEntries, eocd.cdOffset);
 
-  return buildLogicalPageEntries(candidates, eocd.cdOffset);
+  return buildLogicalPageEntries(parsed, eocd.cdOffset);
 }
 
 export async function readCompressedPageSlice(
