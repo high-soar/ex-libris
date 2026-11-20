@@ -28,6 +28,7 @@ def defaultDebugKeystore = file('../debug.keystore')
 def hasLocalDebugKeystore = !anySigningEnvSet && defaultDebugKeystore.exists()
 
 def resolvedKeystore = null
+byte[] resolvedKeystoreBytes = null
 def resolvedStorePassword = null
 def resolvedKeyAlias = null
 def resolvedKeyPassword = null
@@ -48,12 +49,8 @@ if (anySigningEnvSet) {
     }
 
     def ciKeystoreFile = file("${layout.buildDirectory.get().asFile}/ci-signing.keystore")
-    if (!ciKeystoreFile.parentFile.exists()) {
-        ciKeystoreFile.parentFile.mkdirs()
-    }
-    ciKeystoreFile.bytes = decodedKeystoreBytes
-
     resolvedKeystore = ciKeystoreFile
+    resolvedKeystoreBytes = decodedKeystoreBytes
     resolvedStorePassword = envKeystorePassword
     resolvedKeyAlias = envKeyAlias
     resolvedKeyPassword = envKeyPassword
@@ -135,10 +132,31 @@ android {
     }
 }
 
+if (hasEnvKeystore) {
+    def prepareSigningKeystoreTask = tasks.register("prepareCiSigningKeystore") {
+        mustRunAfter(tasks.matching { it.name == "clean" })
+        mustRunAfter(rootProject.tasks.matching { it.name == "clean" })
+        doLast {
+            if (!resolvedKeystore.parentFile.exists()) {
+                resolvedKeystore.parentFile.mkdirs()
+            }
+            resolvedKeystore.bytes = resolvedKeystoreBytes
+        }
+    }
+    tasks.matching { task ->
+        task.name == "preBuild" ||
+        task.name.startsWith("validateSigning") ||
+        task.name.startsWith("package") ||
+        task.name.startsWith("sign")
+    }.configureEach { task ->
+        task.dependsOn(prepareSigningKeystoreTask)
+    }
+}
+
 gradle.taskGraph.whenReady { taskGraph ->
     def requireFixedSigning = (System.getenv("REQUIRE_FIXED_SIGNING") ?: "").trim() == "true"
     def hasReleaseTask = taskGraph.allTasks.any { task ->
-        task.project == project && (task.name ==~ /^(assemble|bundle|package|sign).*Release$/)
+        task.project == project && (task.name ==~ /^(assemble|bundle|package|sign).*Release(Bundle|Apks|UniversalApk)?$/)
     }
     if ((requireFixedSigning || hasReleaseTask) && !hasEnvKeystore) {
         throw new GradleException(

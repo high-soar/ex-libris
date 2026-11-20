@@ -209,6 +209,23 @@ jobs:
           assert_gradle_fails "unsigned ./gradlew assembleRelease" \
             ./gradlew assembleRelease
 
+          assert_gradle_fails "unsigned ./gradlew signReleaseBundle" \
+            ./gradlew signReleaseBundle
+
+          echo "Verifying ./gradlew help with dummy Base64 does not write ci-signing.keystore during Configuration Phase"
+          rm -f app/build/ci-signing.keystore
+          env -u BUILD_NUMBER -u REQUIRE_FIXED_SIGNING \
+            ANDROID_KEYSTORE_BASE64="AQID" \
+            ANDROID_KEYSTORE_PASSWORD="pw" \
+            ANDROID_KEY_ALIAS="alias" \
+            ANDROID_KEY_PASSWORD="pw" \
+            ./gradlew help >/dev/null
+          if [ -e app/build/ci-signing.keystore ]; then
+            echo "::error::ci-signing.keystore must not be created during Configuration Phase (./gradlew help)!"
+            exit 1
+          fi
+          echo "  PASS: ci-signing.keystore was not written during Configuration Phase"
+
   quality-gate:
     name: Lint, Test & Quality Gates
     needs: [lint-and-unit, vrt-and-e2e, android-compile]
