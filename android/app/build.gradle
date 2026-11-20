@@ -1,14 +1,89 @@
 import groovy.json.JsonSlurper
+import java.util.Base64
 
 apply plugin: 'com.android.application'
+
+def envKeystoreBase64 = (System.getenv("ANDROID_KEYSTORE_BASE64") ?: "").trim()
+def envKeystorePassword = (System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: "").trim()
+def envKeyAlias = (System.getenv("ANDROID_KEY_ALIAS") ?: "").trim()
+def envKeyPassword = (System.getenv("ANDROID_KEY_PASSWORD") ?: "").trim()
+
+def signingEnvMap = [
+    ANDROID_KEYSTORE_BASE64  : envKeystoreBase64,
+    ANDROID_KEYSTORE_PASSWORD: envKeystorePassword,
+    ANDROID_KEY_ALIAS        : envKeyAlias,
+    ANDROID_KEY_PASSWORD     : envKeyPassword,
+]
+def anySigningEnvSet = signingEnvMap.values().any { !it.isEmpty() }
+def missingSigningEnvKeys = signingEnvMap.findAll { key, value -> value.isEmpty() }.keySet()
+
+if (anySigningEnvSet && !missingSigningEnvKeys.isEmpty()) {
+    throw new GradleException(
+        "Incomplete Android fixed signing configuration. Missing environment variable(s): ${missingSigningEnvKeys.join(', ')}"
+    )
+}
+
+def hasEnvKeystore = false
+def defaultDebugKeystore = file('../debug.keystore')
+def hasLocalDebugKeystore = !anySigningEnvSet && defaultDebugKeystore.exists()
+
+def resolvedKeystore = null
+def resolvedStorePassword = null
+def resolvedKeyAlias = null
+def resolvedKeyPassword = null
+
+if (anySigningEnvSet) {
+    def normalizedBase64 = envKeystoreBase64.replaceAll(/\s+/, "")
+    if (normalizedBase64.isEmpty()) {
+        throw new GradleException("ANDROID_KEYSTORE_BASE64 must not be empty or whitespace-only.")
+    }
+    byte[] decodedKeystoreBytes
+    try {
+        decodedKeystoreBytes = Base64.getDecoder().decode(normalizedBase64)
+    } catch (IllegalArgumentException e) {
+        throw new GradleException("ANDROID_KEYSTORE_BASE64 is not valid Base64: ${e.message}", e)
+    }
+    if (decodedKeystoreBytes == null || decodedKeystoreBytes.length == 0) {
+        throw new GradleException("Decoded ANDROID_KEYSTORE_BASE64 must not be empty (0 bytes).")
+    }
+
+    def ciKeystoreFile = file("${layout.buildDirectory.get().asFile}/ci-signing.keystore")
+    if (!ciKeystoreFile.parentFile.exists()) {
+        ciKeystoreFile.parentFile.mkdirs()
+    }
+    ciKeystoreFile.bytes = decodedKeystoreBytes
+
+    resolvedKeystore = ciKeystoreFile
+    resolvedStorePassword = envKeystorePassword
+    resolvedKeyAlias = envKeyAlias
+    resolvedKeyPassword = envKeyPassword
+    hasEnvKeystore = true
+}
 
 android {
     namespace "com.highsoar.exlibris"
     compileSdk rootProject.ext.compileSdkVersion
 
     def packageJson = new JsonSlurper().parse(file('../../package.json'))
-    def appVersionCode = Integer.parseInt(System.getenv("BUILD_NUMBER") ?: (project.findProperty("versionCode") ?: "1"))
-    def appVersionName = System.getenv("BUILD_NAME") ?: (project.findProperty("versionName") ?: packageJson.version)
+    def envBuildNumber = (System.getenv("BUILD_NUMBER") ?: "").trim()
+    def propVersionCode = (project.findProperty("versionCode")?.toString() ?: "").trim()
+    def rawVersionCode = envBuildNumber ?: (propVersionCode ?: "1")
+    int appVersionCode
+    try {
+        appVersionCode = Integer.parseInt(rawVersionCode)
+    } catch (NumberFormatException e) {
+        throw new GradleException("Invalid versionCode '${rawVersionCode}': must be an integer between 1 and 2100000000.", e)
+    }
+    if (appVersionCode < 1 || appVersionCode > 2_100_000_000) {
+        throw new GradleException("Invalid versionCode ${appVersionCode}: must be between 1 and 2100000000.")
+    }
+
+    def envBuildName = (System.getenv("BUILD_NAME") ?: "").trim()
+    def propVersionName = (project.findProperty("versionName")?.toString() ?: "").trim()
+    def appVersionName = envBuildName ?: (propVersionName ?: packageJson.version?.toString()?.trim())
+    if (!appVersionName) {
+        throw new GradleException("Invalid versionName: could not resolve a non-empty versionName.")
+    }
 
     defaultConfig {
         applicationId "com.highsoar.exlibris"
@@ -24,31 +99,8 @@ android {
         }
     }
 
-    def keystoreBase64 = System.getenv("ANDROID_KEYSTORE_BASE64")
-    def defaultDebugKeystore = file('../debug.keystore')
-    def hasCustomKeystore = false
-    def resolvedKeystore = defaultDebugKeystore
-    def resolvedStorePassword = 'android'
-    def resolvedKeyAlias = 'androiddebugkey'
-    def resolvedKeyPassword = 'android'
-
-    if (keystoreBase64) {
-        def ciKeystoreFile = file("${layout.buildDirectory.get().asFile}/ci-signing.keystore")
-        if (!ciKeystoreFile.parentFile.exists()) {
-            ciKeystoreFile.parentFile.mkdirs()
-        }
-        ciKeystoreFile.bytes = keystoreBase64.decodeBase64()
-        resolvedKeystore = ciKeystoreFile
-        resolvedStorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: 'android'
-        resolvedKeyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: 'androiddebugkey'
-        resolvedKeyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: resolvedStorePassword
-        hasCustomKeystore = true
-    } else if (defaultDebugKeystore.exists()) {
-        hasCustomKeystore = true
-    }
-
     signingConfigs {
-        if (hasCustomKeystore) {
+        if (hasEnvKeystore) {
             debug {
                 storeFile resolvedKeystore
                 storePassword resolvedStorePassword
@@ -61,6 +113,13 @@ android {
                 keyAlias resolvedKeyAlias
                 keyPassword resolvedKeyPassword
             }
+        } else if (hasLocalDebugKeystore) {
+            debug {
+                storeFile defaultDebugKeystore
+                storePassword 'android'
+                keyAlias 'androiddebugkey'
+                keyPassword 'android'
+            }
         }
     }
 
@@ -69,10 +128,22 @@ android {
             signingConfig signingConfigs.getByName("debug")
         }
         release {
-            signingConfig hasCustomKeystore ? signingConfigs.getByName("release") : signingConfigs.getByName("debug")
+            signingConfig hasEnvKeystore ? signingConfigs.getByName("release") : null
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
+    }
+}
+
+gradle.taskGraph.whenReady { taskGraph ->
+    def requireFixedSigning = (System.getenv("REQUIRE_FIXED_SIGNING") ?: "").trim() == "true"
+    def hasReleaseTask = taskGraph.allTasks.any { task ->
+        task.project == project && (task.name ==~ /^(assemble|bundle|package|sign).*Release$/)
+    }
+    if ((requireFixedSigning || hasReleaseTask) && !hasEnvKeystore) {
+        throw new GradleException(
+            "Fixed signing keystore (ANDROID_KEYSTORE_*) is required when REQUIRE_FIXED_SIGNING=true or executing a Release task."
+        )
     }
 }
 

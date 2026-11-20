@@ -198,8 +198,9 @@ describe("Android build, Capacitor & Remote Agent governance invariants", () => 
       /signingConfig\s+hasEnvKeystore\s*\?\s*signingConfigs\.getByName\("release"\)\s*:\s*null/,
     );
     expect(gradle).not.toMatch(
-      /release\s*\{[\s\S]*?signingConfigs\.getByName\("debug"\)/,
+      /release\s*\{[^}]*?signingConfigs\.getByName\("debug"\)/,
     );
+    expect(gradle).not.toMatch(/release\s*\{[^}]*?defaultDebugKeystore/);
   });
 
   it("android/app/build.gradle が gradle.taskGraph.whenReady で REQUIRE_FIXED_SIGNING=true および Release 系タスクの無署名ビルドを GradleException で停止すること (AC-APK-01, AC-APK-03)", () => {
