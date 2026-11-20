@@ -3,7 +3,7 @@ type: guideline
 title: "テスト・実装規律の正本（SSOT）"
 description: "ExLibrisの4層テスト体系（Streaming Engine / Metadata Provider / Dexie Storage / WebGL2 Viewer & Bridge）、TDDコミット規約、1対1 Story/UT、親子分離、C0/C1 100%、VRT、およびKaizen再発防止ルールの正本。"
 status: "Approved"
-updated: "2026-11-18"
+updated: "2026-11-20"
 tags:
   [
     testing,
@@ -95,7 +95,7 @@ flowchart TB
     4. UTF-8 フラグ（Bit 11）未設定時の `TextDecoder('utf-8', { fatal: true })` → `TextDecoder('shift-jis')`（CP932）フォールバック、`__MACOSX/`・`._*`・`Thumbs.db` 除外、および `Intl.Collator('ja', { numeric: true, sensitivity: 'base' })` セグメント自然順ソート。
     5. Fast-Path（初回・シーク直後の最小 1〜2 ページ単独取得）とバイト予算制（8〜12MB 上限）Warm Prefetch、およびシーク時の `AbortController` キャンセルと L2 キャッシュ（60〜100MB `Uint8Array`）LRU 退避。
 - **Worker コアとエントリーポイントの分離**:
-  - `CoordinatorCore` や `DecodePoolCore` は Worker グローバル（`self`）に直接依存しない純粋な TypeScript クラスとして実装し、Vitest で C0/C1/Functions 100% を直接検証する。`*.worker.ts` は `Comlink.expose(...)` を呼ぶ最小ブートストラップに留める。
+  - `CoordinatorCore` や `DecodePoolCore` は Worker グローバル（`self`）に直接依存しない純粋な TypeScript クラスとして実装し、Vitest で C0/C1/Functions 100% を直接検証する。`*.worker.ts` は `Comlink.expose(...)` とエラーハンドラ登録・結線のみを行う最小ブートストラップに留め、**条件分岐（`if` / 三項演算子）や `Transferable` 抽出・バッファ所有権判定は必ず純関数モジュール（例: `coordinatorTransfer.ts`）へ分離して 100% UT 対象とする**。
 
 ### 2.2 Metadata & Filename Provider Layer（ファイル名解析・公開書誌API層）
 
@@ -118,10 +118,13 @@ flowchart TB
   - 高解像度スキャン画像による VRAM 枯渇（OOM クラッシュ）を防ぐため、L1 キャッシュ（`N-1`〜`N+2` の 3〜5 ページ制限）から外れた瞬間、巻クローズ時、およびリーダーアンマウント時に **`bitmap.close()` が漏れなく呼ばれること** を単体テストのスパイで必ずアサートする。
 - **生 WebGL2 パイプラインのテストとヘッドレス SwiftShader VRT/IT**:
   - WebGL2 レンダラー（Mipmap 生成、シャープネス/白黒レベル補正シェーダー Uniform、`gl.MAX_TEXTURE_SIZE` 上限検知時の分割/リサイズフォールバック、コンテキストロスト `webglcontextlost` ハンドリング）は、注入可能な `WebGL2RenderingContext` モックによる単体テスト（C0/C1 100%）と、Playwright Chromium（`--use-gl=angle --use-angle=swiftshader`）による実シェーダー描画テストの双方で保証する。
-- **Android ネイティブプラグイン ＆ UI ジェスチャー検証規律**:
+- **Android ネイティブプラグイン ＆ UI ジェスチャー・ライフサイクル検証規律**:
   - Java ネイティブプラグイン（Google OAuth / VolumeKey 等）では、`ActivityResultContracts.StartIntentSenderForResult` ＋ `saveCall`/`getSavedCall`/`freeSavedCall`、401 時の `clearToken` 先行呼び出し、`HttpURLConnection` での `POST` + `X-HTTP-Method-Override: PATCH`、`load()` / `handleOnDestroy()` での `static volatile` 状態リセットを徹底し、`scripts/android-build-config.test.ts` と CI `android-compile` ジョブで機械検証する。
-  - Web 側でネイティブイベントを購読する際は `add*Listener` を先行登録してから有効化し、Promise には `.catch(() => {})` を付与する。
+  - Android 15+ 強制 Edge-to-Edge 環境でのシステムバー重なりを防ぐため、`capacitor.config.ts` の `adjustMarginsForEdgeToEdge: "auto"`、`MainActivity` のシステムバー外観固定、およびヘッダー/HUD の `env(safe-area-inset-*)` を `scripts/android-build-config.test.ts` とコンポーネント UT で継続保証する。
+  - Web 側でネイティブイベントを購読する際は `add*Listener` を先行登録してから有効化し、Promise には `.catch(() => {})`、および非同期解除ウィンドウでの誤発火を防ぐ `!isRemoved` ガードラッパーを付与する。
   - タッチジェスチャーでは `pointerStartRef` と `touchStartRef` を分離管理し（`pointercancel` による Touch 座標誤破棄防止）、複数の画面タップゾーンは幾何学的に排他配置して境界座標テストを行う。
+  - 子コンポーネントのマウント `useEffect` から通知され得る致命的エラー状態（WebGL2 初期化失敗等）は親の非同期初期化リセット対象から分離し、`initialSnapshot` なしの通常マウント経路で子スパイが同期 `onFatalError` を発火してワーカー未起動かつエラー維持となることを UT で検証する。
+  - 履歴遷移（`pushState` / `popstate`）を伴う画面終了契約（`TR-08` 等）は、UI ボタン/`Escape` だけでなく Playwright IT で `page.goBack()` → `page.goForward()` を検証し、`StrictMode` 再マウントと React 19 `popstate` 親先行アンマウント双方で正しく解放されることを UT/IT で保証する。
 
 - **PCレス実機検証用アプリ内診断ログ（`src/diagnostics/`）の機密マスク検証義務**:
   - `adb logcat` を使わない Remote Agent 運用に備え、OAuth・Drive API・WebGL2 `MAX_TEXTURE_SIZE`・Worker 例外を記録するオンメモリリングバッファとクリップボード1タップコピーを提供する。`Bearer` トークンや API キー等の機密文字列が必ずマスク（`[REDACTED]`）されること、上限件数超過時に古いエントリが破棄されることを単体テストで 100% 検証する。
@@ -183,5 +186,8 @@ flowchart TB
 TDD 初回 Red 以降（Green/Refactor、VRT/IT、独立 AI レビュー、横断レビュー、実機確認）で検出された不備は、[docs/quality/bug-and-handover-log.md](../quality/bug-and-handover-log.md)（Step 2 設計 PR レビュー指摘を含む）および PR 本文に記録します。
 
 - **成果物区分**: `製品コード`（`src/` 配下の本番コード） / `支援成果物`（テスト、Storybook、フィクスチャ、モック、設計書単体記述、CI/設定）
-- **原因 5 分類**: `L` (Logic) / `S` (State) / `D` (Design) / `B` (Boundary) / `A` (Async)
-- **原因分類 `D` の設計書即時同期義務**: 原因が `D` の場合、必ず同一 PR 内で `docs/specs/`（App 全体正本＋進行中の差分仕様）を同時修正し、コード修正コミットと設計同期コミットの双方を台帳へ明記する（Markdown 表セル内ではパイプ記号 `|` を使用せず `/` 区切り等を用いること）。
+- **原因 5 分類と判定基準**: `L` (Logic) / `S` (State) / `D` (Design) / `B` (Boundary) / `A` (Async)
+  - 主要導線・操作方向の IT シナリオ網羅漏れ、仕様間・ドキュメント間の記載漏れ、および契約未整備は `B`（境界値）ではなく **`D`（Design: 設計・検証観点考慮漏れ）** に分類する（`B` は 0 件・サイズ上限・JSDOM/Node ESM/DPR 等の技術的・環境的境界値に限定する）。
+- **原因分類 `D` の設計書即時同期とコミット記録規約**:
+  - 原因が `D` の場合、必ず同一 PR 内で `docs/specs/`（App 全体正本＋進行中の差分仕様）を同時修正し、コード修正コミットと設計同期コミットの双方を台帳へ明記する（Markdown 表セル内ではパイプ記号を使用せず `/` 区切り等を用いること）。
+  - PR を `--squash --delete-branch` でマージした後は、消滅するトピックブランチ上の個別コミット SHA 単体ではなく、**`main` ブランチ上に実在する squash コミット SHA および PR 番号を主表記として記録**（必要に応じて PR 内コミット SHA を括弧で併記）し、後続 PR や台帳整理時に必ず整合させる。

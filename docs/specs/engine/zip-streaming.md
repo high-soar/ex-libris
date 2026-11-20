@@ -2,7 +2,7 @@
 type: spec-engine
 title: "ZIPストリーミング・I/O・Worker エンジン仕様書"
 description: "LocalFileReader、標準ZIP/EOCD/CDH/LFH 1RTTパーサー、Coordinator/Decode Worker構成、およびrequestEpoch世代キャンセル制御の正本"
-status: "Review (#1)"
+status: "Approved"
 updated: "2026-11-20"
 tags: [engine, zip, streaming, web-worker, comlink, cache, epoch]
 related_specs:

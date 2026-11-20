@@ -26,7 +26,7 @@ Review changes critically and independently in an isolated subagent context. Foc
      - 100% C0/C1/Functions/Lines coverage without unauthorized `v8 ignore`
      - Storybook VRT snapshots updated for 1280px / 375px
      - Defect log and Design Sync (cause `D` must include `docs/specs/` update in the same PR)
-   - **Integration Testing (`test/it/`, `playwright*.ts`)**: Check [docs/guidelines/testing.md](../../docs/guidelines/testing.md) for unified `SCN-01`+ system-wide regression coverage, `waitForServicesReady(page)` immediately after navigation, and deterministic DB reset before each test.
+   - **Integration Testing (`test/it/`, `playwright*.ts`)**: Check [docs/specs/screen-transitions.md §5](../../docs/specs/screen-transitions.md#5-結合テストシナリオscn-xxトレーサビリティ対応表) for the canonical `SCN-01`+ traceability matrix (`SCR-xx`/`TR-xx`/`AC-xx`) and [docs/guidelines/testing.md](../../docs/guidelines/testing.md) for `waitForServicesReady(page)` immediately after navigation and deterministic DB reset (`resetTestDatabase(page)`) before each test.
    - **Repository Config, AI Skills/Agents & CI (`.agents/`, `.github/`, `.githooks/`, `AGENTS.md`)**: Check [repo-config-management](../skills/repo-config-management/SKILL.md) and [hook-ci-guidance](../skills/hook-ci-guidance/SKILL.md).
 4. **Run Verification**:
    - Run relevant non-destructive checks (`npm run lint:okf`, focused `npx vitest run`, etc.) when practical. Never modify files to make checks pass.

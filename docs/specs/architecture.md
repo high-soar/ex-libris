@@ -2,7 +2,7 @@
 type: spec-architecture
 title: "4層＋マルチスレッドアーキテクチャと共通インターフェース契約"
 description: "Streaming & Provider・Engine Worker・Storage・Viewer & Bridge の4層責務境界、Zero-Copy 転送、メモリ予算定数、および TypeScript コア契約の正本"
-status: "Review (#1)"
+status: "Approved"
 updated: "2026-11-20"
 tags: [architecture, web-worker, webgl2, comlink, capacitor, cache, oauth]
 related_specs:

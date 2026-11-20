@@ -2,8 +2,8 @@
 type: spec-requirements
 title: "全体要件定義・機能一覧・ミニMilestoneロードマップ"
 description: "ExLibris のプロダクトゴール、前提制約、非機能要件（TTFP・メモリ予算）、全機能カタログ割当、および Phase 3〜v1.0 マイルストーン計画の正本"
-status: "Review (#1)"
-updated: "2026-11-19"
+status: "Approved"
+updated: "2026-11-20"
 tags: [requirements, roadmap, mvp, non-functional, ex-libris]
 related_specs:
   - docs/index.md
@@ -127,7 +127,7 @@ related_tests:
 | :------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------- | :-----------: |
 | **Phase 1: AI開発基盤構築**                                   | Antigravity Remote Agent 基盤、OKF 検証、Vitest (100%) / Storybook VRT / Playwright IT / Capacitor Android / CI `quality-gate`・クラウド APK ビルドの稼働確立                                        | 初期基盤構築                                                                                                                                  | **Completed** |
 | **Phase 2: コア仕様策定**                                     | 背骨 4 冊（`requirements` / `architecture` / `db-schema` / `screen-transitions`）の契約確定と `Approved (Phase 2)` 合意                                                                              | コア仕様 4 冊策定                                                                                                                             | **Completed** |
-| **Phase 3: Walking Skeleton (PoC)**                           | ローカル ZIP 一時オープン → Worker 解凍・Zero-Copy 転送 → 生 WebGL2 単ページ Mipmap 描画＋前後めくり＋L1 `bitmap.close()` 解放の垂直スライス実証（Issue/PR/Gate7 通し検証）                          | 1 Issue（PoC 垂直スライス）                                                                                                                   |    Planned    |
+| **Phase 3: Walking Skeleton (PoC)**                           | ローカル ZIP 一時オープン → Worker 解凍・Zero-Copy 転送 → 生 WebGL2 単ページ Mipmap 描画＋前後めくり＋L1 `bitmap.close()` 解放の垂直スライス実証（Issue/PR/Gate7 通し検証）                          | 1 Issue（PoC 垂直スライス）                                                                                                                   | **Completed** |
 | **`v0.1`: 完成版コアリーダーエンジン**                        | 4GB超 ZIP64・CP932・高解像度画像を、Fast-Path＋10MB先読み、L1(5P)/L2(80MB) キャッシュ、見開き・1ページずらし、白黒レベル/シャープネス補正、シークバー＆自動レジューム付きで完読可能にする            | 4 Issues（①ZIP64/1RTT解析、②先読み/L2/Epoch、③見開き/`MAX_TEXTURE_SIZE`、④自炊シェーダー/基本UI/レジューム）                                  |    Planned    |
 | **`v0.2`: Google Drive 連携 ＆ 最小仮想本棚（日常実用 MVP）** | Google OAuth 認証、指定ルートフォルダ配下のフルスキャン＆`changes` 差分同期、ファイル名パーサーによるシリーズ本棚 UI、2段優先度表紙 WebP 抽出により Google Drive 上での日常読書を開始可能にする      | 4 Issues（①OAuth/DriveReader、②指定フォルダ同期/パーサー/目次キャッシュ、③本棚・シリーズ詳細・設定UI、④表紙WebP抽出キュー＆プリエンプション） |    Planned    |
 | **`v0.3`: 公開書誌 API ＆ 高機能検索・棚整理**                | `CapacitorHttp` 経由で NDLサーチ / AniList / Google Books から書誌を取得・再選択でき、正確な五十音ソート・10ms 台の複合検索・カスタム/スマートコレクション整理を実現する                             | 4 Issues（①書誌3種クライアント、②名寄せ＆候補再選択・編集ロックUI、③五十音ソート＆複合検索、④カスタム＆スマートコレクション）                 |    Planned    |

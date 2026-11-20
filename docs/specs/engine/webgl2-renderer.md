@@ -2,7 +2,7 @@
 type: spec-engine
 title: "生 WebGL2 レンダラー＆L1キャッシュ仕様書"
 description: "WebGLRendererCore のハードウェア Mipmap 描画、DPR 追従、webglcontextlost 復帰、および L1PageCache の ImageBitmap.close() 厳格解放規約の正本"
-status: "Review (#1)"
+status: "Approved"
 updated: "2026-11-20"
 tags: [engine, webgl2, mipmap, l1-cache, imagebitmap, vram]
 related_specs:
