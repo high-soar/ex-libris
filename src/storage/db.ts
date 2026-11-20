@@ -17,5 +17,5 @@ export const db = new ExLibrisDatabase();
 export async function resetTestDb(
   targetDb: ExLibrisDatabase = db,
 ): Promise<void> {
-  await targetDb.syncMeta.clear();
+  await Promise.all(targetDb.tables.map((table) => table.clear()));
 }
