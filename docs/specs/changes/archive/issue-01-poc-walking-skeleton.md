@@ -2,7 +2,7 @@
 type: spec-delta
 title: "Issue #1 差分仕様: Phase 3 PoC Walking Skeleton（ローカルZIP〜Worker〜生WebGL2単ページ描画）"
 description: "Phase 3 PoC としてローカル ZIP/CBZ 一時オープン、標準 ZIP 1RTT 解析、Coordinator/Decode Worker Zero-Copy 転送、生 WebGL2 Mipmap 描画、L1 即時解放、SCR-01/SCR-03 最小骨格を導入する差分仕様"
-status: "Review (#1)"
+status: "Completed (Archived)"
 updated: "2026-11-19"
 issue: "#1"
 tags: [delta, phase-3, poc, walking-skeleton, zip, web-worker, webgl2, l1-cache]
@@ -19,7 +19,25 @@ related_specs:
   - docs/quality/bug-and-handover-log.md
 related_tests:
   - src/App.test.tsx
+  - src/app/ServiceProvider.test.tsx
+  - src/app/coordinatorClient.test.ts
+  - src/bridges/app/capacitorAppBridge.test.ts
+  - src/bridges/app/mockAppBridge.test.ts
+  - src/engine/io/LocalFileReader.test.ts
+  - src/engine/workers/CoordinatorCore.test.ts
+  - src/engine/workers/DecodeWorkerCore.test.ts
+  - src/engine/workers/DecodeWorkerPool.test.ts
+  - src/engine/workers/comlinkErrorHandler.test.ts
+  - src/engine/zip/zipParser.test.ts
+  - src/features/bookshelf/BookshelfPage.test.tsx
+  - src/features/reader/ReaderPage.test.tsx
+  - src/shared/router/RouterProvider.test.tsx
+  - src/webgl/ReaderCanvas.test.tsx
+  - src/webgl/WebGLRendererCore.test.ts
+  - src/webgl/l1PageCache.test.ts
+  - test/vrt/vrt.spec.ts
   - test/it/smoke.spec.ts
+  - test/it/local-reader.spec.ts
 ---
 
 # Issue #1 差分仕様: Phase 3 PoC Walking Skeleton
@@ -33,15 +51,15 @@ related_tests:
 
 ## 2. 変更対象の App 全体正本一覧
 
-|   種別   | 正本ファイル                                       | 変更概要                                                                                                                                                                                                           |
-| :------: | :------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **新設** | [zip-streaming.md](../engine/zip-streaming.md)     | `LocalFileReader`、標準 ZIP パーサー（UTF-8 非厳格デコード、自然順ソート、LFH 1 RTT）、`DecodeWorkerCore`、`CoordinatorCore` の `AC-ENG-01`〜`08` 定義                                                             |
-| **新設** | [webgl2-renderer.md](../engine/webgl2-renderer.md) | `L1PageCache`（5P 上限・`bitmap.close()`）、`WebGLRendererCore`（純黒背景・Mipmap・DPR 追従・`webglcontextlost` 復帰）、`<ReaderCanvas>` の `AC-GL-01`〜`06` 定義                                                  |
-| **新設** | [bookshelf.md](../features/bookshelf.md)           | `SCR-01`（`/`）ローカル ZIP/CBZ オープン導線（ヘッダー＋カード＋D&D＋Android SAF 互換）、診断ログコピーの `AC-BS-01`〜`05` 定義                                                                                    |
-| **新設** | [reader.md](../features/reader.md)                 | `SCR-03`（`/read/local`）右開き単ページ閲覧、タップ（30/40/30%）・スワイプ・矢印キー/`Escape`、最小 HUD、エラー復帰、`TR-08`/`TR-10` 解放の `AC-RD-01`〜`09` 定義                                                  |
-| **更新** | [requirements.md](../requirements.md)              | Phase 3 のローカル一時セッションオンメモリ完結（`v0.1` で永続化）および `L1(5P)` 最小窓先読みの `Phase 3` 先行実装を備考へ同期                                                                                     |
-| **更新** | [architecture.md](../architecture.md)              | `ZipPageEntry.entryNameByteLength`・`ZipErrorCode`・`DecodedPageFrame`（`ready` / `error`）契約、Layer 4 ルーター/ローカルセッション/`L1PageCache`/`AppBridge`、WebGL2 純黒背景・`webglcontextlost` 復帰契約を追記 |
-| **更新** | [screen-transitions.md](../screen-transitions.md)  | Phase 3 ローカル一時セッションのオンメモリ完結（`pageIndex = 0` 開始、`v0.1` で Dexie レジューム導入）と `SCR-03` 右開き操作詳細を明確化                                                                           |
+|   種別   | 正本ファイル                                          | 変更概要                                                                                                                                                                                                           |
+| :------: | :---------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **新設** | [zip-streaming.md](../../engine/zip-streaming.md)     | `LocalFileReader`、標準 ZIP パーサー（UTF-8 非厳格デコード、自然順ソート、LFH 1 RTT）、`DecodeWorkerCore`、`CoordinatorCore` の `AC-ENG-01`〜`08` 定義                                                             |
+| **新設** | [webgl2-renderer.md](../../engine/webgl2-renderer.md) | `L1PageCache`（5P 上限・`bitmap.close()`）、`WebGLRendererCore`（純黒背景・Mipmap・DPR 追従・`webglcontextlost` 復帰）、`<ReaderCanvas>` の `AC-GL-01`〜`06` 定義                                                  |
+| **新設** | [bookshelf.md](../../features/bookshelf.md)           | `SCR-01`（`/`）ローカル ZIP/CBZ オープン導線（ヘッダー＋カード＋D&D＋Android SAF 互換）、診断ログコピーの `AC-BS-01`〜`05` 定義                                                                                    |
+| **新設** | [reader.md](../../features/reader.md)                 | `SCR-03`（`/read/local`）右開き単ページ閲覧、タップ（30/40/30%）・スワイプ・矢印キー/`Escape`、最小 HUD、エラー復帰、`TR-08`/`TR-10` 解放の `AC-RD-01`〜`09` 定義                                                  |
+| **更新** | [requirements.md](../../requirements.md)              | Phase 3 のローカル一時セッションオンメモリ完結（`v0.1` で永続化）および `L1(5P)` 最小窓先読みの `Phase 3` 先行実装を備考へ同期                                                                                     |
+| **更新** | [architecture.md](../../architecture.md)              | `ZipPageEntry.entryNameByteLength`・`ZipErrorCode`・`DecodedPageFrame`（`ready` / `error`）契約、Layer 4 ルーター/ローカルセッション/`L1PageCache`/`AppBridge`、WebGL2 純黒背景・`webglcontextlost` 復帰契約を追記 |
+| **更新** | [screen-transitions.md](../../screen-transitions.md)  | Phase 3 ローカル一時セッションのオンメモリ完結（`pageIndex = 0` 開始、`v0.1` で Dexie レジューム導入）と `SCR-03` 右開き操作詳細を明確化                                                                           |
 
 ---
 
@@ -95,9 +113,9 @@ related_tests:
 
 ## 6. 申し送り事項・Android 実機検証計画
 
-- **判定（[workflow.md §2.2](../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 A（親 Issue #1 完了前に実施）**
+- **判定（[workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 A（親 Issue #1 完了前に実施）**
   - **根拠**: 生 WebGL2 シェーダー＆Mipmap モアレ除去描画、高解像度 `ImageBitmap.close()` VRAM 解放、`@capacitor/app` ハードウェア戻るボタン（`TR-08` / `minimizeApp()`）、および Android SAF での `.zip` / `.cbz` ファイル選択を含むため（実機観点 6 項目以上）。
-- **登録済み申し送り**: `HO-01`（[bug-and-handover-log.md](../../quality/bug-and-handover-log.md) 登録済み、完了ゲート: `親 Issue #1 完了前`）
+- **登録済み申し送り**: `HO-01`（[bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) 登録済み、完了ゲート: `親 Issue #1 完了前`）
 - **実機確認予定観点**:
   1. Android SAF ファイルピッカーで `.zip` および `.cbz` の双方がグレーアウトせず選択可能であること
   2. 選択直後に `/read/local` へ遷移し、数百ページ級 ZIP でも初回ページが高速描画されること

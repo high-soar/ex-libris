@@ -15,10 +15,25 @@ related_specs:
   - docs/guidelines/testing.md
 related_tests:
   - src/App.test.tsx
+  - src/app/ServiceProvider.test.tsx
+  - src/app/coordinatorClient.test.ts
+  - src/bridges/app/capacitorAppBridge.test.ts
+  - src/bridges/app/mockAppBridge.test.ts
   - src/diagnostics/diagnosticLogger.test.ts
+  - src/engine/constants.test.ts
+  - src/engine/io/LocalFileReader.test.ts
+  - src/engine/workers/CoordinatorCore.test.ts
+  - src/engine/workers/comlinkErrorHandler.test.ts
+  - src/engine/zip/zipParser.test.ts
+  - src/features/reader/localReaderSessionStore.test.ts
   - src/shared/constants/app.test.ts
+  - src/shared/router/RouterProvider.test.tsx
   - src/storage/db.test.ts
+  - src/webgl/WebGLRendererCore.test.ts
+  - src/webgl/l1PageCache.test.ts
   - scripts/android-build-config.test.ts
+  - test/it/smoke.spec.ts
+  - test/it/local-reader.spec.ts
 ---
 
 # ExLibris 4層＋マルチスレッドアーキテクチャと共通インターフェース契約

@@ -12,8 +12,16 @@ related_specs:
   - docs/specs/features/reader.md
   - docs/guidelines/testing.md
 related_tests:
+  - scripts/android-build-config.test.ts
   - src/App.test.tsx
+  - src/features/bookshelf/BookshelfPage.test.tsx
+  - src/features/bookshelf/BookshelfHeader.test.tsx
+  - src/features/bookshelf/LocalArchiveEmptyState.test.tsx
+  - src/features/reader/localReaderSessionStore.test.ts
+  - src/diagnostics/diagnosticLogger.test.ts
+  - test/vrt/vrt.spec.ts
   - test/it/smoke.spec.ts
+  - test/it/local-reader.spec.ts
 ---
 
 # 仮想本棚ホーム画面仕様書（`SCR-01`: Bookshelf）
@@ -31,6 +39,8 @@ related_tests:
    - 右側アクション群:
      - **「ローカル ZIP を開く」ボタン**（プライマリアクション、`data-testid="header-open-local-zip-button"`）
      - **「診断ログをコピー」ボタン**（`data-testid="copy-diagnostics-button"`）＋ コピー結果ステータス表示（`data-testid="copy-diagnostics-status"`）
+   - **システムバー非重複・セーフエリア＆タッチ応答保護**:
+     - Android Edge-to-Edge 環境で OS ステータスバー／ノッチと重なってタップ操作が阻害されないよう（`screen-transitions.md §1` の WebView マージン設定と併用）、`<header>` には `paddingTop: "calc(1rem + env(safe-area-inset-top, 0px))"` を設定してセーフエリア上余白を確保し（`env(..., 0px)` が `0px` の環境では上下 `1rem` を維持）、アクションボタンへ `touch-manipulation` を付与する。
 3. **メインコンテンツ領域（`data-testid="bookshelf-empty"`）**:
    - Google Drive 未同期の初期状態カードとして、本アプリの説明と目立つ **「ローカル ZIP を開く（.zip / .cbz）」ボタン**（`data-testid="open-local-zip-button"`）を配置する。
    - メイン領域全体を Web ドラッグ＆ドロップ対応ドロップゾーンとし、ファイルドラッグ中は視覚的ハイライトを表示する。

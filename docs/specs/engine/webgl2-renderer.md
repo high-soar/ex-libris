@@ -11,7 +11,14 @@ related_specs:
   - docs/specs/architecture.md
   - docs/specs/engine/zip-streaming.md
   - docs/guidelines/testing.md
-related_tests: []
+related_tests:
+  - src/webgl/l1PageCache.test.ts
+  - src/webgl/shaders.test.ts
+  - src/webgl/WebGLRendererCore.test.ts
+  - src/webgl/ReaderCanvas.test.tsx
+  - test/vrt/vrt.spec.ts
+  - test/it/smoke.spec.ts
+  - test/it/local-reader.spec.ts
 ---
 
 # 生 WebGL2 レンダラー＆L1 キャッシュ仕様書

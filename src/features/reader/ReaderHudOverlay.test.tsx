@@ -124,4 +124,30 @@ describe("ReaderHudOverlay", () => {
     expect(parentPointerDown).not.toHaveBeenCalled();
     expect(parentPointerUp).not.toHaveBeenCalled();
   });
+
+  it("上下HUDバーがセーフエリア余白を確保し各操作ボタンにtouch-manipulationクラスが付与されていること (AC-RD-04)", () => {
+    render(<OpenMiddlePage />);
+
+    const topBar = screen.getByTestId("reader-hud-top");
+    const bottomBar = screen.getByTestId("reader-hud-bottom");
+
+    expect(topBar).toHaveStyle({
+      paddingTop: "calc(0.75rem + env(safe-area-inset-top, 0px))",
+    });
+    expect(bottomBar).toHaveStyle({
+      paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))",
+    });
+    expect(topBar.style.paddingTop).toContain("safe-area-inset-top");
+    expect(bottomBar.style.paddingBottom).toContain("safe-area-inset-bottom");
+
+    expect(screen.getByTestId("reader-back-button")).toHaveClass(
+      "touch-manipulation",
+    );
+    expect(screen.getByTestId("reader-next-button")).toHaveClass(
+      "touch-manipulation",
+    );
+    expect(screen.getByTestId("reader-prev-button")).toHaveClass(
+      "touch-manipulation",
+    );
+  });
 });

@@ -15,7 +15,15 @@ related_specs:
 related_tests:
   - src/App.test.tsx
   - src/diagnostics/diagnosticLogger.test.ts
+  - src/engine/zip/zipParser.test.ts
+  - src/engine/workers/CoordinatorCore.test.ts
+  - src/webgl/l1PageCache.test.ts
+  - src/webgl/WebGLRendererCore.test.ts
+  - src/features/bookshelf/BookshelfPage.test.tsx
+  - src/features/reader/ReaderPage.test.tsx
+  - test/vrt/vrt.spec.ts
   - test/it/smoke.spec.ts
+  - test/it/local-reader.spec.ts
 ---
 
 # ExLibris 全体要件定義・機能一覧・ミニMilestoneロードマップ

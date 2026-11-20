@@ -66,4 +66,21 @@ describe("BookshelfHeader", () => {
     await user.click(screen.getByTestId("copy-diagnostics-button"));
     expect(onCopyDiagnostics).toHaveBeenCalledTimes(1);
   });
+
+  it("ヘッダーがセーフエリア上余白を確保しアクションボタンにtouch-manipulationクラスが付与されていること (AC-BS-01, AC-BS-05)", () => {
+    render(<Default />);
+
+    const header = screen.getByRole("banner");
+    expect(header).toHaveStyle({
+      paddingTop: "calc(1rem + env(safe-area-inset-top, 0px))",
+    });
+    expect(header.style.paddingTop).toContain("safe-area-inset-top");
+
+    expect(screen.getByTestId("header-open-local-zip-button")).toHaveClass(
+      "touch-manipulation",
+    );
+    expect(screen.getByTestId("copy-diagnostics-button")).toHaveClass(
+      "touch-manipulation",
+    );
+  });
 });
