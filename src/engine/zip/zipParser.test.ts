@@ -570,4 +570,129 @@ describe("zipParser", () => {
       readCompressedPageSlice(truncatedTailReader, largeEntries[0]),
     ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
   });
+
+  it("画像エントリ間に非画像・ゴミエントリ(ComicInfo.xml/Thumbs.db)が挟まる場合も全CDH基準でphysicalEndを境界設定し越境読込を防ぐこと (AC-ENG-05)", async () => {
+    const payload0 = new Uint8Array([1, 2, 3, 4]);
+    const xmlPayload = new TextEncoder().encode("<ComicInfo/>");
+    const payload1 = new Uint8Array([5, 6, 7, 8]);
+    const thumbsPayload = new Uint8Array([9, 10, 11, 12]);
+
+    // 物理配置順: 001.jpg (offset 0) -> ComicInfo.xml (offset 41) -> 002.jpg (offset 96) -> Thumbs.db (offset 137) -> CD
+    const normalZip = buildSyntheticZip({
+      entries: [
+        { name: "001.jpg", data: payload0 },
+        { name: "ComicInfo.xml", data: xmlPayload },
+        { name: "002.jpg", data: payload1 },
+        { name: "chapter/Thumbs.db", data: thumbsPayload },
+      ],
+    });
+    const normalReader = createMemoryReader(normalZip);
+    const normalEntries = await parseZipDirectory(normalReader);
+
+    expect(normalEntries.map((e) => e.entryName)).toEqual([
+      "001.jpg",
+      "002.jpg",
+    ]);
+    // 001.jpg の physicalEnd は 002.jpg ではなく直後の ComicInfo.xml 開始位置 (41)
+    expect(normalEntries[0].localHeaderOffset).toBe(0);
+    expect(normalEntries[0].physicalEnd).toBe(41);
+    expect(normalEntries[0].physicalEnd).toBeLessThan(
+      normalEntries[1].localHeaderOffset,
+    );
+    // 002.jpg の physicalEnd は CD ではなく直後の chapter/Thumbs.db 開始位置 (137)
+    expect(normalEntries[1].localHeaderOffset).toBe(96);
+    expect(normalEntries[1].physicalEnd).toBe(137);
+    expect(
+      await readCompressedPageSlice(normalReader, normalEntries[0]),
+    ).toEqual(payload0);
+    expect(
+      await readCompressedPageSlice(normalReader, normalEntries[1]),
+    ).toEqual(payload1);
+
+    // 001.jpg の LFH が直後の ComicInfo.xml 境界 (41) を超える過大な extraFieldLength を主張した場合、越境読込せず CORRUPT_ZIP を送出すること
+    const overflowIntoNonImageZip = buildSyntheticZip({
+      entries: [
+        { name: "001.jpg", data: payload0, overrideLfhExtraLength: 50 },
+        { name: "ComicInfo.xml", data: xmlPayload },
+        { name: "002.jpg", data: payload1 },
+      ],
+    });
+    const overflowReader = createMemoryReader(overflowIntoNonImageZip);
+    const overflowEntries = await parseZipDirectory(overflowReader);
+    overflowReader.reads.length = 0;
+
+    await expect(
+      readCompressedPageSlice(overflowReader, overflowEntries[0]),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+    expect(overflowReader.reads).toHaveLength(1);
+    expect(overflowReader.reads[0]).toEqual({ offset: 0, length: 41 });
+
+    // 非画像エントリが cdOffset 以上の不正オフセットを持っていても範囲外として無視し、末尾有効画像は cdOffset を上限とすること
+    const outOfRangeJunkZip = buildSyntheticZip({
+      entries: [
+        { name: "001.jpg", data: payload0 },
+        {
+          name: "ComicInfo.xml",
+          data: xmlPayload,
+          overrideCdhLocalHeaderOffset: 99999,
+        },
+      ],
+    });
+    const outOfRangeView = new DataView(outOfRangeJunkZip.buffer);
+    const expectedCdOffset = outOfRangeView.getUint32(
+      outOfRangeJunkZip.byteLength - 6,
+      true,
+    );
+    const outOfRangeEntries = await parseZipDirectory(
+      createMemoryReader(outOfRangeJunkZip),
+    );
+    expect(outOfRangeEntries[0].physicalEnd).toBe(expectedCdOffset);
+  });
+
+  it("全CDHエントリのcdOffset未満範囲でlocalHeaderOffsetが重複している場合はCORRUPT_ZIPを送出すること (AC-ENG-04, AC-ENG-05)", async () => {
+    // 1. 有効画像と非画像エントリが同一 localHeaderOffset を主張
+    const imageAndJunkDupZip = buildSyntheticZip({
+      entries: [
+        { name: "001.jpg", data: new Uint8Array([1, 2, 3, 4]) },
+        {
+          name: "ComicInfo.xml",
+          data: new Uint8Array([5, 6]),
+          overrideCdhLocalHeaderOffset: 0,
+        },
+      ],
+    });
+    await expect(
+      parseZipDirectory(createMemoryReader(imageAndJunkDupZip)),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    // 2. 有効画像同士が同一 localHeaderOffset を主張
+    const imageDupZip = buildSyntheticZip({
+      entries: [
+        { name: "001.jpg", data: new Uint8Array([1, 2, 3, 4]) },
+        {
+          name: "002.jpg",
+          data: new Uint8Array([5, 6, 7, 8]),
+          overrideCdhLocalHeaderOffset: 0,
+        },
+      ],
+    });
+    await expect(
+      parseZipDirectory(createMemoryReader(imageDupZip)),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    // 3. ゴミ・非画像エントリ同士が同一 localHeaderOffset を主張（画像ゼロ件でも CORRUPT_ZIP を優先）
+    const junkDupZip = buildSyntheticZip({
+      entries: [
+        { name: "README.txt", data: new Uint8Array([1]) },
+        {
+          name: "Thumbs.db",
+          data: new Uint8Array([2]),
+          overrideCdhLocalHeaderOffset: 0,
+        },
+      ],
+    });
+    await expect(
+      parseZipDirectory(createMemoryReader(junkDupZip)),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+  });
 });
