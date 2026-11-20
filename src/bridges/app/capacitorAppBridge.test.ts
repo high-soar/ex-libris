@@ -45,7 +45,7 @@ describe("CapacitorAppBridge", () => {
     expect(mockAppPlugin.addListener).toHaveBeenCalledTimes(1);
     expect(mockAppPlugin.addListener).toHaveBeenCalledWith(
       "backButton",
-      userListener,
+      expect.any(Function),
     );
 
     await flushMicrotasks();
@@ -57,6 +57,40 @@ describe("CapacitorAppBridge", () => {
     unsubscribe();
     await flushMicrotasks();
     expect(remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("App.addListener解決前にunsubscribe()した後はネイティブbackButtonイベント発火でもuserListenerを呼ばないこと", async () => {
+    const remove = vi.fn().mockResolvedValue(undefined);
+    let resolveAddListener!: (value: { remove: () => Promise<void> }) => void;
+    let capturedListener: ((event: BackButtonEvent) => void) | undefined;
+
+    mockAppPlugin.addListener.mockImplementationOnce(
+      (_eventName: string, listener: (event: BackButtonEvent) => void) => {
+        capturedListener = listener;
+        return new Promise<{ remove: () => Promise<void> }>((resolve) => {
+          resolveAddListener = resolve;
+        });
+      },
+    );
+
+    const bridge = new CapacitorAppBridge();
+    const userListener = vi.fn();
+    const unsubscribe = bridge.addBackButtonListener(userListener);
+
+    // addListener Promise が解決する前に解除する
+    unsubscribe();
+
+    // 未解決ウィンドウ中にネイティブイベントが発火しても userListener は呼ばれない
+    capturedListener?.({ canGoBack: true });
+    expect(userListener).not.toHaveBeenCalled();
+
+    // 解決後は自動で remove() が呼ばれ、以降のイベントも無視される
+    resolveAddListener({ remove });
+    await flushMicrotasks();
+    expect(remove).toHaveBeenCalledTimes(1);
+
+    capturedListener?.({ canGoBack: false });
+    expect(userListener).not.toHaveBeenCalled();
   });
 
   it("addListenerまたはhandle.removeが拒否されても未処理Promise拒否を発生させないこと", async () => {

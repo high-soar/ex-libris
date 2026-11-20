@@ -6,7 +6,7 @@ import {
   render,
   screen,
 } from "@testing-library/react";
-import { type ReactElement, StrictMode } from "react";
+import { type ReactElement, StrictMode, useEffect, useRef } from "react";
 import {
   afterEach,
   beforeEach,
@@ -988,5 +988,246 @@ describe("ReaderPage", () => {
       await flushMicrotasks();
     });
     expect(errorViewSpy).not.toHaveBeenCalled();
+  });
+
+  it("initialSnapshotなしの通常マウント経路で子ReaderCanvas初回マウント時に同期onFatalError('WEBGL_UNSUPPORTED')が発火した場合、Worker未起動かつエラー表示維持・ローディング非表示となること (AC-RD-06)", async () => {
+    function FailingMountCanvas({
+      onFatalError,
+    }: ReaderCanvasModule.ReaderCanvasProps) {
+      const triggeredRef = useRef(false);
+      useEffect(() => {
+        if (!triggeredRef.current) {
+          triggeredRef.current = true;
+          onFatalError?.("WEBGL_UNSUPPORTED", "WebGL2 context unavailable");
+        }
+      }, [onFatalError]);
+      return null;
+    }
+
+    canvasSpy.mockImplementation(
+      (props) => (<FailingMountCanvas {...props} />) as unknown as ReactElement,
+    );
+
+    const createSession = vi.fn(() => createMockCoordinatorSession().handle);
+    renderWithSession({}, createSession);
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(createSession).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("reader-loading")).not.toBeInTheDocument();
+    expect(getLatestHudProps().isOpen).toBe(false);
+    expect(getLatestErrorViewProps()).toEqual({
+      mode: "archive",
+      message: "WebGL2 描画の初期化に失敗しました",
+      errorCode: "WEBGL_UNSUPPORTED",
+      onBackToHome: expect.any(Function),
+    });
+
+    // WebGL致命的エラー表示中はタップや矢印キー操作を遮断する
+    fireEvent.click(screen.getByTestId("reader-interaction-surface"));
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(getLatestHudProps().isOpen).toBe(false);
+    expect(getLatestHudProps().currentPageIndex).toBe(0);
+  });
+
+  it("稼働中onFatalError('WEBGL_INIT_FAILED')発火時にruntimeがreleaseRuntime解放されること (AC-RD-06)", async () => {
+    const deletePageTexture = vi.fn();
+    const clearAllTextures = vi.fn();
+    const frame0 = createReadyFrame(0, 1);
+    const mockSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 3,
+        entries: [],
+        fromIndexCache: false,
+      })),
+      requestVisiblePages: vi.fn(
+        async (
+          pageIndices: readonly number[],
+          _prefetch: readonly number[],
+          epoch: number,
+        ) => {
+          if (pageIndices[0] === 0) return [frame0];
+          return pageIndices.map((index) => createReadyFrame(index, epoch));
+        },
+      ),
+    });
+
+    renderWithSession({}, () => mockSession.handle);
+
+    act(() => {
+      getLatestCanvasProps().onRendererReady?.({
+        deletePageTexture,
+        clearAllTextures,
+      });
+    });
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(getLatestCanvasProps().frame).toBe(frame0);
+
+    // 稼働中のコンテキスト復元失敗等で WEBGL_INIT_FAILED が発火したら即座に Worker と L1 を解放する
+    act(() => {
+      getLatestCanvasProps().onFatalError?.(
+        "WEBGL_INIT_FAILED",
+        "再初期化失敗",
+      );
+    });
+
+    expect(mockSession.api.cancelEpochBelow).toHaveBeenCalledTimes(1);
+    expect(mockSession.api.closeArchive).toHaveBeenCalledTimes(1);
+    expect(frame0.bitmap.close).toHaveBeenCalledTimes(1);
+    expect(clearAllTextures).toHaveBeenCalledTimes(1);
+    expect(mockSession.dispose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("reader-loading")).not.toBeInTheDocument();
+    expect(getLatestErrorViewProps()).toEqual({
+      mode: "archive",
+      message: "WebGL2 描画の初期化に失敗しました",
+      errorCode: "WEBGL_INIT_FAILED",
+      onBackToHome: expect.any(Function),
+    });
+  });
+
+  it("popstateによる'/'復帰時にreleaseRuntimeとclearSession()を実行し、同一ルートpopstateでは維持しWebGLエラー後のpopstateでもclearSession()を実行すること", async () => {
+    const deletePageTexture = vi.fn();
+    const clearAllTextures = vi.fn();
+    const frame0 = createReadyFrame(0, 1);
+    const mockSession = createMockCoordinatorSession({
+      requestVisiblePages: vi.fn(
+        async (
+          pageIndices: readonly number[],
+          _prefetch: readonly number[],
+          epoch: number,
+        ) => {
+          if (pageIndices[0] === 0) return [frame0];
+          return pageIndices.map((index) => createReadyFrame(index, epoch));
+        },
+      ),
+    });
+
+    const { unmount } = renderWithSession({}, () => mockSession.handle);
+
+    act(() => {
+      getLatestCanvasProps().onRendererReady?.({
+        deletePageTexture,
+        clearAllTextures,
+      });
+    });
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    // 1. 同一ルート(/read/local?page=2)上の popstate ではセッションとランタイムを維持する
+    act(() => {
+      window.history.replaceState(null, "", "/read/local?page=2");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(useLocalReaderSessionStore.getState().session).not.toBeNull();
+    expect(mockSession.dispose).not.toHaveBeenCalled();
+
+    // 2. '/' への popstate 復帰時は releaseRuntime と clearSession() を実行し replace('/') を割り込ませない
+    window.history.replaceState(null, "", "/");
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
+    act(() => {
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+
+    expect(mockSession.api.cancelEpochBelow).toHaveBeenCalledTimes(1);
+    expect(mockSession.api.closeArchive).toHaveBeenCalledTimes(1);
+    expect(frame0.bitmap.close).toHaveBeenCalledTimes(1);
+    expect(clearAllTextures).toHaveBeenCalledTimes(1);
+    expect(mockSession.dispose).toHaveBeenCalledTimes(1);
+    expect(useLocalReaderSessionStore.getState().session).toBeNull();
+    expect(replaceStateSpy).not.toHaveBeenCalled();
+    unmount();
+
+    // 3. WebGL2エラー後(runtimeRef.current === null)でも '/' への popstate で clearSession() と clearAllTextures() が実行される
+    replaceStateSpy.mockRestore();
+    window.history.replaceState(null, "", "/read/local");
+    const errorClearTextures = vi.fn();
+    const errorFallbackSession = createMockCoordinatorSession();
+    renderWithSession({}, () => errorFallbackSession.handle);
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    act(() => {
+      getLatestCanvasProps().onFatalError?.(
+        "WEBGL_INIT_FAILED",
+        "再初期化失敗",
+      );
+      getLatestCanvasProps().onRendererReady?.({
+        deletePageTexture: vi.fn(),
+        clearAllTextures: errorClearTextures,
+      });
+    });
+    expect(useLocalReaderSessionStore.getState().session).not.toBeNull();
+
+    window.history.replaceState(null, "", "/");
+    act(() => {
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(errorClearTextures).toHaveBeenCalledTimes(1);
+    expect(useLocalReaderSessionStore.getState().session).toBeNull();
+  });
+
+  it("pushState経由で/read/localへ遷移後のhandleClose()がwindow.history.back()で二重'/'を作らずTR-10のreplace('/')も割り込まないこと (AC-RD-08)", async () => {
+    const deletePageTexture = vi.fn();
+    const clearAllTextures = vi.fn();
+    const mockSession = createMockCoordinatorSession();
+    const file = new File(["zip-bytes"], "push-history.cbz", {
+      type: "application/x-cbz",
+    });
+
+    window.history.replaceState(null, "", "/");
+    window.history.pushState({ exLibrisCanGoBackFrom: "/" }, "", "/read/local");
+    useLocalReaderSessionStore.getState().openLocalFile(file);
+
+    render(
+      <ServiceProvider createCoordinatorSession={() => mockSession.handle}>
+        <RouterProvider>
+          <ReaderPage />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+
+    act(() => {
+      getLatestCanvasProps().onRendererReady?.({
+        deletePageTexture,
+        clearAllTextures,
+      });
+    });
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    const historyBackSpy = vi.spyOn(window.history, "back");
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
+    const pushStateSpy = vi.spyOn(window.history, "pushState");
+    const popstatePromise = new Promise<void>((resolve) => {
+      window.addEventListener("popstate", () => resolve(), { once: true });
+    });
+
+    act(() => {
+      getLatestHudProps().onClose();
+    });
+
+    expect(historyBackSpy).toHaveBeenCalledTimes(1);
+    expect(replaceStateSpy).not.toHaveBeenCalled();
+    expect(pushStateSpy).not.toHaveBeenCalled();
+    expect(useLocalReaderSessionStore.getState().session).toBeNull();
+
+    await act(async () => {
+      await popstatePromise;
+    });
+
+    expect(window.location.pathname).toBe("/");
+    expect(replaceStateSpy).not.toHaveBeenCalled();
+    expect(mockSession.api.closeArchive).toHaveBeenCalledTimes(1);
+    expect(mockSession.dispose).toHaveBeenCalledTimes(1);
   });
 });

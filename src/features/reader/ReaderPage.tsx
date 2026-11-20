@@ -16,6 +16,7 @@ import type {
   ZipErrorCode,
 } from "../../engine/types";
 import { ZipArchiveError, isAbortError } from "../../engine/zip/errors";
+import { matchRoute } from "../../shared/router/routeMatcher";
 import { useRouter } from "../../shared/router/routerContext";
 import {
   ReaderCanvas,
@@ -122,7 +123,7 @@ export function ReaderPage({
   initialSnapshot,
 }: ReaderPageProps): ReactNode {
   const { createCoordinatorSession } = useServices();
-  const { replace } = useRouter();
+  const { replace, back } = useRouter();
   const session = useLocalReaderSessionStore((state) => state.session);
   const clearSession = useLocalReaderSessionStore(
     (state) => state.clearSession,
@@ -140,6 +141,8 @@ export function ReaderPage({
   const [archiveError, setArchiveError] = useState<ExtractedReaderError | null>(
     initialSnapshot?.archiveError ?? null,
   );
+  const [webglFatalError, setWebglFatalError] =
+    useState<ExtractedReaderError | null>(null);
   const [isOpening, setIsOpening] = useState<boolean>(
     initialSnapshot !== undefined ? (initialSnapshot.isOpening ?? false) : true,
   );
@@ -160,6 +163,7 @@ export function ReaderPage({
   currentPageIndexRef.current = currentPageIndex;
   const archiveErrorRef = useRef(archiveError);
   archiveErrorRef.current = archiveError;
+  const webglFatalErrorRef = useRef<ExtractedReaderError | null>(null);
   const isOpeningRef = useRef(isOpening);
   isOpeningRef.current = isOpening;
 
@@ -174,6 +178,16 @@ export function ReaderPage({
     rendererHandleRef.current?.clearAllTextures();
     runtime.coordinator.dispose();
   }, []);
+
+  const releaseResources = useCallback(() => {
+    const runtime = runtimeRef.current;
+    if (runtime !== null) {
+      releaseRuntime(runtime);
+    } else {
+      epochRef.current += 1;
+      rendererHandleRef.current?.clearAllTextures();
+    }
+  }, [releaseRuntime]);
 
   const reportArchiveError = useCallback(
     (errorState: ExtractedReaderError, detail: string) => {
@@ -191,16 +205,10 @@ export function ReaderPage({
       return;
     }
     isClosingRef.current = true;
-    const runtime = runtimeRef.current;
-    if (runtime !== null) {
-      releaseRuntime(runtime);
-    } else {
-      epochRef.current += 1;
-      rendererHandleRef.current?.clearAllTextures();
-    }
+    releaseResources();
     clearSession();
-    replace("/");
-  }, [clearSession, releaseRuntime, replace]);
+    back();
+  }, [back, clearSession, releaseResources]);
 
   useEffect(() => {
     onRegisterExit?.(handleClose);
@@ -320,7 +328,9 @@ export function ReaderPage({
 
   useEffect(() => {
     if (session === null) {
-      replace("/");
+      if (!isClosingRef.current) {
+        replace("/");
+      }
       return;
     }
 
@@ -329,6 +339,13 @@ export function ReaderPage({
     }
 
     isClosingRef.current = false;
+
+    if (webglFatalErrorRef.current !== null) {
+      isOpeningRef.current = false;
+      setIsOpening(false);
+      return;
+    }
+
     const coordinator = createCoordinatorSession();
     const l1Cache = new L1PageCache({
       onEvictTexture: (evictedPageIndex) => {
@@ -403,10 +420,34 @@ export function ReaderPage({
     reportArchiveError,
   ]);
 
+  useEffect(() => {
+    if (initialSnapshot !== undefined || session === null) {
+      return;
+    }
+
+    const handlePopState = () => {
+      const windowPath = `${window.location.pathname}${window.location.search}`;
+      if (
+        matchRoute(windowPath).name !== "reader-local" &&
+        !isClosingRef.current
+      ) {
+        isClosingRef.current = true;
+        releaseResources();
+        clearSession();
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [clearSession, initialSnapshot, releaseResources, session]);
+
   const goToPage = useCallback(
     (requestedIndex: number) => {
       const total = totalPagesRef.current;
       if (
+        webglFatalErrorRef.current !== null ||
         archiveErrorRef.current !== null ||
         isOpeningRef.current ||
         total <= 0
@@ -469,7 +510,10 @@ export function ReaderPage({
 
   const handleTapAt = useCallback(
     (clientX: number, rect: DOMRect) => {
-      if (archiveErrorRef.current !== null) {
+      if (
+        webglFatalErrorRef.current !== null ||
+        archiveErrorRef.current !== null
+      ) {
         return;
       }
       const ratio = resolveTapRatio(clientX, rect);
@@ -544,20 +588,34 @@ export function ReaderPage({
 
   const handleWebGLFatalError = useCallback(
     (code: WebGLFatalErrorCode, message: string) => {
-      reportArchiveError(
-        { code, message: getReaderErrorMessage(code) },
+      const errorState: ExtractedReaderError = {
+        code,
+        message: getReaderErrorMessage(code),
+      };
+      diagnosticLogger.error(
+        "reader",
+        errorState.message,
         `${code}: ${message}`,
       );
+      webglFatalErrorRef.current = errorState;
+      setWebglFatalError(errorState);
+      isOpeningRef.current = false;
+      setIsOpening(false);
+      const runtime = runtimeRef.current;
+      if (runtime !== null) {
+        releaseRuntime(runtime);
+      }
     },
-    [reportArchiveError],
+    [releaseRuntime],
   );
 
   if (session === null) {
     return null;
   }
 
+  const activeFatalError = webglFatalError ?? archiveError;
   const showLoading =
-    archiveError === null && (isOpening || currentFrame === null);
+    activeFatalError === null && (isOpening || currentFrame === null);
 
   return (
     <div
@@ -591,7 +649,7 @@ export function ReaderPage({
           </div>
         )}
 
-        {archiveError === null && currentFrame?.status === "error" && (
+        {activeFatalError === null && currentFrame?.status === "error" && (
           <ReaderErrorView
             mode="page"
             message={getReaderErrorMessage(currentFrame.errorCode)}
@@ -600,7 +658,7 @@ export function ReaderPage({
         )}
 
         <ReaderHudOverlay
-          isOpen={archiveError === null && isHudOpen}
+          isOpen={activeFatalError === null && isHudOpen}
           fileName={session.fileName}
           currentPageIndex={currentPageIndex}
           totalPages={totalPages}
@@ -610,11 +668,11 @@ export function ReaderPage({
         />
       </div>
 
-      {archiveError !== null && (
+      {activeFatalError !== null && (
         <ReaderErrorView
           mode="archive"
-          message={archiveError.message}
-          errorCode={archiveError.code}
+          message={activeFatalError.message}
+          errorCode={activeFatalError.code}
           onBackToHome={handleClose}
         />
       )}

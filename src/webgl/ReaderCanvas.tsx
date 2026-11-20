@@ -163,10 +163,11 @@ export function ReaderCanvas({
     isContextLostRef.current = false;
 
     const handle = createRendererHandle(renderer);
+    const readDpr = (): number =>
+      window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
     const syncSize = (entry?: ResizeObserverEntry): boolean => {
       const { width, height } = readElementCssSize(canvas, entry);
-      const dpr = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
-      return renderer.resize(width, height, dpr);
+      return renderer.resize(width, height, readDpr());
     };
 
     syncSize();
@@ -223,7 +224,30 @@ export function ReaderCanvas({
       observer.observe(canvas);
     }
 
+    let dprMediaQueryList: MediaQueryList | null = null;
+    function cleanupDprListener(): void {
+      if (dprMediaQueryList !== null) {
+        dprMediaQueryList.removeEventListener("change", handleDprChange);
+        dprMediaQueryList = null;
+      }
+    }
+    function handleDprChange(): void {
+      bindDprListener();
+      if (!isContextLostRef.current && syncSize()) {
+        applyFrame(renderer, frameRef.current);
+      }
+    }
+    function bindDprListener(): void {
+      cleanupDprListener();
+      dprMediaQueryList = window.matchMedia(`(resolution: ${readDpr()}dppx)`);
+      dprMediaQueryList.addEventListener("change", handleDprChange);
+    }
+    if (typeof window.matchMedia === "function") {
+      bindDprListener();
+    }
+
     return () => {
+      cleanupDprListener();
       observer?.disconnect();
       canvas.removeEventListener("webglcontextlost", handleContextLost);
       canvas.removeEventListener("webglcontextrestored", handleContextRestored);
