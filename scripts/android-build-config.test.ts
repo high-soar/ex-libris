@@ -203,7 +203,7 @@ describe("Android build, Capacitor & Remote Agent governance invariants", () => 
     expect(gradle).not.toMatch(/release\s*\{[^}]*?defaultDebugKeystore/);
   });
 
-  it("android/app/build.gradle が gradle.taskGraph.whenReady で REQUIRE_FIXED_SIGNING=true および Release 系タスクの無署名ビルドを GradleException で停止すること (AC-APK-01, AC-APK-03)", () => {
+  it("android/app/build.gradle が gradle.taskGraph.whenReady で REQUIRE_FIXED_SIGNING=true および Release 系タスク（ReleaseBundle 等含む）の無署名ビルドを GradleException で停止すること (AC-APK-01, AC-APK-03)", () => {
     const gradle = fs.readFileSync(
       path.resolve(repoRoot, "android/app/build.gradle"),
       "utf8",
@@ -211,9 +211,25 @@ describe("Android build, Capacitor & Remote Agent governance invariants", () => 
 
     expect(gradle).toContain("gradle.taskGraph.whenReady");
     expect(gradle).toContain('System.getenv("REQUIRE_FIXED_SIGNING")');
-    expect(gradle).toContain("assemble|bundle|package|sign");
-    expect(gradle).toContain("Release");
+    expect(gradle).toContain(
+      "^(assemble|bundle|package|sign).*Release(Bundle|Apks|UniversalApk)?$",
+    );
     expect(gradle).toContain("!hasEnvKeystore");
+  });
+
+  it("android/app/build.gradle が Configuration Phase で ci-signing.keystore を書き出さず Execution Phase タスク (prepareCiSigningKeystore, mustRunAfter clean) に遅延して clean 併用ビルドを保証すること (AC-APK-01)", () => {
+    const gradle = fs.readFileSync(
+      path.resolve(repoRoot, "android/app/build.gradle"),
+      "utf8",
+    );
+
+    const configBlock = gradle.slice(0, gradle.indexOf("android {"));
+    expect(configBlock).not.toContain("ciKeystoreFile.bytes");
+    expect(gradle).toContain('tasks.register("prepareCiSigningKeystore")');
+    expect(gradle).toContain("mustRunAfter");
+    expect(gradle).toContain("doLast");
+    expect(gradle).toContain("validateSigning");
+    expect(gradle).toContain("prepareSigningKeystoreTask");
   });
 
   it("build-android.yml が concurrency (cancel-in-progress: false) を設定し並列実行による versionCode 逆転を防ぐこと (AC-APK-02)", () => {
@@ -346,6 +362,8 @@ describe("Android build, Capacitor & Remote Agent governance invariants", () => 
     expect(androidCompileSection).toContain("./gradlew assembleDebug");
     expect(androidCompileSection).toContain("./gradlew help");
     expect(androidCompileSection).toContain("./gradlew assembleRelease");
+    expect(androidCompileSection).toContain("./gradlew signReleaseBundle");
+    expect(androidCompileSection).toContain("ci-signing.keystore");
     expect(androidCompileSection).toContain("ANDROID_KEYSTORE_BASE64");
     expect(androidCompileSection).toContain("BUILD_NUMBER=0");
     expect(androidCompileSection).toContain("BUILD_NUMBER=2100000001");
