@@ -127,10 +127,14 @@ describe("RouterProvider", () => {
       </RouterProvider>,
     );
 
-    // pushState で /read/local へ遷移
+    // pushState で /read/local へ遷移（履歴マーカー付与）
     await user.click(screen.getByTestId("btn-nav-reader"));
     expect(pushStateSpy).toHaveBeenCalledTimes(1);
-    expect(pushStateSpy).toHaveBeenCalledWith(null, "", "/read/local");
+    expect(pushStateSpy).toHaveBeenCalledWith(
+      { exLibrisCanGoBackFrom: "/" },
+      "",
+      "/read/local",
+    );
     expect(screen.getByTestId("probe-current-path")).toHaveTextContent(
       "/read/local",
     );
@@ -179,7 +183,7 @@ describe("RouterProvider", () => {
       </RouterProvider>,
     );
 
-    // reader-local からの back() は "/" へ replace 遷移
+    // reader-local からの back() は履歴マーカー不在時に "/" へ replace フォールバック
     await user.click(screen.getByTestId("btn-back"));
     expect(replaceStateSpy).toHaveBeenCalledTimes(1);
     expect(replaceStateSpy).toHaveBeenCalledWith(null, "", "/");
@@ -192,6 +196,58 @@ describe("RouterProvider", () => {
     await user.click(screen.getByTestId("btn-back"));
     expect(replaceStateSpy).toHaveBeenCalledTimes(1);
     expect(pushStateSpy).not.toHaveBeenCalled();
+  });
+
+  it("back()は'/'からpushState遷移したreader-localではwindow.history.back()で巻き戻し、それ以外の起点はreplace('/')へフォールバックすること", async () => {
+    const user = userEvent.setup();
+    const historyBackSpy = vi.spyOn(window.history, "back");
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
+
+    const { unmount } = render(
+      <RouterProvider initialPath="/">
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+
+    // 1. "/" -> pushState("/read/local") 後の back() は window.history.back() で履歴を巻き戻す
+    await user.click(screen.getByTestId("btn-nav-reader"));
+    expect(screen.getByTestId("probe-current-path")).toHaveTextContent(
+      "/read/local",
+    );
+    replaceStateSpy.mockClear();
+
+    await user.click(screen.getByTestId("btn-back"));
+    expect(historyBackSpy).toHaveBeenCalledTimes(1);
+    expect(replaceStateSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(screen.getByTestId("probe-current-path")).toHaveTextContent("/");
+      });
+    });
+    expect(screen.getByTestId("probe-route-name")).toHaveTextContent(
+      "bookshelf",
+    );
+    unmount();
+
+    // 2. 起点マーカーが "/" 以外（例: "/unknown"）の場合は replace("/") へフォールバック
+    window.history.replaceState(
+      { exLibrisCanGoBackFrom: "/unknown" },
+      "",
+      "/read/local",
+    );
+    render(
+      <RouterProvider>
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+
+    historyBackSpy.mockClear();
+    replaceStateSpy.mockClear();
+    await user.click(screen.getByTestId("btn-back"));
+    expect(historyBackSpy).not.toHaveBeenCalled();
+    expect(replaceStateSpy).toHaveBeenCalledWith(null, "", "/");
+    expect(screen.getByTestId("probe-current-path")).toHaveTextContent("/");
   });
 
   it("popstateイベントおよびinitialPathプロップ変更に追従しアンマウント時にリスナーを解除すること", () => {

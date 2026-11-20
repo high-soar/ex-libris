@@ -504,4 +504,147 @@ describe("ReaderCanvas", () => {
     );
     expect(onRendererReady).toHaveBeenLastCalledWith(null);
   });
+
+  it("window.matchMediaでDPR単独変化を追従してviewport更新と現在フレーム再描画を行い、コンテキストロスト中はスキップしアンマウント時に解除すること (AC-GL-04)", () => {
+    interface MockMediaQueryEntry {
+      listeners: Set<() => void>;
+      addEventListener: ReturnType<typeof vi.fn>;
+      removeEventListener: ReturnType<typeof vi.fn>;
+    }
+
+    const mediaQueryEntries = new Map<string, MockMediaQueryEntry>();
+    const matchMediaMock = vi.fn((query: string) => {
+      let entry = mediaQueryEntries.get(query);
+      if (!entry) {
+        const listeners = new Set<() => void>();
+        entry = {
+          listeners,
+          addEventListener: vi.fn(
+            (type: string, listener: EventListenerOrEventListenerObject) => {
+              if (type === "change" && typeof listener === "function") {
+                listeners.add(listener as () => void);
+              }
+            },
+          ),
+          removeEventListener: vi.fn(
+            (type: string, listener: EventListenerOrEventListenerObject) => {
+              if (type === "change" && typeof listener === "function") {
+                listeners.delete(listener as () => void);
+              }
+            },
+          ),
+        };
+        mediaQueryEntries.set(query, entry);
+      }
+
+      return {
+        media: query,
+        matches: true,
+        onchange: null,
+        addEventListener: entry.addEventListener,
+        removeEventListener: entry.removeEventListener,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(() => true),
+      } as unknown as MediaQueryList;
+    });
+
+    vi.stubGlobal("matchMedia", matchMediaMock);
+    Object.defineProperty(window, "devicePixelRatio", {
+      configurable: true,
+      value: 1,
+    });
+
+    const { gl, mocks } = createMockWebGL2Context();
+    const frame0 = createReadyFrame(0, 1);
+
+    const { unmount } = render(
+      <ReaderCanvas frame={frame0} getWebGL2Context={() => gl} />,
+    );
+
+    const canvas = screen.getByTestId("reader-canvas");
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
+      width: 400,
+      height: 600,
+      top: 0,
+      left: 0,
+      bottom: 600,
+      right: 400,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    expect(matchMediaMock).toHaveBeenCalledWith("(resolution: 1dppx)");
+    const dpr1Entry = mediaQueryEntries.get("(resolution: 1dppx)");
+    expect(dpr1Entry?.addEventListener).toHaveBeenCalledWith(
+      "change",
+      expect.any(Function),
+    );
+    expect(dpr1Entry?.listeners.size).toBe(1);
+
+    // 1. CSSサイズ不変のまま DPR 1 -> 2 へ変化すると viewport 更新＆再描画＆新 DPR 再バインドされる
+    mocks.viewport.mockClear();
+    mocks.drawArrays.mockClear();
+    Object.defineProperty(window, "devicePixelRatio", {
+      configurable: true,
+      value: 2,
+    });
+
+    act(() => {
+      for (const listener of [...(dpr1Entry?.listeners ?? [])]) {
+        listener();
+      }
+    });
+
+    expect(dpr1Entry?.removeEventListener).toHaveBeenCalledWith(
+      "change",
+      expect.any(Function),
+    );
+    expect(matchMediaMock).toHaveBeenCalledWith("(resolution: 2dppx)");
+    expect(mocks.viewport).toHaveBeenCalledWith(0, 0, 800, 1200);
+    expect(mocks.drawArrays).toHaveBeenCalledTimes(1);
+
+    // 2. サイズも DPR も実質不変の change 発火時は重複描画をスキップする
+    const dpr2Entry = mediaQueryEntries.get("(resolution: 2dppx)");
+    expect(dpr2Entry?.listeners.size).toBe(1);
+    mocks.viewport.mockClear();
+    mocks.drawArrays.mockClear();
+    act(() => {
+      for (const listener of [...(dpr2Entry?.listeners ?? [])]) {
+        listener();
+      }
+    });
+    expect(mocks.viewport).not.toHaveBeenCalled();
+    expect(mocks.drawArrays).not.toHaveBeenCalled();
+
+    // 3. webglcontextlost 中は DPR 変化で描画せず、新 DPR へ再バインドのみ継続する
+    act(() => {
+      canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    });
+    mocks.viewport.mockClear();
+    mocks.drawArrays.mockClear();
+    Object.defineProperty(window, "devicePixelRatio", {
+      configurable: true,
+      value: 1.5,
+    });
+    act(() => {
+      for (const listener of [...(dpr2Entry?.listeners ?? [])]) {
+        listener();
+      }
+    });
+    expect(mocks.viewport).not.toHaveBeenCalled();
+    expect(mocks.drawArrays).not.toHaveBeenCalled();
+    expect(matchMediaMock).toHaveBeenCalledWith("(resolution: 1.5dppx)");
+
+    // 4. アンマウント時に現在監視中の MediaQueryList リスナーが解除される
+    const dpr15Entry = mediaQueryEntries.get("(resolution: 1.5dppx)");
+    expect(dpr15Entry?.listeners.size).toBe(1);
+    unmount();
+    expect(dpr15Entry?.removeEventListener).toHaveBeenCalledWith(
+      "change",
+      expect.any(Function),
+    );
+    expect(dpr15Entry?.listeners.size).toBe(0);
+  });
 });
