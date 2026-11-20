@@ -6,7 +6,14 @@ import {
   render,
   screen,
 } from "@testing-library/react";
-import { type ReactElement, StrictMode, useEffect, useRef } from "react";
+import {
+  type ReactElement,
+  StrictMode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { flushSync } from "react-dom";
 import {
   afterEach,
   beforeEach,
@@ -1229,5 +1236,107 @@ describe("ReaderPage", () => {
     expect(replaceStateSpy).not.toHaveBeenCalled();
     expect(mockSession.api.closeArchive).toHaveBeenCalledTimes(1);
     expect(mockSession.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("popstateで親ルーターがReaderPageのpopstateリスナー発火前にReaderPageをアンマウントした場合でもセッションとリソースが解放されること (R1-15)", async () => {
+    const deletePageTexture = vi.fn();
+    const clearAllTextures = vi.fn();
+    const frame0 = createReadyFrame(0, 1);
+    const mockSession = createMockCoordinatorSession({
+      requestVisiblePages: vi.fn(
+        async (
+          pageIndices: readonly number[],
+          _prefetch: readonly number[],
+          epoch: number,
+        ) => {
+          if (pageIndices[0] === 0) return [frame0];
+          return pageIndices.map((index) => createReadyFrame(index, epoch));
+        },
+      ),
+    });
+
+    const file = new File(["zip-bytes"], "parent-unmount-popstate.cbz", {
+      type: "application/x-cbz",
+    });
+    window.history.replaceState(null, "", "/");
+
+    function ParentRouteHost() {
+      const [isReaderActive, setIsReaderActive] = useState(false);
+
+      useEffect(() => {
+        const handleParentPopState = () => {
+          if (window.location.pathname !== "/read/local") {
+            flushSync(() => {
+              setIsReaderActive(false);
+            });
+          }
+        };
+        window.addEventListener("popstate", handleParentPopState);
+        return () => {
+          window.removeEventListener("popstate", handleParentPopState);
+        };
+      }, []);
+
+      return isReaderActive ? (
+        <ReaderPage />
+      ) : (
+        <button
+          type="button"
+          data-testid="open-reader-stub"
+          onClick={() => {
+            useLocalReaderSessionStore.getState().openLocalFile(file);
+            window.history.pushState(
+              { exLibrisCanGoBackFrom: "/" },
+              "",
+              "/read/local",
+            );
+            setIsReaderActive(true);
+          }}
+        >
+          bookshelf
+        </button>
+      );
+    }
+
+    render(
+      <ServiceProvider createCoordinatorSession={() => mockSession.handle}>
+        <RouterProvider>
+          <ParentRouteHost />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+
+    fireEvent.click(screen.getByTestId("open-reader-stub"));
+
+    act(() => {
+      getLatestCanvasProps().onRendererReady?.({
+        deletePageTexture,
+        clearAllTextures,
+      });
+    });
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(useLocalReaderSessionStore.getState().session).not.toBeNull();
+
+    const popstatePromise = new Promise<void>((resolve) => {
+      window.addEventListener("popstate", () => resolve(), { once: true });
+    });
+
+    await act(async () => {
+      window.history.back();
+      await popstatePromise;
+    });
+
+    expect(screen.getByTestId("open-reader-stub")).toBeVisible();
+    expect(window.location.pathname).toBe("/");
+    expect(mockSession.api.cancelEpochBelow).toHaveBeenCalledTimes(1);
+    expect(mockSession.api.closeArchive).toHaveBeenCalledTimes(1);
+    expect(frame0.bitmap.close).toHaveBeenCalledTimes(1);
+    expect(clearAllTextures).toHaveBeenCalled();
+    expect(mockSession.dispose).toHaveBeenCalledTimes(1);
+    expect(useLocalReaderSessionStore.getState().session).toBeNull();
   });
 });
