@@ -18,6 +18,10 @@ export interface RouterProviderProps {
   readonly initialPath?: string;
 }
 
+interface ExLibrisHistoryState {
+  readonly exLibrisCanGoBackFrom?: unknown;
+}
+
 function readWindowPath(): string {
   return `${window.location.pathname}${window.location.search}`;
 }
@@ -69,7 +73,11 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
       if (options?.replace) {
         window.history.replaceState(null, "", target);
       } else {
-        window.history.pushState(null, "", target);
+        window.history.pushState(
+          { exLibrisCanGoBackFrom: currentPathRef.current },
+          "",
+          target,
+        );
       }
       commitPathState(target);
     },
@@ -87,6 +95,11 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
 
   const back = useCallback(() => {
     if (route.name === "reader-local") {
+      const state = window.history.state as ExLibrisHistoryState | null;
+      if (state?.exLibrisCanGoBackFrom === BOOKSHELF_ROUTE.path) {
+        window.history.back();
+        return;
+      }
       navigate(BOOKSHELF_ROUTE.path, { replace: true });
     }
   }, [route.name, navigate]);

@@ -5,7 +5,6 @@ import {
   fireEvent,
   render,
   screen,
-  waitFor,
 } from "@testing-library/react";
 import { type ReactElement, StrictMode, useEffect, useRef } from "react";
 import {
@@ -1209,6 +1208,9 @@ describe("ReaderPage", () => {
     const historyBackSpy = vi.spyOn(window.history, "back");
     const replaceStateSpy = vi.spyOn(window.history, "replaceState");
     const pushStateSpy = vi.spyOn(window.history, "pushState");
+    const popstatePromise = new Promise<void>((resolve) => {
+      window.addEventListener("popstate", () => resolve(), { once: true });
+    });
 
     act(() => {
       getLatestHudProps().onClose();
@@ -1220,11 +1222,10 @@ describe("ReaderPage", () => {
     expect(useLocalReaderSessionStore.getState().session).toBeNull();
 
     await act(async () => {
-      await waitFor(() => {
-        expect(window.location.pathname).toBe("/");
-      });
+      await popstatePromise;
     });
 
+    expect(window.location.pathname).toBe("/");
     expect(replaceStateSpy).not.toHaveBeenCalled();
     expect(mockSession.api.closeArchive).toHaveBeenCalledTimes(1);
     expect(mockSession.dispose).toHaveBeenCalledTimes(1);

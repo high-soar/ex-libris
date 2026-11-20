@@ -4,7 +4,11 @@ import type { AppBridge, BackButtonListener } from "./types";
 export class CapacitorAppBridge implements AppBridge {
   addBackButtonListener(listener: BackButtonListener): () => void {
     let isRemoved = false;
-    const handlePromise = App.addListener("backButton", listener);
+    const handlePromise = App.addListener("backButton", (event) => {
+      if (!isRemoved) {
+        listener(event);
+      }
+    });
     void handlePromise.catch(() => {});
 
     return () => {
