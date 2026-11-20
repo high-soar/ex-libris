@@ -19,6 +19,16 @@ export async function waitForServicesReady(page: Page): Promise<void> {
     .toBe(true);
 }
 
+export async function resetTestDatabase(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const resetFn = window.__exLibrisServices?.resetTestDb;
+    if (typeof resetFn !== "function") {
+      throw new Error("window.__exLibrisServices.resetTestDb is not available");
+    }
+    await resetFn();
+  });
+}
+
 export function trackPageErrors(page: Page): Error[] {
   const errors: Error[] = [];
   page.on("pageerror", (error) => {
