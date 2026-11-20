@@ -2,9 +2,20 @@
 type: spec-architecture
 title: "4層＋マルチスレッドアーキテクチャと共通インターフェース契約"
 description: "Streaming & Provider・Engine Worker・Storage・Viewer & Bridge の4層責務境界、Zero-Copy 転送、メモリ予算定数、および TypeScript コア契約の正本"
-status: "Approved"
+status: "Review (#27)"
 updated: "2026-11-20"
-tags: [architecture, web-worker, webgl2, comlink, capacitor, cache, oauth]
+tags:
+  [
+    architecture,
+    web-worker,
+    webgl2,
+    comlink,
+    capacitor,
+    cache,
+    oauth,
+    android,
+    apk,
+  ]
 related_specs:
   - docs/index.md
   - docs/specs/requirements.md
@@ -12,6 +23,7 @@ related_specs:
   - docs/specs/screen-transitions.md
   - docs/specs/engine/zip-streaming.md
   - docs/specs/engine/webgl2-renderer.md
+  - docs/guidelines/workflow.md
   - docs/guidelines/testing.md
 related_tests:
   - src/App.test.tsx
@@ -345,3 +357,25 @@ export interface ViewportSlotLayout {
 2. **閲覧最優先のバックグラウンド・プリエンプション**:
    - 表紙 WebP 抽出スケジューラ（`CoverExtractionScheduler`）は `viewport-high`（現在 `SCR-01` に表示中のカード）と `background-low`（最大 2 冊/秒）の 2 段キューを持つ。
    - ユーザーがリーダー（`SCR-03`）へ遷移した瞬間、`CoverExtractionScheduler.pause()` を同期呼び出しして新規の表紙 Range リクエスト発行を完全に停止し、リーダー終了（`SCR-01` / `SCR-02` 復帰）時に再開する。
+
+---
+
+## 6. Android ビルド・署名・バージョン管理・リリース自動化契約（`AC-APK-01`〜`05`）
+
+ExLibris の検証 APK（`.github/workflows/build-android.yml`）と正式リリース APK（`.github/workflows/release.yml`）間でアンインストール不要（アプリデータ・IndexedDB 保持）の上書きアップデートを保証し、かつ将来の `v0.2` Google OAuth（パッケージ名＋署名証明書 SHA-1 検証）の土台を維持するため、以下の 5 契約を定めます。
+
+### 6.1 署名キーストア保管・Secrets 運用原則
+
+- `PUBLIC` リポジトリ保護のため、キーストアファイル（`android/debug.keystore`, `*.keystore`, `*.jks`）およびパスワード・エイリアスはリポジトリへ直コミットせず、`.gitignore` 除外の上で GitHub Secrets（`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`）として一元管理する。
+- `build-android.yml`（`debug` / `release` 双方）と `release.yml` は同一の固定キーストアで署名し、`debug`・`release` 間の証明書不一致による上書き拒否を根絶する。
+- PR / push 向け CI（`.github/workflows/ci.yml` の `android-compile` ジョブ）は `NFR-05` のゼロコンフィグ原則に基づき、Secrets 不在状態でも `./gradlew assembleDebug` が通過する構成を維持する。
+
+### 6.2 受け入れ条件（`AC-APK-01` 〜 `AC-APK-05`）
+
+|     契約 ID     | 項目                                                             | 必須要件・仕様                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | 検証箇所                                                                                                                                   |
+| :-------------: | :--------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------- |
+| **`AC-APK-01`** | **固定署名キーストア ＆ 不完全設定早期検知**                     | `android/app/build.gradle` は `applicationId "com.highsoar.exlibris"` を固定保持する。`ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD` のいずれか 1 つ以上が非空の場合、**4 変数すべてが非空であることを必須**とし、欠落・空文字・Base64 不正（空白・改行 `\s+` 除去後に `Base64.getDecoder().decode(...)` 失敗または 0 バイト）時は即 `GradleException` で停止する（`'android'` / `'androiddebugkey'` への暗黙フォールバック禁止）。有効時は `signingConfigs.debug` / `signingConfigs.release` 双方へ同一キーストアを設定する。また Release 系ビルドタスク実行時または `REQUIRE_FIXED_SIGNING=true` 指定時に固定キーストアが存在しない場合、ランダムデバッグ鍵へのフォールバックを行わず `GradleException` で停止する。 | `android/app/build.gradle`, `scripts/android-build-config.test.ts`                                                                         |
+| **`AC-APK-02`** | **`versionName` SSOT ＆ ワークフロー横断単調増加 `versionCode`** | `versionName` は `BUILD_NAME` → `-PversionName` → `../../package.json`（`JsonSlurper` 動的読込、`APP_VERSION` と SSOT 一致）の順で解決する。`versionCode` は `BUILD_NUMBER` → `-PversionCode` → `"1"` を整数解決し、`1 <= versionCode <= 2_100_000_000` 範囲外または非整数時は `GradleException` で停止する。`build-android.yml` と `release.yml` の双方でビルド直前に **`Math.floor(Date.now() / 1000) - 1_700_000_000`** を共通算出して `BUILD_NUMBER` へ注入し、ワークフロー横断の `versionCode` 単調増加（ダウングレード拒否回避）を保証する。                                                                                                                                                                                                                             | `android/app/build.gradle`, `build-android.yml`, `release.yml`, `scripts/android-build-config.test.ts`, `src/shared/constants/app.test.ts` |
+| **`AC-APK-03`** | **CI 署名必須ガード（Fail-Fast）**                               | `.github/workflows/build-android.yml`（`debug` / `release` 双方）および `.github/workflows/release.yml`（`steps.check_existing.outputs.exists == 'false'` 時）は、ビルド実行前に 4 つの Secrets が非空かつ `ANDROID_KEYSTORE_BASE64` が有効な Base64 であることを検証し、不備時は即 `exit 1` で停止する。また Gradle 実行時 `REQUIRE_FIXED_SIGNING: "true"` を渡す。一方 `ci.yml`（`android-compile`）は Secret 非依存で `./gradlew assembleDebug` を維持する。                                                                                                                                                                                                                                                                                                                | `.github/workflows/build-android.yml`, `.github/workflows/release.yml`, `.github/workflows/ci.yml`, `scripts/android-build-config.test.ts` |
+| **`AC-APK-04`** | **Step Summary 証明書フィンガープリント可視化**                  | `build-android.yml` および `release.yml`（APK ビルド実行時）は、生成 APK に対し `apksigner verify --print-certs`（不在時は `keytool -printcert -jarfile`）を実行して署名証明書の `SHA-1` / `SHA-256` フィンガープリントを抽出し、`applicationId`・`buildType`・`versionName`・`versionCode`・署名方式と併せて `GITHUB_STEP_SUMMARY` へ出力する。Secret 値（Base64 本体・パスワード・エイリアス）はログおよび Summary へ一切出力しない。                                                                                                                                                                                                                                                                                                                                        | `.github/workflows/build-android.yml`, `.github/workflows/release.yml`, `scripts/android-build-config.test.ts`                             |
+| **`AC-APK-05`** | **Git Tag ＆ 署名済み APK リリース自動発行**                     | `.github/workflows/release.yml` は `main` の `package.json` 更新プッシュおよび `workflow_dispatch`（`refs/heads/main` 必須）で起動し、`v0.0.0` または既存タグ/Release を安全スキップした上で、未発行バージョン時に `AC-APK-01`〜`04` 準拠の署名済み `ex-libris-${TAG}.apk` をビルドし、`gh release create` でタグ＋APK 添付 Release を自動発行する。                                                                                                                                                                                                                                                                                                                                                                                                                           | `.github/workflows/release.yml`, `scripts/android-build-config.test.ts`                                                                    |
