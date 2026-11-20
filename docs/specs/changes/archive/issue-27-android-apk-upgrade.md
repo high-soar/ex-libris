@@ -2,7 +2,7 @@
 type: spec-delta
 title: "Issue #27 差分仕様: Android APK 上書き更新対応（固定署名キーストア・単調増加 versionCode・CI ガード）"
 description: "GitHub Secrets による固定署名キーストア運用、不完全設定の早期エラー検知、ワークフロー横断の単調増加 versionCode、Release 署名必須ガード、および Step Summary フィンガープリント出力を定義する差分仕様"
-status: "Review (#27)"
+status: "Completed (Archived)"
 updated: "2026-11-20"
 issue: "#27"
 tags: [delta, v0.1, android, apk, signing, keystore, versioncode, ci, release]
@@ -38,11 +38,11 @@ related_tests:
 
 ## 2. 変更対象の App 全体正本一覧
 
-|   種別   | 正本ファイル                                                     | 変更概要                                                                                                                                             |
-| :------: | :--------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **更新** | [architecture.md](../architecture.md)                            | §6「Android ビルド・署名・バージョン管理・リリース自動化契約（`AC-APK-01`〜`05`）」を新設し、`related_specs` に `docs/guidelines/workflow.md` を追記 |
-| **更新** | [requirements.md](../requirements.md)                            | §2/`NFR-05` に固定署名上書き互換と PR CI ゼロコンフィグ分離を追記し、§5 `v0.1` 親 Issue 構成を 4 Issues → 5 Issues（`#27` 追加）へ同期               |
-| **更新** | [bug-and-handover-log.md](../../quality/bug-and-handover-log.md) | 実機検証申し送り事項 `HO-04`（完了ゲート: `親 Issue #27 完了前`）を新規登録                                                                          |
+|   種別   | 正本ファイル                                                        | 変更概要                                                                                                                                             |
+| :------: | :------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **更新** | [architecture.md](../../architecture.md)                            | §6「Android ビルド・署名・バージョン管理・リリース自動化契約（`AC-APK-01`〜`05`）」を新設し、`related_specs` に `docs/guidelines/workflow.md` を追記 |
+| **更新** | [requirements.md](../../requirements.md)                            | §2/`NFR-05` に固定署名上書き互換と PR CI ゼロコンフィグ分離を追記し、§5 `v0.1` 親 Issue 構成を 4 Issues → 5 Issues（`#27` 追加）へ同期               |
+| **更新** | [bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) | 実機検証申し送り事項 `HO-04`（完了ゲート: `親 Issue #27 完了前`）を新規登録                                                                          |
 
 ---
 
@@ -108,9 +108,9 @@ related_tests:
 
 ## 6. 申し送り事項・Android 実機検証計画
 
-- **判定（[workflow.md §2.2](../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 A（親 Issue `#27` 完了前に実施）**
+- **判定（[workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 A（親 Issue `#27` 完了前に実施）**
   - **根拠**: Android Gradle ビルド・署名設定（`android/app/build.gradle`）の変更を含み、かつ実機端末上で異なるビルド種別・2 連続ビルド間の上書きインストール互換性（データ保持・`versionCode` 昇順・証明書一致）と起動・Edge-to-Edge 正常性を直接検証する必要があるため（実機観点 4 項目）。
-- **登録済み申し送り**: `HO-04`（[bug-and-handover-log.md](../../quality/bug-and-handover-log.md) 登録済み、状態: `Open`、完了ゲート: `親 Issue #27 完了前`）
+- **登録済み申し送り**: `HO-04`（[bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) 登録済み、状態: `Open`、完了ゲート: `親 Issue #27 完了前`）
 - **実機確認観点（統合 PR Gate 1〜6 通過後に `build-android.yml` 2 ビルドを提示）**:
   1. **初回移行インストール**: Phase 3 PoC の旧ランダム署名 APK が端末にある場合のみ 1 回アンインストールし、固定署名ビルド 1 本目（`debug` APK）を新規インストールして正常起動・バージョン表示（`v0.0.0`）・Edge-to-Edge 表示を確認する。
   2. **2 本目ビルドへの上書きアップデート（アンインストール不要）**: 1 本目を削除せず（可能ならローカル ZIP 一時利用やアプリ起動状態を確認の上）に、2 本目のビルド（例: `build-android.yml` の `release` APK または 2 回目 `debug` APK）を上書きインストールし、「アプリがインストールされませんでした（署名不一致／ダウングレード拒否）」にならず更新完了すること。

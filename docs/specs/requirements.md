@@ -2,7 +2,7 @@
 type: spec-requirements
 title: "全体要件定義・機能一覧・ミニMilestoneロードマップ"
 description: "ExLibris のプロダクトゴール、前提制約、非機能要件（TTFP・メモリ予算）、全機能カタログ割当、および Phase 3〜v1.0 マイルストーン計画の正本"
-status: "Review (#27)"
+status: "Approved (#27)"
 updated: "2026-11-20"
 tags: [requirements, roadmap, mvp, non-functional, ex-libris, android]
 related_specs:
