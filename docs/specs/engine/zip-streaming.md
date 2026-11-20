@@ -10,6 +10,7 @@ related_specs:
   - docs/specs/requirements.md
   - docs/specs/architecture.md
   - docs/specs/engine/webgl2-renderer.md
+  - docs/specs/features/reader.md
   - docs/guidelines/testing.md
 related_tests:
   - src/engine/constants.test.ts
