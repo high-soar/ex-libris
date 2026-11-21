@@ -132,6 +132,34 @@ function collectMissingNeighbors(
   return neighbors.filter((neighbor) => l1Cache.peek(neighbor) === undefined);
 }
 
+function resolveSortedVisiblePages(input: {
+  readonly currentPageIndex: number;
+  readonly totalPages: number;
+  readonly effectiveSpreadMode: EffectiveSpreadMode;
+  readonly readingDirection: ReadingDirection;
+  readonly spreadPageOffset: SpreadPageOffset;
+  readonly knownDimensions: ReadonlyMap<number, PageDimensions>;
+}): number[] {
+  const resolvedLayout = computeViewportSlotLayout(input);
+  return resolvedLayout.slots
+    .map((slot) => slot.pageIndex)
+    .sort((a, b) => a - b);
+}
+
+function buildFramesRecord(
+  pageIndices: readonly number[],
+  lookupFrame: (pageIndex: number) => DecodedPageFrame | undefined,
+): Record<number, DecodedPageFrame> {
+  const frames: Record<number, DecodedPageFrame> = {};
+  for (const pageIndex of pageIndices) {
+    const frame = lookupFrame(pageIndex);
+    if (frame !== undefined) {
+      frames[pageIndex] = frame;
+    }
+  }
+  return frames;
+}
+
 function resolveTapRatio(clientX: number, rect: DOMRect): number {
   if (rect.width <= 0) {
     return 0.5;
@@ -514,8 +542,11 @@ export function ReaderPage({
         setKnownDimensions(new Map(knownDimensionsRef.current));
       }
 
-      if (missingVisible.length === 0) {
-        const resolvedLayout = computeViewportSlotLayout({
+      const scheduleVisibleWindowAndNeighbors = (
+        includePrefetch: boolean,
+        lookupFrame: (targetPageIndex: number) => DecodedPageFrame | undefined,
+      ) => {
+        const visiblePageIndices = resolveSortedVisiblePages({
           currentPageIndex: pageIndex,
           totalPages: pageTotal,
           effectiveSpreadMode: effectiveMode,
@@ -523,14 +554,7 @@ export function ReaderPage({
           spreadPageOffset: offset,
           knownDimensions: knownDimensionsRef.current,
         });
-        const visiblePageIndices = resolvedLayout.slots
-          .map((slot) => slot.pageIndex)
-          .sort((a, b) => a - b);
-        const resolvedFrames: Record<number, DecodedPageFrame> = {};
-        for (const visiblePage of visiblePageIndices) {
-          resolvedFrames[visiblePage] = cachedFrames[visiblePage];
-        }
-        setFramesByPage(resolvedFrames);
+        setFramesByPage(buildFramesRecord(visiblePageIndices, lookupFrame));
 
         const protectedPages = buildSpreadProtectedWindow(
           visiblePageIndices,
@@ -542,10 +566,9 @@ export function ReaderPage({
           effectiveMode,
           pageTotal,
         );
-        const prefetchTargets = buildSpreadPrefetchTargets(
-          visiblePageIndices,
-          pageTotal,
-        );
+        const prefetchTargets = includePrefetch
+          ? buildSpreadPrefetchTargets(visiblePageIndices, pageTotal)
+          : [];
         const missingNeighbors = collectMissingNeighbors(
           runtime.l1Cache,
           neighbors,
@@ -560,6 +583,13 @@ export function ReaderPage({
             visiblePageIndices,
           );
         }
+      };
+
+      if (missingVisible.length === 0) {
+        scheduleVisibleWindowAndNeighbors(
+          true,
+          (targetPageIndex) => cachedFrames[targetPageIndex],
+        );
         return;
       }
 
@@ -585,50 +615,9 @@ export function ReaderPage({
         return;
       }
 
-      const resolvedLayout = computeViewportSlotLayout({
-        currentPageIndex: pageIndex,
-        totalPages: pageTotal,
-        effectiveSpreadMode: effectiveMode,
-        readingDirection: readingDirectionRef.current,
-        spreadPageOffset: offset,
-        knownDimensions: knownDimensionsRef.current,
-      });
-      const visiblePageIndices = resolvedLayout.slots
-        .map((slot) => slot.pageIndex)
-        .sort((a, b) => a - b);
-      const resolvedFrames: Record<number, DecodedPageFrame> = {};
-      for (const visiblePage of visiblePageIndices) {
-        const frame = runtime.l1Cache.peek(visiblePage);
-        if (frame !== undefined) {
-          resolvedFrames[visiblePage] = frame;
-        }
-      }
-      setFramesByPage(resolvedFrames);
-
-      const finalProtected = buildSpreadProtectedWindow(
-        visiblePageIndices,
-        effectiveMode,
-        pageTotal,
+      scheduleVisibleWindowAndNeighbors(false, (targetPageIndex) =>
+        runtime.l1Cache.peek(targetPageIndex),
       );
-      const finalNeighbors = buildSpreadNeighborTargets(
-        visiblePageIndices,
-        effectiveMode,
-        pageTotal,
-      );
-      const missingNeighbors = collectMissingNeighbors(
-        runtime.l1Cache,
-        finalNeighbors,
-      );
-      if (missingNeighbors.length > 0) {
-        void fetchAndStorePages(
-          runtime,
-          missingNeighbors,
-          [],
-          epoch,
-          finalProtected,
-          visiblePageIndices,
-        );
-      }
     },
     [fetchAndStorePages],
   );
