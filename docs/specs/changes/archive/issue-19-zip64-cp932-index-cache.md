@@ -2,8 +2,8 @@
 type: spec-delta
 title: "Issue #19 差分仕様: ZIP64・CP932（Shift_JIS）・zipIndexCache 0RTT 解析基盤"
 description: "ZIP64 フル対応、CP932（Shift_JIS）フォールバック＋セグメント自然順ソート、HO-03 前半 2RTT コピー削減、Dexie v2（500件 LRU zipIndexCache）0RTT 統合を定義する差分仕様"
-status: "Review (#19)"
-updated: "2026-11-20"
+status: "Completed (Archived)"
+updated: "2026-11-21"
 issue: "#19"
 tags:
   [delta, v0.1, zip64, cp932, shift-jis, dexie, zip-index-cache, ho-03, 0rtt]
@@ -37,7 +37,7 @@ related_tests:
 ## 1. 背景・目的（Why）
 
 - Phase 3 PoC で先行実装した標準 ZIP 最小パーサー（`src/engine/zip/zipParser.ts`）を `v0.1` 実運用レベルへ引き上げ、4GB 超 **ZIP64** アーカイブ、日本語環境で頻出する **Shift_JIS（CP932）** ファイル名、および同一アーカイブの 2 回目以降 **0 RTT オープン** を実現する `zipIndexCache`（Dexie.js `version(2)`）を構築する。
-- あわせて、Phase 3 横断レビューの申し送り事項 [`HO-03`](../../quality/bug-and-handover-log.md) の前半である `readCompressedPageSlice` での無駄なメモリコピー削減を実施し、次 Issue（`#20` `[v0.1][3/5]`）の 80MB `L2ByteCache` ＋ 10MB Warm Prefetch 導入基盤を整える。
+- あわせて、Phase 3 横断レビューの申し送り事項 [`HO-03`](../../../quality/bug-and-handover-log.md) の前半である `readCompressedPageSlice` での無駄なメモリコピー削減を実施し、次 Issue（`#20` `[v0.1][3/5]`）の 80MB `L2ByteCache` ＋ 10MB Warm Prefetch 導入基盤を整える。
 
 ### 1.1 Step 1 合意事項（Open Questions 確定内容）
 
@@ -59,14 +59,14 @@ related_tests:
 
 ## 2. 変更対象の App 全体正本一覧
 
-|   種別   | 正本ファイル                                                     | 変更概要                                                                                                                                                                               |
-| :------: | :--------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **更新** | [zip-streaming.md](../engine/zip-streaming.md)                   | `ZIP64_NOT_SUPPORTED` 撤去、ZIP64 Locator/EOCD/ExtraField `0x0001`・マルチディスク・安全整数・CP932・セグメント自然順・`HO-03` 前半・`openArchive` 0RTT を反映、`AC-ENG-09`〜`11` 追加 |
-| **更新** | [architecture.md](../architecture.md)                            | `ZipErrorCode` から `ZIP64_NOT_SUPPORTED` 削除、Storage 層 `ZipIndexCacheRepository` 追記、`openArchive` JSDoc 同期                                                                    |
-| **更新** | [db-schema.md](../db-schema.md)                                  | `zipIndexCache`（最大 500 件 LRU・不正キャッシュ自動削除フォールバック）と `version(2)` 段階実装範囲を具体化                                                                           |
-| **更新** | [reader.md](../features/reader.md)                               | `ZIP64_NOT_SUPPORTED` エラー削除、`ReaderPage` の `ZipIndexCacheRepository` 連携（0RTT・透過フォールバック）を追記                                                                     |
-| **更新** | [screen-transitions.md](../screen-transitions.md)                | `SCN-02` 保証範囲に ZIP64・CP932・`zipIndexCache` 0RTT 再オープンを追加                                                                                                                |
-| **更新** | [bug-and-handover-log.md](../../quality/bug-and-handover-log.md) | `HO-05`（区分 B / 完了ゲート: `Milestone v0.1 完了前`）を新規登録                                                                                                                      |
+|   種別   | 正本ファイル                                                        | 変更概要                                                                                                                                                                               |
+| :------: | :------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **更新** | [zip-streaming.md](../../engine/zip-streaming.md)                   | `ZIP64_NOT_SUPPORTED` 撤去、ZIP64 Locator/EOCD/ExtraField `0x0001`・マルチディスク・安全整数・CP932・セグメント自然順・`HO-03` 前半・`openArchive` 0RTT を反映、`AC-ENG-09`〜`11` 追加 |
+| **更新** | [architecture.md](../../architecture.md)                            | `ZipErrorCode` から `ZIP64_NOT_SUPPORTED` 削除、Storage 層 `ZipIndexCacheRepository` 追記、`openArchive` JSDoc 同期                                                                    |
+| **更新** | [db-schema.md](../../db-schema.md)                                  | `zipIndexCache`（最大 500 件 LRU・不正キャッシュ自動削除フォールバック）と `version(2)` 段階実装範囲を具体化                                                                           |
+| **更新** | [reader.md](../../features/reader.md)                               | `related_specs` へ `db-schema.md` 追加、`ZIP64_NOT_SUPPORTED` エラー削除、`ReaderPage` の `ZipIndexCacheRepository` 連携（0RTT・透過フォールバック）を追記                             |
+| **更新** | [screen-transitions.md](../../screen-transitions.md)                | `SCN-02` 保証範囲に ZIP64・CP932・`zipIndexCache` 0RTT 再オープンを追加                                                                                                                |
+| **更新** | [bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) | `HO-05`（区分 B / 完了ゲート: `Milestone v0.1 完了前`）を新規登録                                                                                                                      |
 
 ---
 
@@ -132,25 +132,25 @@ related_tests:
 
 ---
 
-## 5. 実装 Sub-issue 分割計画（MK 2分割 ＋ 最終 IT）
+## 5. 実装 Sub-issue 分割計画・完了結果（MK 2分割 ＋ 最終 IT）
 
-1. **MK-1: ZIP64・CP932・セグメント自然順・`HO-03` 前半コピー削減（Engine 層）**:
-   - 対象: `src/engine/types.ts`, `src/engine/zip/zipParser.ts`, `src/engine/workers/comlinkErrorHandler.ts`, `src/engine/zip/__fixtures__/zipBuilder.ts`, 各 `*.test.ts`
-   - 完了条件: TDD（Red→Green→Refactor）、C0/C1 100%、Gate 1〜6 完了後に AI 自律マージ（`Closes #Sub-issue`）
-2. **MK-2: Dexie `version(2)`・`ZipIndexCacheRepository`・`CoordinatorCore` / `ServiceProvider` / `ReaderPage` 0RTT 統合（Storage・Worker & UI 層）**:
-   - 対象: `src/storage/types.ts`, `src/storage/db.ts`, `src/engine/zip/zipIndexValidation.ts`, `src/storage/repositories/zipIndexCacheRepository.ts`, `src/engine/workers/CoordinatorCore.ts`, `src/app/serviceContext.ts`, `src/app/ServiceProvider.tsx`, `src/features/reader/ReaderPage.tsx`, `src/features/reader/readerErrors.ts`, 各 `*.test.*`
-   - 完了条件: TDD（Red→Green→Refactor）、親子分離、C0/C1 100%、VRT PASS、Gate 1〜6 完了後に AI 自律マージ（`Closes #Sub-issue`）
-3. **Step 4 (IT PR): Playwright `SCN-02` 拡充・差分仕様アーカイブ（`Closes #19`）**:
-   - 対象: `test/it/helpers.ts`, `test/it/local-reader.spec.ts`, 本差分仕様書の `Completed (Archived)` 化 ＆ `docs/specs/changes/archive/` 移動
-   - 完了条件: 全 IT PASS、Gate 1〜6 完了後に **人間レビュー・マージ** で親 Issue `#19` をクローズ
+1. **MK-1（`#31` / PR #34 @ `99b42e0` マージ完了）: ZIP64・CP932・セグメント自然順・`HO-03` 前半コピー削減（Engine 層）**:
+   - 対象: `src/engine/types.ts`, `src/engine/zip/zipParser.ts`, `src/engine/workers/comlinkErrorHandler.ts`, `src/features/reader/readerErrors.ts`, `src/features/reader/ReaderPage.tsx`, `src/engine/zip/__fixtures__/zipBuilder.ts`, 各 `*.test.ts`
+   - 実績: Red `c88be28` → Green `61e29e6` → Refactor `947364c`、C0/C1/Functions/Lines 100%、独立レビュー Round 1 指摘 0 件、AI 自律マージ完了（`Closes #31`）
+2. **MK-2（`#32` / PR #35 @ `e8bacf7` マージ完了）: Dexie `version(2)`・`ZipIndexCacheRepository`・`CoordinatorCore` / `ServiceProvider` / `ReaderPage` 0RTT 統合（Storage・Worker & UI 層）**:
+   - 対象: `src/storage/types.ts`, `src/storage/db.ts`, `src/engine/zip/zipIndexValidation.ts`, `src/storage/repositories/zipIndexCacheRepository.ts`, `src/engine/workers/CoordinatorCore.ts`, `src/app/serviceContext.ts`, `src/app/ServiceProvider.tsx`, `src/features/reader/ReaderPage.tsx`, 各 `*.test.*`
+   - 実績: Red `8a40dce` → Green `904963d` → Refactor `c52ca79`、C0/C1/Functions/Lines 100%、VRT 62/62 PASS、独立レビュー Round 1 指摘 0 件、AI 自律マージ完了（`Closes #32`）
+3. **Step 4（`#33` / 本 PR `Closes #19`, `Closes #33`）: Playwright `SCN-02` 拡充・差分仕様アーカイブ**:
+   - 対象: `test/it/helpers.ts`, `test/it/local-reader.spec.ts`, 本差分仕様書の `Completed (Archived)` 化 ＆ `docs/specs/changes/archive/` 移動、正本 5 冊の `Approved (#19)` 化
+   - 完了条件: 全 IT 15/15 PASS、Gate 1〜6 完了後に **人間レビュー・マージ** で `#19` / `#33` をクローズ
 
 ---
 
 ## 6. 申し送り事項・Android 実機検証計画
 
-- **判定（[workflow.md §2.2](../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 B（Milestone `v0.1` 完了前に一括実施）**
+- **判定（[workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 B（Milestone `v0.1` 完了前に一括実施）**
   - **根拠**: 純粋な TypeScript ZIP パーサー・Dexie.js IndexedDB Repository 変更のみであり、Android ネイティブ層・OAuth・WebGL2 シェーダー・物理ジェスチャー操作の変更を含まないため。
-- **登録済み申し送り**: `HO-05`（[bug-and-handover-log.md](../../quality/bug-and-handover-log.md) 登録済み、状態: `Open`、完了ゲート: `Milestone v0.1 完了前`）
+- **登録済み申し送り**: `HO-05`（[bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) 登録済み、状態: `Open`、完了ゲート: `Milestone v0.1 完了前`）、`HO-03` 前半は `#31`（PR #34 @ `99b42e0`）で解消・後半（`L2ByteCache` 共有非破壊）は `#20` へ引き継ぎ（`Open`）
 - **Milestone `v0.1` 完了時の一括実機確認観点（`HO-05`）**:
   1. Shift_JIS（CP932）日本語ファイル名を含む `.zip`/`.cbz` を Android SAF から開き、文字化け・エラー停止せず自然なページ順で描画されること。
   2. ZIP64 形式（または 4GB 超構造）アーカイブを開いた際にエラーにならず閲覧できること。

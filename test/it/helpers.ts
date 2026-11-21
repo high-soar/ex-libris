@@ -1,5 +1,5 @@
 import { expect, type JSHandle, type Page } from "@playwright/test";
-import { unzlibSync, zlibSync } from "fflate";
+import { deflateSync, unzlibSync, zlibSync } from "fflate";
 import {
   buildSyntheticZip,
   computeCrc32,
@@ -184,6 +184,182 @@ export function buildCorruptZipBytes(): Uint8Array {
   return new TextEncoder().encode(
     "broken-zip-archive-without-eocd-signature-for-comlink-error-test",
   );
+}
+
+export function buildSyntheticZip64Archive(): Uint8Array {
+  const junkData = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+  const junkName = "__MACOSX/._001.png";
+  const redPng = createSyntheticPng([255, 0, 0, 255]);
+  const greenPng = createSyntheticPng([0, 255, 0, 255]);
+  const greenDeflated = deflateSync(greenPng);
+  const bluePng = createSyntheticPng([0, 0, 255, 255]);
+
+  const offset0 = 0;
+  const offset1 = offset0 + 30 + junkName.length + junkData.byteLength;
+  const offset2 = offset1 + 30 + "001.png".length + redPng.byteLength;
+  const offset3 = offset2 + 30 + "002.png".length + greenDeflated.byteLength;
+
+  return buildSyntheticZip({
+    zip64: true,
+    saturateStandardEocd: true,
+    entries: [
+      {
+        name: junkName,
+        data: junkData,
+        compressionMethod: 0,
+        zip64Extra: {
+          uncompressedSize: BigInt(junkData.byteLength),
+          compressedSize: BigInt(junkData.byteLength),
+          localHeaderOffset: BigInt(offset0),
+        },
+      },
+      {
+        name: "001.png",
+        data: redPng,
+        compressionMethod: 0,
+        zip64Extra: {
+          uncompressedSize: BigInt(redPng.byteLength),
+          compressedSize: BigInt(redPng.byteLength),
+          localHeaderOffset: BigInt(offset1),
+        },
+      },
+      {
+        name: "002.png",
+        data: greenPng,
+        compressedData: greenDeflated,
+        compressionMethod: 8,
+        zip64Extra: {
+          uncompressedSize: BigInt(greenPng.byteLength),
+          compressedSize: BigInt(greenDeflated.byteLength),
+          localHeaderOffset: BigInt(offset2),
+        },
+      },
+      {
+        name: "010.png",
+        data: bluePng,
+        compressionMethod: 0,
+        zip64Extra: {
+          localHeaderOffset: BigInt(offset3),
+        },
+      },
+    ],
+  });
+}
+
+export function buildSyntheticCp932Archive(): Uint8Array {
+  const redPng = createSyntheticPng([255, 0, 0, 255]);
+  const yellowPng = createSyntheticPng([255, 255, 0, 255]);
+  const greenPng = createSyntheticPng([0, 255, 0, 255]);
+  const bluePng = createSyntheticPng([0, 0, 255, 255]);
+
+  // Shift_JIS (CP932, Bit 11 = 0) バイト列: 第(91 e6), 話(98 62), ①(87 40), 特(93 c1), 典(93 54)
+  const ep10Name = new Uint8Array([
+    0x91, 0xe6, 0x31, 0x30, 0x98, 0x62, 0x2f, 0x30, 0x31, 0x30, 0x2e, 0x70,
+    0x6e, 0x67,
+  ]); // "第10話/010.png"
+  const ep2Name = new Uint8Array([
+    0x91, 0xe6, 0x32, 0x98, 0x62, 0x2f, 0x30, 0x30, 0x32, 0x2e, 0x70, 0x6e,
+    0x67,
+  ]); // "第2話/002.png"
+  const ep1BonusName = new Uint8Array([
+    0x91, 0xe6, 0x31, 0x98, 0x62, 0x2f, 0x87, 0x40, 0x93, 0xc1, 0x93, 0x54,
+    0x2e, 0x70, 0x6e, 0x67,
+  ]); // "第1話/①特典.png"
+  const ep1Name = new Uint8Array([
+    0x91, 0xe6, 0x31, 0x98, 0x62, 0x2f, 0x30, 0x30, 0x31, 0x2e, 0x70, 0x6e,
+    0x67,
+  ]); // "第1話/001.png"
+
+  return buildSyntheticZip({
+    entries: [
+      {
+        name: "__MACOSX/._001.png",
+        data: new Uint8Array([1, 2, 3, 4]),
+        compressionMethod: 0,
+      },
+      {
+        name: ep10Name,
+        data: bluePng,
+        compressionMethod: 8,
+        flags: 0,
+      },
+      {
+        name: ep2Name,
+        data: greenPng,
+        compressionMethod: 0,
+        flags: 0,
+      },
+      {
+        name: ep1BonusName,
+        data: yellowPng,
+        compressionMethod: 8,
+        flags: 0,
+      },
+      {
+        name: ep1Name,
+        data: redPng,
+        compressionMethod: 0,
+        flags: 0,
+      },
+    ],
+  });
+}
+
+export interface InspectableZipIndexCacheRecord {
+  readonly cacheKey: string;
+  readonly pageCount: number;
+  readonly cachedAt: number;
+  readonly entryNames: readonly string[];
+}
+
+export async function readZipIndexCacheRecord(
+  page: Page,
+  cacheKey: string,
+): Promise<InspectableZipIndexCacheRecord | null> {
+  return page.evaluate(async (key) => {
+    return await new Promise<InspectableZipIndexCacheRecord | null>(
+      (resolve, reject) => {
+        const request = indexedDB.open("ExLibrisDB");
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const idb = request.result;
+          if (!idb.objectStoreNames.contains("zipIndexCache")) {
+            idb.close();
+            resolve(null);
+            return;
+          }
+          const tx = idb.transaction("zipIndexCache", "readonly");
+          const store = tx.objectStore("zipIndexCache");
+          const getReq = store.get(key);
+          getReq.onerror = () => {
+            idb.close();
+            reject(getReq.error);
+          };
+          getReq.onsuccess = () => {
+            const raw = getReq.result as
+              | {
+                  cacheKey: string;
+                  pageCount: number;
+                  cachedAt: number;
+                  entries: Array<{ entryName: string }>;
+                }
+              | undefined;
+            idb.close();
+            if (!raw) {
+              resolve(null);
+              return;
+            }
+            resolve({
+              cacheKey: raw.cacheKey,
+              pageCount: raw.pageCount,
+              cachedAt: raw.cachedAt,
+              entryNames: raw.entries.map((entry) => entry.entryName),
+            });
+          };
+        };
+      },
+    );
+  }, cacheKey);
 }
 
 export function readPngCenterPixel(pngBytes: Uint8Array): {
