@@ -73,16 +73,15 @@ related_tests:
 ### 3.1 ZIP64 フル解析（`src/engine/zip/zipParser.ts` / `AC-ENG-02`, `AC-ENG-04`, `AC-ENG-09`）
 
 1. **EOCD ＋ ZIP64 EOCD Locator / Record 解決**:
-   - 末尾 `min(totalSize, 131_072)` バイト取得後、EOCD (`0x06054b50`) を特定し、マルチディスク値（`diskNumber !== 0 || cdDiskNumber !== 0 || diskEntries !== totalEntries`）を `CORRUPT_ZIP` として拒否する。
-   - `eocdRelOffset >= 20` に ZIP64 EOCD Locator（`0x07064b50`）が存在する場合：
-     - `locatorDiskNumber` (`+4`, uint32) `!== 0` または `totalDisks` (`+16`, uint32) `!== 1` は `CORRUPT_ZIP`。
-     - `zip64EocdOffset` (`+8`, uint64) を `readSafeUint64`（`> BigInt(Number.MAX_SAFE_INTEGER)` なら `CORRUPT_ZIP`）で読み取る。
-     - `zip64EocdOffset >= tailStart` なら `tailBuf.subarray(zip64EocdOffset - tailStart)` から読み取り、`zip64EocdOffset < tailStart` なら追加 1 RTT `reader.readRange(zip64EocdOffset, Math.min(56, eocdAbsoluteOffset - zip64EocdOffset), signal)` で 56 バイトを読み取る。
-     - ZIP64 EOCD シグネチャ `0x06064b50`、サイズフィールド `sizeOfZip64Eocd >= 44`（`+4`, uint64）、`diskNumber === 0`、`cdDiskNumber === 0`、`diskEntries === totalEntries`、`cdOffset + cdSize <= zip64EocdOffset`、および全 64bit 値が安全整数範囲内であることを検証する。
-   - Locator 不在にもかかわらず標準 EOCD に `0xFFFF` / `0xFFFFFFFF` 飽和値が含まれる場合は `CORRUPT_ZIP`。
+   - 末尾 `min(totalSize, 131_072)` バイト取得後、EOCD (`0x06054b50`) を特定し、先に `hasLocator = eocdRelOffset >= 20 && readUint32LE(tailView, eocdRelOffset - 20) === 0x07064b50` を判定する。
+   - Locator 不在時は、マルチディスク値（`diskNumber !== 0 || cdDiskNumber !== 0 || diskEntries !== totalEntries`）および標準 EOCD 飽和値（`0xFFFF` / `0xFFFFFFFF`）をすべて `CORRUPT_ZIP` として拒否する。
+   - Locator 存在時は、`locatorDiskNumber` (`+4`, uint32) `!== 0`・`totalDisks` (`+16`, uint32) `!== 1`・標準 EOCD 非飽和ディスク異常（`diskNumber !== 0xffff && diskNumber !== 0` 等）を `CORRUPT_ZIP` として拒否した上で、`zip64EocdOffset` (`+8`, uint64) を `readSafeUint64`（`> BigInt(Number.MAX_SAFE_INTEGER)` なら `CORRUPT_ZIP`）で読み取る。
+   - 事前境界検証として `zip64EocdOffset + 56 > eocdAbsoluteOffset - 20` の場合は即 `CORRUPT_ZIP` とし、`zip64EocdOffset >= tailStart` なら `tailBuf` 内から、`zip64EocdOffset < tailStart` なら追加 1 RTT `reader.readRange(zip64EocdOffset, 56, signal)` で読み取る。
+   - ZIP64 EOCD シグネチャ `0x06064b50`、サイズフィールド `sizeOfZip64Eocd >= 44`（`+4`, uint64）、`diskNumber === 0`、`cdDiskNumber === 0`、`diskEntries === totalEntries`、`cdOffset + cdSize <= zip64EocdOffset`、および全 64bit 値が安全整数範囲内であることを検証する。
    - OOM / 無限ループ防御として `totalEntries * 46 > cdSize` の場合は即 `CORRUPT_ZIP` を送出する。
-2. **CDH Extra Field（`0x0001`）の全エントリ先行解決**:
-   - 全 CDH エントリに対し、`physicalOffsets.push(...)` および `isJunkOrNonImageEntry(...)` の **前** に Extra Field TLV 走査を実施する（非画像エントリの `localHeaderOffset` も `0xFFFFFFFF` 飽和し得るため）。
+2. **CDH Extra Field（`0x0001`）の全エントリ先行解決 ＆ マルチディスク拒否**:
+   - 全 CDH エントリに対し、`physicalOffsets.push(...)` および `isJunkOrNonImageEntry(...)` の **前** に `diskStartNumber` チェックおよび Extra Field TLV 走査を実施する（非画像エントリの `localHeaderOffset` も `0xFFFFFFFF` 飽和し得るため）。
+   - 非飽和時を含め `diskStartNumber !== 0`（`diskStartNumber !== 0xffff && diskStartNumber !== 0`、および `0x0001` 内 `diskStartNumber !== 0`）はすべてマルチディスク ZIP として `CORRUPT_ZIP` で拒否する。
    - `uncompressedSize === 0xFFFFFFFF` / `compressedSize === 0xFFFFFFFF` / `localHeaderOffset === 0xFFFFFFFF` / `diskStartNumber === 0xFFFF` のいずれかが飽和している場合、Extra Field 内の Header ID `0x0001` ブロックを探索し、飽和項目のみ **PKWARE APPNOTE 順（`uncompressedSize` 8B → `compressedSize` 8B → `localHeaderOffset` 8B → `diskStartNumber` 4B）** で読み取り、不足・`0x0001` 不在・安全整数超過・`diskStartNumber !== 0` はすべて `CORRUPT_ZIP` とする。
 3. **`ZIP64_NOT_SUPPORTED` 撤去**:
    - `ZipErrorCode`（`src/engine/types.ts`）、`comlinkErrorHandler.ts`、`ReaderPage.tsx`、`readerErrors.ts` から `ZIP64_NOT_SUPPORTED` を削除する。
@@ -96,22 +95,26 @@ related_tests:
 2. **セグメント単位自然順ソート**:
    - `entryName.split(/[\\/]/)` でパスセグメント配列へ分割し、先頭セグメントから順に `new Intl.Collator("ja", { numeric: true, sensitivity: "base" }).compare(segA, segB)` で比較（共通接頭辞が同値ならセグメント数が少ない方を先）する。
 
-### 3.3 `HO-03`（前半）`readCompressedPageSlice` コピー削減（`AC-ENG-05`）
+### 3.3 `HO-03`（前半）`readCompressedPageSlice` コピー削減（`AC-ENG-05`, `AC-ENG-10`）
 
-- 1 RTT 経路（`dataEnd <= initialBuf.byteLength`）は `initialBuf.subarray(dataStart, dataEnd)` のゼロコピービューを返却する。
-- 2 RTT 経路（LFH `extraField` が 1KB マージン超過時）では `new Uint8Array(entry.compressedSize)` を直接確保し、`initialBuf.subarray(dataStart)` を先頭へ、`tailSlice` を続けてコピーした `byteOffset === 0` の独立バッファを返却することで、無駄なヘッダ部コピーと `prepareDecodeTransfer` 側の再コピーを排除する。
+- **1 RTT 経路（`dataEnd <= initialBuf.byteLength`）**: `initialBuf.subarray(dataStart, dataEnd)` のゼロコピービューを返却する。
+- **2 RTT 経路（`dataEnd > initialBuf.byteLength`）**:
+  - **ケース 2a（`dataStart < initialBuf.byteLength`：`initialBuf` に圧縮本体先頭を含む）**: 未取得の末尾差分 `[entry.localHeaderOffset + initialBuf.byteLength, entry.compressedSize - (initialBuf.byteLength - dataStart)]` を `readRange` で取得し、`new Uint8Array(entry.compressedSize)` を直接確保して先頭に `initialBuf.subarray(dataStart)`・後続に `tailSlice` をコピーした `byteOffset === 0` の独立バッファを返却する。
+  - **ケース 2b（`dataStart >= initialBuf.byteLength`：LFH `extraField` が `compressedSize + 1KB` を上回り `initialBuf` が圧縮本体を含まない）**: `reader.readRange(entry.localHeaderOffset + dataStart, entry.compressedSize, signal)` で圧縮本体のみを直接 1 回追加取得して返却する（`initialBuf` との結合・余剰コピーを行わず `RangeError` も防止する）。
 
 ### 3.4 Dexie.js `version(2)` ＆ `ZipIndexCacheRepository` ＆ `ReaderPage` 0RTT 統合（`AC-ENG-11`）
 
 1. **Dexie `version(2)`（`src/storage/db.ts`, `src/storage/types.ts`）**:
    - `version(2).stores({ syncMeta: "key", zipIndexCache: "cacheKey, cachedAt", readingProgress: "targetKey, volumeId, readStatus, lastReadAt, updatedAt" })` を定義する。
    - `ZipIndexCacheRecord`・`ReadingProgressRecord`・`ReadStatus` 型を `src/storage/types.ts` に追加する。
-2. **`ZipIndexCacheRepository`（`src/storage/repositories/zipIndexCacheRepository.ts`）**:
+2. **`ZipIndexCacheRepository` ＆ 共有検証（`src/storage/repositories/zipIndexCacheRepository.ts`, `src/engine/zip/zipIndexValidation.ts`）**:
    - `ZIP_INDEX_CACHE_MAX_ENTRIES = 500` を定義する。
-   - `get(cacheKey)`: レコード取得後、`validateZipIndexEntries(record)`（`pageCount > 0`・配列長一致・全要素の必須フィールド型・非負有限数値・`localHeaderOffset < physicalEnd` 等）を実行。不正時は該当レコードを削除して `null` を返す。有効時は `cachedAt = Date.now()` を更新して `entries` を返す。
+   - `validateZipIndexEntries(entries, pageCount?)`: 非空配列・各要素の必須フィールド型・非負有限数値・`localHeaderOffset < physicalEnd` 等を検証する純粋関数を `src/engine/zip/zipIndexValidation.ts` に配置し、`ZipIndexCacheRepository` と `CoordinatorCore` の双方から利用する。
+   - `get(cacheKey)`: レコード取得後、`entries.length === pageCount` および `validateZipIndexEntries(entries)` を実行。不正時は該当レコードを削除して `null` を返す。有効時は `cachedAt = Date.now()` を更新して `entries` を返す。
    - `put(cacheKey, entries)`: 空配列は無視し、`{ cacheKey, pageCount: entries.length, entries, cachedAt: Date.now() }` を保存した上で、総件数が `500` を超える場合は `cachedAt` 昇順で超過件数分を削除する。
    - `delete(cacheKey)`: 指定キーを削除する。
-3. **`ServiceProvider` / `ReaderPage` 統合**:
+3. **`CoordinatorCore` / `ServiceProvider` / `ReaderPage` 統合**:
+   - `CoordinatorCore.openArchive(source, cachedEntries, epoch)` 側でも `cachedEntries !== null && validateZipIndexEntries(cachedEntries)` を満たす場合のみ `fromIndexCache: true` で 0 RTT オープンし、空配列・不正キャッシュ時は `parseZipDirectory` へ透過フォールバックする（`fromIndexCache: false`）。
    - `ServiceContextValue`（`src/app/serviceContext.ts`）へ `zipIndexCacheRepo: ZipIndexCacheRepository` を追加し、`ServiceProvider` で `new DexieZipIndexCacheRepository(db)`（または DI 注入）を提供する（※`window.__exLibrisServices` のテスト用契約には不要フィールドを追加しない）。
    - `ReaderPage` はアーカイブオープン時に `zipIndexCacheRepo.get(source.indexCacheKey)` を試行（失敗時はログ記録して `null` 扱い）して `coordinator.api.openArchive(source, cachedEntries, openEpoch)` へ渡す。`!result.fromIndexCache` で成功した際は `zipIndexCacheRepo.put(source.indexCacheKey, result.entries)` を非ブロッキング保存（失敗時は警告ログのみ）する。
 
@@ -119,11 +122,11 @@ related_tests:
 
 ## 4. テスト計画（UT / VRT / IT）
 
-| 層                                     | テスト手法・対象                                                                                                                                                                                                                                                                                                                                                                                                                                                               | 合格基準                                                    |
-| :------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------- |
-| **MK-1: ZIP Engine UT**                | `zipBuilder.ts` に ZIP64 EOCD/Locator/`0x0001`/仮想 4GB 超オフセットシフト機能を追加し、`zipParser.test.ts` で ZIP64（128KB 内 / 超過 3RTT / `0x0001` 飽和組合せ / ゴミエントリ 4GB超 / `Number.MAX_SAFE_INTEGER` 超過 / Multi-disk / `totalEntries * 46 > cdSize`）、CP932（Bit 11 有無・UTF-8 strict 失敗時フォールバック・半角カナ/機種依存文字）、セグメント自然順、2RTT `byteOffset === 0` 非二重コピーを検証（`errors.test.ts`, `comlinkErrorHandler.test.ts` 更新含む） | C0 / C1 / Functions / Lines **100%** PASS                   |
-| **MK-2: Storage & Reader UI UT / VRT** | `db.test.ts`（`version(2)` 検証・`MultiTableTestDatabase` `version(3)` 調整・`resetTestDb`）、`zipIndexCacheRepository.test.ts`（`fake-indexeddb`: ヒット時 `cachedAt` LRU 更新、500件超過時最古削除、破損/空キャッシュ削除＋`null` フォールバック）、`ServiceProvider.test.tsx`、`ReaderPage.test.tsx`（0RTT キャッシュヒット→`openArchive(source, cachedEntries)`、ミス時 `put` 保存、DB 例外時透過継続）、`readerErrors.test.ts`（`ZIP64_NOT_SUPPORTED` 削除整合）          | C0 / C1 / Functions / Lines **100%** PASS ＆ VRT 62/62 PASS |
-| **Step 4: Playwright IT (`SCN-02`)**   | `test/it/local-reader.spec.ts` に ①ZIP64 構造アーカイブ（Locator + EOCD64 + `0x0001`）閲覧、②CP932（Shift_JIS）日本語ファイル名アーカイブの自然順描画、③同一アーカイブ再オープン時の `zipIndexCache` 0RTT ヒット（IndexedDB 永続化確認）を追加し全シナリオ回帰実行                                                                                                                                                                                                             | 全 `SCN-01` / `SCN-02` **100% PASS**                        |
+| 層                                                 | テスト手法・対象                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | 合格基準                                                    |
+| :------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------- |
+| **MK-1: ZIP Engine UT**                            | `zipBuilder.ts` に ZIP64 EOCD/Locator/`0x0001`/仮想 4GB 超オフセットシフト機能を追加し、`zipParser.test.ts` で ZIP64（128KB 内 / 超過 3RTT / `0x0001` 飽和組合せ / ゴミエントリ 4GB超 / `Number.MAX_SAFE_INTEGER` 超過 / Multi-disk / `totalEntries * 46 > cdSize`）、CP932（Bit 11 有無・UTF-8 strict 失敗時フォールバック・半角カナ/機種依存文字）、セグメント自然順、2RTT（ケース 2a `byteOffset === 0` 非二重コピー / ケース 2b `dataStart >= initialBuf.byteLength`）を検証（`errors.test.ts`, `comlinkErrorHandler.test.ts` 更新含む）                                                               | C0 / C1 / Functions / Lines **100%** PASS                   |
+| **MK-2: Storage・Coordinator・Reader UI UT / VRT** | `db.test.ts`（`version(2)` 検証・`MultiTableTestDatabase` `version(3)` 調整・`resetTestDb`）、`zipIndexValidation.test.ts`、`zipIndexCacheRepository.test.ts`（`fake-indexeddb`: ヒット時 `cachedAt` LRU 更新、500件超過時最古削除、破損/空キャッシュ削除＋`null` フォールバック）、`CoordinatorCore.test.ts`（空配列・不正 `cachedEntries` 時の `parseZipDirectory` フォールバック検証）、`ServiceProvider.test.tsx`、`ReaderPage.test.tsx`（0RTT キャッシュヒット→`openArchive(source, cachedEntries)`、ミス時 `put` 保存、DB 例外時透過継続）、`readerErrors.test.ts`（`ZIP64_NOT_SUPPORTED` 削除整合） | C0 / C1 / Functions / Lines **100%** PASS ＆ VRT 62/62 PASS |
+| **Step 4: Playwright IT (`SCN-02`)**               | `test/it/local-reader.spec.ts` に ①ZIP64 構造アーカイブ（Locator + EOCD64 + `0x0001`）閲覧、②CP932（Shift_JIS）日本語ファイル名アーカイブの自然順描画、③同一アーカイブ再オープン時の `zipIndexCache` 0RTT ヒット（IndexedDB 永続化確認）を追加し全シナリオ回帰実行                                                                                                                                                                                                                                                                                                                                         | 全 `SCN-01` / `SCN-02` **100% PASS**                        |
 
 ---
 
@@ -132,8 +135,8 @@ related_tests:
 1. **MK-1: ZIP64・CP932・セグメント自然順・`HO-03` 前半コピー削減（Engine 層）**:
    - 対象: `src/engine/types.ts`, `src/engine/zip/zipParser.ts`, `src/engine/workers/comlinkErrorHandler.ts`, `src/engine/zip/__fixtures__/zipBuilder.ts`, 各 `*.test.ts`
    - 完了条件: TDD（Red→Green→Refactor）、C0/C1 100%、Gate 1〜6 完了後に AI 自律マージ（`Closes #Sub-issue`）
-2. **MK-2: Dexie `version(2)`・`ZipIndexCacheRepository`・`ServiceProvider` / `ReaderPage` 0RTT 統合（Storage & UI 層）**:
-   - 対象: `src/storage/types.ts`, `src/storage/db.ts`, `src/storage/repositories/zipIndexCacheRepository.ts`, `src/app/serviceContext.ts`, `src/app/ServiceProvider.tsx`, `src/features/reader/ReaderPage.tsx`, `src/features/reader/readerErrors.ts`, 各 `*.test.*`
+2. **MK-2: Dexie `version(2)`・`ZipIndexCacheRepository`・`CoordinatorCore` / `ServiceProvider` / `ReaderPage` 0RTT 統合（Storage・Worker & UI 層）**:
+   - 対象: `src/storage/types.ts`, `src/storage/db.ts`, `src/engine/zip/zipIndexValidation.ts`, `src/storage/repositories/zipIndexCacheRepository.ts`, `src/engine/workers/CoordinatorCore.ts`, `src/app/serviceContext.ts`, `src/app/ServiceProvider.tsx`, `src/features/reader/ReaderPage.tsx`, `src/features/reader/readerErrors.ts`, 各 `*.test.*`
    - 完了条件: TDD（Red→Green→Refactor）、親子分離、C0/C1 100%、VRT PASS、Gate 1〜6 完了後に AI 自律マージ（`Closes #Sub-issue`）
 3. **Step 4 (IT PR): Playwright `SCN-02` 拡充・差分仕様アーカイブ（`Closes #19`）**:
    - 対象: `test/it/helpers.ts`, `test/it/local-reader.spec.ts`, 本差分仕様書の `Completed (Archived)` 化 ＆ `docs/specs/changes/archive/` 移動

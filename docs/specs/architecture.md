@@ -227,9 +227,10 @@ export interface OpenArchiveResult {
 export interface CoordinatorWorkerApi {
   /**
    * アーカイブを開き論理ページ配列を確定する。
-   * UI スレッド（`ReaderPage` + `ZipIndexCacheRepository`）が有効な `cachedEntries` を渡した場合は
-   * Central Directory I/O をスキップして 0 RTT（`fromIndexCache: true`）で即座にオープンし、
-   * `null` または不正キャッシュ時は `parseZipDirectory` を実行する（`fromIndexCache: false`）。
+   * UI スレッド（`ReaderPage` + `ZipIndexCacheRepository`）が有効な `cachedEntries` を渡した場合、
+   * Coordinator 側でも空配列チェック・基本構造検証を通過したときのみ Central Directory I/O をスキップして
+   * 0 RTT（`fromIndexCache: true`）で即座にオープンし、`null`・空配列・不正キャッシュ時は
+   * `parseZipDirectory` へフォールバックする（`fromIndexCache: false`）。
    */
   openArchive(
     source: ArchiveSourceDescriptor,

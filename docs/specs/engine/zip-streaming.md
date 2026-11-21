@@ -88,10 +88,11 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 1. 末尾 `tailLength = Math.min(totalSize, ENGINE_BUDGETS.INITIAL_TAIL_READ_BYTES)`（`131_072` バイト）を `readRange(totalSize - tailLength, tailLength)` で 1 RTT 取得する。
 2. 末尾バッファを後方走査して EOCD シグネチャ `0x06054b50`（最小 22 バイト、ZIP コメント長 `commentLength` と末尾長の一致を確認）を特定する。
    - 見つからない場合は `CORRUPT_ZIP`。
-   - マルチディスク／分割 ZIP（`diskNumber !== 0 || cdDiskNumber !== 0 || diskEntries !== totalEntries`）は `CORRUPT_ZIP` として拒否する。
-   - `eocdRelOffset >= 20` に ZIP64 EOCD Locator（`0x07064b50`）が存在する場合は、`locatorDiskNumber === 0` かつ `totalDisks === 1`（超過時は `CORRUPT_ZIP`）を検証した上で 64bit `zip64EocdOffset` を `readSafeUint64`（`> BigInt(Number.MAX_SAFE_INTEGER)` なら `CORRUPT_ZIP`）で読み取る。
-   - `zip64EocdOffset >= tailStart` なら `tailBuf` 内から、`zip64EocdOffset < tailStart` なら追加 1 RTT `reader.readRange(zip64EocdOffset, Math.min(56, eocdAbsoluteOffset - zip64EocdOffset), signal)` で ZIP64 EOCD Record（シグネチャ `0x06064b50`, `sizeOfZip64Eocd >= 44`, 単一ディスク `0`, `diskEntries === totalEntries`, `cdOffset + cdSize <= zip64EocdOffset`, 全値安全整数範囲）を解決する。
-   - Locator 不在で標準 EOCD に `0xFFFF` / `0xFFFFFFFF` 飽和値がある場合、または `totalEntries * 46 > cdSize` の場合は `CORRUPT_ZIP` を送出する。
+   - 先に `hasLocator = eocdRelOffset >= 20 && readUint32LE(tailView, eocdRelOffset - 20) === 0x07064b50` で ZIP64 EOCD Locator の有無を判定する：
+     - **Locator 不在時**: 標準 EOCD のマルチディスク値（`diskNumber !== 0 || cdDiskNumber !== 0 || diskEntries !== totalEntries`）または `0xFFFF` / `0xFFFFFFFF` 飽和値（`diskEntries === 0xffff || totalEntries === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff`）のいずれかが含まれる場合は `CORRUPT_ZIP` を送出する。
+     - **Locator 存在時**: Locator の `locatorDiskNumber === 0`・`totalDisks === 1`（不一致は `CORRUPT_ZIP`）、および標準 EOCD の非飽和ディスク番号（`diskNumber !== 0xffff && diskNumber !== 0` 等）を検証した上で 64bit `zip64EocdOffset` を `readSafeUint64`（`> BigInt(Number.MAX_SAFE_INTEGER)` なら `CORRUPT_ZIP`）で読み取る。さらに `zip64EocdOffset + 56 > eocdAbsoluteOffset - 20`（Locator 直前に最小 56 バイトの ZIP64 EOCD Record を収容できない境界違反）は即時 `CORRUPT_ZIP` とする。
+     - `zip64EocdOffset >= tailStart` なら `tailBuf` 内から、`zip64EocdOffset < tailStart` なら追加 1 RTT `reader.readRange(zip64EocdOffset, 56, signal)` で ZIP64 EOCD Record（シグネチャ `0x06064b50`, `sizeOfZip64Eocd >= 44`, 単一ディスク `0`, `diskEntries === totalEntries`, `cdOffset + cdSize <= zip64EocdOffset`, 全値安全整数範囲）を解決する。
+   - 最後に `totalEntries * 46 > cdSize` の場合は構造不正／OOM 防御として `CORRUPT_ZIP` を送出する。
 3. `cdOffset` および `cdSize` が既に取得済みの末尾バッファ内に収まっている場合は追加 I/O ゼロで解析する。
    - 末尾 128KB を超過する巨大な Central Directory の場合は、`readRange(cdOffset, cdSize)` で不足分を追加 1 RTT 取得する。
    - `cdOffset + cdSize > eocdAbsoluteOffset` 等の境界違反は `CORRUPT_ZIP`。
@@ -113,7 +114,7 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 4. **暗号化・圧縮方式・ZIP64 チェック（有効画像エントリ対象）**:
    - GPBF Bit 0 (`flags & 0x0001`) が立っている場合は `ENCRYPTED_ZIP`。
    - `compressionMethod !== 0 && compressionMethod !== 8` の場合は `UNSUPPORTED_COMPRESSION`。
-   - **ZIP64 Extra Field (`0x0001`) 先行解決**: 全 CDH エントリに対し、`physicalOffsets` 収集および `isJunkOrNonImageEntry` 除外の前に `extraField` TLV を走査する（非画像エントリの `localHeaderOffset` も `0xFFFFFFFF` 飽和し得るため）。`uncompressedSize === 0xFFFFFFFF` / `compressedSize === 0xFFFFFFFF` / `localHeaderOffset === 0xFFFFFFFF` / `diskStartNumber === 0xFFFF` のいずれかが飽和している場合は Header ID `0x0001` ブロックを探索し、飽和項目のみ **PKWARE APPNOTE 順（`uncompressedSize` 8B → `compressedSize` 8B → `localHeaderOffset` 8B → `diskStartNumber` 4B）** で安全整数読み取りする。`0x0001` 不在・長不足・安全整数超過・`diskStartNumber !== 0` はすべて `CORRUPT_ZIP` とする。
+   - **ZIP64 Extra Field (`0x0001`) 先行解決 ＆ マルチディスク拒否**: 全 CDH エントリに対し、`physicalOffsets` 収集および `isJunkOrNonImageEntry` 除外の前に `diskStartNumber` チェックおよび `extraField` TLV 走査を実施する（非画像エントリの `localHeaderOffset` も `0xFFFFFFFF` 飽和し得るため）。非飽和・飽和を問わず `diskStartNumber !== 0`（`diskStartNumber !== 0xffff && diskStartNumber !== 0`、または `0x0001` 内 `diskStartNumber !== 0`）はマルチディスク ZIP として `CORRUPT_ZIP` を送出する。`uncompressedSize === 0xFFFFFFFF` / `compressedSize === 0xFFFFFFFF` / `localHeaderOffset === 0xFFFFFFFF` / `diskStartNumber === 0xFFFF` のいずれかが飽和している場合は Header ID `0x0001` ブロックを探索し、飽和項目のみ **PKWARE APPNOTE 順（`uncompressedSize` 8B → `compressedSize` 8B → `localHeaderOffset` 8B → `diskStartNumber` 4B）** で安全整数読み取りする。`0x0001` 不在・長不足・安全整数超過・`diskStartNumber !== 0` はすべて `CORRUPT_ZIP` とする。
 5. **物理終了位置（`physicalEnd`）の算出**:
    - ゴミ・非画像除外前の全 CDH エントリから `cdOffset` 未満の物理 `localHeaderOffset` を収集して昇順ソートする。全 CDH エントリの `localHeaderOffset` が `cdOffset` 未満の範囲で同一オフセット重複・逆転がある場合は `ZipArchiveError("CORRUPT_ZIP")` を送出する。
    - 各有効画像エントリの直後に位置する全 CDH エントリの物理配置順に基づく次の物理エントリ先頭（`localHeaderOffset < off < cdOffset` の最小 `off`、存在しない末尾エントリは `cdOffset`）を `physicalEnd` として設定する。
@@ -130,7 +131,9 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
    - LFH 側の `fileNameLength`（offset 26）と `extraFieldLength`（offset 28）を読み取って実データ開始相対位置 `dataStart = 30 + lfhFileNameLength + lfhExtraFieldLength` を算出する（CDH と LFH の `extraFieldLength` が異なる ZIP にも対応）。
    - `dataStart + entry.compressedSize > maxSpan` の場合は境界違反として `ZipArchiveError("CORRUPT_ZIP")` を送出する。
    - `dataStart + entry.compressedSize <= initialBuf.byteLength` であれば `initialBuf.subarray(dataStart, dataStart + entry.compressedSize)` を返却する（1 RTT 完了、ゼロコピービュー）。
-   - LFH `extraField` が 1KB マージンを超過し（かつ `maxSpan` 内に収まり）`dataStart + entry.compressedSize > initialBuf.byteLength` となった場合は、未取得の末尾差分 `[entry.localHeaderOffset + initialBuf.byteLength, (dataStart + entry.compressedSize) - initialBuf.byteLength]` のみを `readRange` で追加取得し、`new Uint8Array(entry.compressedSize)` を直接確保して先頭に `initialBuf.subarray(dataStart)`・後続に末尾差分を結合した `byteOffset === 0` の独立バッファを返却する（不要なヘッダ確保と `prepareDecodeTransfer` での再コピーを排除）。
+   - LFH `extraField` が 1KB マージンを超過し（かつ `maxSpan` 内に収まり）`dataStart + entry.compressedSize > initialBuf.byteLength` となった場合は、以下の 2 ケースに分岐して 2 RTT で返却する：
+     - **ケース 2a（`dataStart < initialBuf.byteLength`）**: 未取得の末尾差分 `[entry.localHeaderOffset + initialBuf.byteLength, entry.compressedSize - (initialBuf.byteLength - dataStart)]` のみを `readRange` で追加取得し、`new Uint8Array(entry.compressedSize)` を直接確保して先頭に `initialBuf.subarray(dataStart)`・後続に末尾差分をコピーした `byteOffset === 0` の独立バッファを返却する（不要なヘッダ確保と `prepareDecodeTransfer` での再コピーを排除）。
+     - **ケース 2b（`dataStart >= initialBuf.byteLength`：`lfhExtraFieldLength` が `compressedSize + 1KB` を上回り `initialBuf` に圧縮本体を一切含まない）**: `readRange(entry.localHeaderOffset + dataStart, entry.compressedSize, signal)` で圧縮本体のみを直接追加取得し、`initialBuf` と結合せずそのまま返却する（`RangeError` と余剰コピーを防止）。
 
 ---
 
@@ -154,7 +157,7 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 2. **`openArchive(source, cachedEntries, epoch)`**:
    - `epoch < minActiveEpoch` の場合は即キャンセルエラー。
    - 既存アーカイブがあれば `closeArchive()` 相当のクリーンアップを実施。
-   - `source.kind === "local-session"` に対し `LocalFileReader(source.file)` を生成する。`cachedEntries` に有効な（空でない・基本検証を通過した）配列が渡された場合は `parseZipDirectory` をスキップして 0 RTT（`fromIndexCache: true`）で即座に完了し、`null` の場合は ZIP パーサーで `entries` を構築する（`fromIndexCache: false`）。
+   - `source.kind === "local-session"` に対し `LocalFileReader(source.file)` を生成する。`cachedEntries` に非空配列かつ基本構造検証（`validateZipIndexEntries`：必須フィールド型・非負有限数値・`localHeaderOffset < physicalEnd` 等）を通過した配列が渡された場合のみ `parseZipDirectory` をスキップして 0 RTT（`fromIndexCache: true`）で即座に完了し、`null`・空配列・不整合配列の場合は自動的に `parseZipDirectory` へフォールバックする（`fromIndexCache: false`）。
    - UI スレッド（`ReaderPage` + `ZipIndexCacheRepository`）が `source.indexCacheKey`（`local:${rawFileName}:${fileSize}`）で Dexie `zipIndexCache`（最大 500 件 LRU）を参照し、不整合キャッシュ検知時は自動削除して `cachedEntries = null` へ透過フォールバックし、通常オープン成功時に `entries` を非ブロッキング保存する。
 3. **`requestVisiblePages(pageIndices, prefetchIndices, epoch)`**:
    - `epoch < minActiveEpoch` の場合は `[]` を返却する。
