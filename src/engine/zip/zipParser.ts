@@ -697,6 +697,17 @@ export async function parseZipDirectory(
   return buildLogicalPageEntries(parsed, eocd.cdOffset);
 }
 
+function assertValidLfhSpan(entry: ZipPageEntry): number {
+  const maxSpan = entry.physicalEnd - entry.localHeaderOffset;
+  if (entry.localHeaderOffset < 0 || maxSpan < 30) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      `LFHの物理範囲が不正です: ${entry.entryName}`,
+    );
+  }
+  return maxSpan;
+}
+
 export function computeEntryFetchSpan(entry: ZipPageEntry): number {
   const maxSpan = entry.physicalEnd - entry.localHeaderOffset;
   return Math.min(
@@ -714,13 +725,7 @@ export async function extractCompressedSliceFromBuffer(
   initialBuf: Uint8Array,
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
-  const maxSpan = entry.physicalEnd - entry.localHeaderOffset;
-  if (entry.localHeaderOffset < 0 || maxSpan < 30) {
-    throw new ZipArchiveError(
-      "CORRUPT_ZIP",
-      `LFHの物理範囲が不正です: ${entry.entryName}`,
-    );
-  }
+  const maxSpan = assertValidLfhSpan(entry);
 
   if (initialBuf.byteLength < 30) {
     throw new ZipArchiveError(
@@ -794,13 +799,7 @@ export async function readCompressedPageSlice(
   entry: ZipPageEntry,
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
-  const maxSpan = entry.physicalEnd - entry.localHeaderOffset;
-  if (entry.localHeaderOffset < 0 || maxSpan < 30) {
-    throw new ZipArchiveError(
-      "CORRUPT_ZIP",
-      `LFHの物理範囲が不正です: ${entry.entryName}`,
-    );
-  }
+  assertValidLfhSpan(entry);
 
   const fetchLength = computeEntryFetchSpan(entry);
   const initialBuf = await reader.readRange(

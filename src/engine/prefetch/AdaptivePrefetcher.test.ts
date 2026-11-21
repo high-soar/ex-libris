@@ -63,6 +63,38 @@ describe("AdaptivePrefetcher", () => {
     expect(readRange).not.toHaveBeenCalled();
   });
 
+  it("有効な先読み候補が0件の場合は空配列を返し通信を行わないこと (AC-ENG-13)", async () => {
+    const cache = new L2ByteCache();
+    const entries = [makeEntry(0, 0, 100, 200)];
+    expect(
+      planPrefetchBatches({
+        entries,
+        prefetchIndices: [],
+        l2Cache: cache,
+      }),
+    ).toEqual([]);
+    expect(
+      planPrefetchBatches({
+        entries,
+        prefetchIndices: [0],
+        l2Cache: cache,
+        excludedPageIndices: [0],
+      }),
+    ).toEqual([]);
+
+    const readRange = vi.fn();
+    const onPlanPages = vi.fn();
+    await runPrefetchBatches({
+      reader: { sourceId: "empty", totalSize: 200, readRange },
+      entries,
+      prefetchIndices: [],
+      l2Cache: cache,
+      callbacks: { onPlanPages },
+    });
+    expect(onPlanPages).not.toHaveBeenCalled();
+    expect(readRange).not.toHaveBeenCalled();
+  });
+
   it("Step1で非整数・範囲外・重複・除外対象・L2保持済み・構造不正・80MB超をスキップし10MB予算超過時点で後続候補を打ち切ること (AC-ENG-13)", () => {
     const cache = new L2ByteCache();
     cache.put(2, new Uint8Array([1, 2, 3]));

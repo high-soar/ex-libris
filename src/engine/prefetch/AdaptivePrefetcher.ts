@@ -39,14 +39,10 @@ export interface RunPrefetchBatchesParams extends PlanPrefetchBatchesParams {
   readonly callbacks?: PrefetchPageCallbacks;
 }
 
-export function planPrefetchBatches(
+function selectPrefetchEntries(
   params: PlanPrefetchBatchesParams,
-): PrefetchBatch[] {
+): ZipPageEntry[] {
   const { entries, prefetchIndices, l2Cache, excludedPageIndices } = params;
-  if (l2Cache.hasOversizedPinnedEntry()) {
-    return [];
-  }
-
   const excluded = new Set<number>(excludedPageIndices);
   const seen = new Set<number>();
   const selected: ZipPageEntry[] = [];
@@ -96,10 +92,12 @@ export function planPrefetchBatches(
     accumulatedBytes += span;
   }
 
-  if (selected.length === 0) {
-    return [];
-  }
+  return selected;
+}
 
+function coalescePrefetchBatches(
+  selected: readonly ZipPageEntry[],
+): PrefetchBatch[] {
   const sorted = [...selected].sort(
     (a, b) => a.localHeaderOffset - b.localHeaderOffset,
   );
@@ -140,6 +138,21 @@ export function planPrefetchBatches(
   });
 
   return batches;
+}
+
+export function planPrefetchBatches(
+  params: PlanPrefetchBatchesParams,
+): PrefetchBatch[] {
+  if (params.l2Cache.hasOversizedPinnedEntry()) {
+    return [];
+  }
+
+  const selected = selectPrefetchEntries(params);
+  if (selected.length === 0) {
+    return [];
+  }
+
+  return coalescePrefetchBatches(selected);
 }
 
 export async function runPrefetchBatches(

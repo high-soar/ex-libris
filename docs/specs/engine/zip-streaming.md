@@ -31,6 +31,8 @@ related_tests:
   - src/engine/zip/errors.test.ts
   - src/engine/zip/zipIndexValidation.test.ts
   - src/engine/zip/zipParser.test.ts
+  - src/engine/cache/L2ByteCache.test.ts
+  - src/engine/prefetch/AdaptivePrefetcher.test.ts
   - src/engine/workers/DecodeWorkerCore.test.ts
   - src/engine/workers/DecodeWorkerPool.test.ts
   - src/engine/workers/CoordinatorCore.test.ts

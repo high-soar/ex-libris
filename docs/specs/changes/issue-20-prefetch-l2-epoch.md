@@ -30,6 +30,8 @@ related_specs:
   - docs/quality/bug-and-handover-log.md
 related_tests:
   - src/engine/constants.test.ts
+  - src/engine/cache/L2ByteCache.test.ts
+  - src/engine/prefetch/AdaptivePrefetcher.test.ts
   - src/engine/zip/zipParser.test.ts
   - src/engine/workers/CoordinatorCore.test.ts
   - src/engine/workers/coordinatorTransfer.test.ts

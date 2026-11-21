@@ -34,7 +34,9 @@ related_tests:
   - src/bridges/app/mockAppBridge.test.ts
   - src/diagnostics/diagnosticLogger.test.ts
   - src/engine/constants.test.ts
+  - src/engine/cache/L2ByteCache.test.ts
   - src/engine/io/LocalFileReader.test.ts
+  - src/engine/prefetch/AdaptivePrefetcher.test.ts
   - src/engine/workers/CoordinatorCore.test.ts
   - src/engine/workers/comlinkErrorHandler.test.ts
   - src/engine/workers/coordinatorTransfer.test.ts
