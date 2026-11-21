@@ -697,6 +697,19 @@ export async function parseZipDirectory(
   return buildLogicalPageEntries(parsed, eocd.cdOffset);
 }
 
+export function computeEntryFetchSpan(_entry: ZipPageEntry): number {
+  return 0;
+}
+
+export async function extractCompressedSliceFromBuffer(
+  _reader: RandomAccessReader,
+  _entry: ZipPageEntry,
+  _initialBuf: Uint8Array,
+  _signal?: AbortSignal,
+): Promise<Uint8Array> {
+  return new Uint8Array(0);
+}
+
 export async function readCompressedPageSlice(
   reader: RandomAccessReader,
   entry: ZipPageEntry,

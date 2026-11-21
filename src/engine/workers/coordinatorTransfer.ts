@@ -8,16 +8,24 @@ export interface PreparedDecodeTransfer {
   readonly transferables: [ArrayBuffer];
 }
 
+export interface PrepareDecodeTransferOptions {
+  readonly shared?: boolean;
+}
+
+export function markSharedBuffer(_buffer: ArrayBufferLike): void {
+  // Red: Greenステップで実装
+}
+
+export function isSharedBuffer(_buffer: ArrayBufferLike): boolean {
+  return false;
+}
+
 /**
  * 圧縮画像スライスを Decode Worker へ Zero-Copy 転送するための `Transferable` を準備する。
- *
- * `byteOffset === 0 && byteLength === buffer.byteLength && buffer instanceof ArrayBuffer` の場合は
- * 元 `ArrayBuffer` をそのまま `Comlink.transfer` 対象としてデタッチするため、
- * 将来 `v0.1` で `L2ByteCache` 等の共有キャッシュ由来スライスを渡す際は
- * 事前にコピー（または共有フラグ導入）して元キャッシュを破壊しないこと。
  */
 export function prepareDecodeTransfer(
   compressedData: Uint8Array,
+  _options?: PrepareDecodeTransferOptions,
 ): PreparedDecodeTransfer {
   if (
     compressedData.byteOffset === 0 &&
