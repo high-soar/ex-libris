@@ -449,6 +449,7 @@ describe("AdaptivePrefetcher", () => {
     expect(cache2.size).toBe(0);
 
     // 4. 2RTT 補完中の READ_ERROR / 完了後 abort でも安全停止＆未解決ページ解放
+    // gap.bin (70KB) を挟み Batch 0=[000.jpg] (末尾のため 2RTT 発生), Batch 1=[001.jpg] に分割する
     const extraZip = buildSyntheticZip({
       entries: [
         {
@@ -456,6 +457,7 @@ describe("AdaptivePrefetcher", () => {
           data: p0,
           lfhExtra: new Uint8Array(5_000).fill(0xaa),
         },
+        { name: "gap.bin", data: new Uint8Array(70_000) },
         { name: "001.jpg", data: p1 },
       ],
     });
@@ -485,7 +487,7 @@ describe("AdaptivePrefetcher", () => {
     });
     expect(empty2ndRttErr).toEqual([0, 1]);
 
-    // 5. 2RTT 補完中に abort された場合（resolveAfterAbort）
+    // 5. 2RTT 補完中に abort された場合（resolveAfterAbort / AbortError throw / abort後CORRUPT_ZIP）
     let rttAbortCall = 0;
     const rttController = new AbortController();
     const empty2ndRttAbort: number[] = [];
@@ -511,6 +513,85 @@ describe("AdaptivePrefetcher", () => {
       },
     });
     expect(empty2ndRttAbort).toEqual([0, 1]);
+
+    let rttThrowAbortCall = 0;
+    const empty2ndRttThrowAbort: number[] = [];
+    await runPrefetchBatches({
+      reader: {
+        sourceId: "2nd-rtt-throw-abort",
+        totalSize: extraReader.totalSize,
+        async readRange(offset, length) {
+          rttThrowAbortCall += 1;
+          if (rttThrowAbortCall === 2) {
+            throw new DOMException("Aborted", "AbortError");
+          }
+          return extraReader.readRange(offset, length);
+        },
+      },
+      entries: extraEntries,
+      prefetchIndices: [0, 1],
+      l2Cache: new L2ByteCache(),
+      callbacks: {
+        onPageSettledEmpty: (pageIndex) =>
+          empty2ndRttThrowAbort.push(pageIndex),
+      },
+    });
+    expect(empty2ndRttThrowAbort).toEqual([0, 1]);
+
+    let rttCorruptAfterAbortCall = 0;
+    const corruptAbortController = new AbortController();
+    const empty2ndRttCorruptAfterAbort: number[] = [];
+    await runPrefetchBatches({
+      reader: {
+        sourceId: "2nd-rtt-corrupt-after-abort",
+        totalSize: extraReader.totalSize,
+        async readRange(offset, length) {
+          rttCorruptAfterAbortCall += 1;
+          if (rttCorruptAfterAbortCall === 2) {
+            corruptAbortController.abort();
+            return new Uint8Array(1);
+          }
+          return extraReader.readRange(offset, length);
+        },
+      },
+      entries: extraEntries,
+      prefetchIndices: [0, 1],
+      l2Cache: new L2ByteCache(),
+      signal: corruptAbortController.signal,
+      callbacks: {
+        onPageSettledEmpty: (pageIndex) =>
+          empty2ndRttCorruptAfterAbort.push(pageIndex),
+      },
+    });
+    expect(empty2ndRttCorruptAfterAbort).toEqual([0, 1]);
+
+    // 5b. 2RTT 補完中に Fast-Path 等が対象ページを L2 へ格納した場合は既存L2を上書きせず解決通知する
+    const raceCache = new L2ByteCache();
+    const fastPathOverride = new Uint8Array([77, 88, 99]);
+    let raceCall = 0;
+    const raceReady: Array<[number, Uint8Array]> = [];
+    await runPrefetchBatches({
+      reader: {
+        sourceId: "2nd-rtt-race-l2",
+        totalSize: extraReader.totalSize,
+        async readRange(offset, length, signal) {
+          raceCall += 1;
+          const buf = await extraReader.readRange(offset, length, signal);
+          if (raceCall === 2) {
+            raceCache.put(0, fastPathOverride);
+          }
+          return buf;
+        },
+      },
+      entries: extraEntries,
+      prefetchIndices: [0],
+      l2Cache: raceCache,
+      callbacks: {
+        onPageReady: (pageIndex, slice) => raceReady.push([pageIndex, slice]),
+      },
+    });
+    expect(raceCache.peek(0)).toEqual(fastPathOverride);
+    expect(raceReady).toEqual([[0, fastPathOverride]]);
 
     // 6. Batch 0 内で 1件目格納後にループ内で abort が発火した場合
     const multiZip = buildSyntheticZip({

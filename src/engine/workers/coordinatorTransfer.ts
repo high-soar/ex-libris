@@ -12,22 +12,33 @@ export interface PrepareDecodeTransferOptions {
   readonly shared?: boolean;
 }
 
-export function markSharedBuffer(_buffer: ArrayBufferLike): void {
-  // Red: Greenステップで実装
+const sharedBuffers = new WeakSet<ArrayBuffer>();
+
+export function markSharedBuffer(buffer: ArrayBufferLike): void {
+  if (buffer instanceof ArrayBuffer) {
+    sharedBuffers.add(buffer);
+  }
 }
 
-export function isSharedBuffer(_buffer: ArrayBufferLike): boolean {
-  return false;
+export function isSharedBuffer(buffer: ArrayBufferLike): boolean {
+  return buffer instanceof ArrayBuffer && sharedBuffers.has(buffer);
 }
 
 /**
  * 圧縮画像スライスを Decode Worker へ Zero-Copy 転送するための `Transferable` を準備する。
+ *
+ * `options?.shared === true` または `isSharedBuffer(compressedData.buffer) === true` の場合、
+ * あるいは部分ビュー・非 `ArrayBuffer` の場合は元バッファのデタッチ破壊を防ぐため
+ * `slice()` で独立 `ArrayBuffer` を複製して返す。
  */
 export function prepareDecodeTransfer(
   compressedData: Uint8Array,
-  _options?: PrepareDecodeTransferOptions,
+  options?: PrepareDecodeTransferOptions,
 ): PreparedDecodeTransfer {
+  const isShared =
+    options?.shared === true || isSharedBuffer(compressedData.buffer);
   if (
+    !isShared &&
     compressedData.byteOffset === 0 &&
     compressedData.byteLength === compressedData.buffer.byteLength &&
     compressedData.buffer instanceof ArrayBuffer
