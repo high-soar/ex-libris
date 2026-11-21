@@ -9,8 +9,11 @@ describe("shaders", () => {
     expect(VERTEX_SHADER_SOURCE).toContain("in vec2 a_position;");
     expect(VERTEX_SHADER_SOURCE).toContain("in vec2 a_texCoord;");
     expect(VERTEX_SHADER_SOURCE).toContain("uniform vec2 u_scale;");
+    expect(VERTEX_SHADER_SOURCE).toContain("uniform vec2 u_offset;");
     expect(VERTEX_SHADER_SOURCE).toContain("out vec2 v_texCoord;");
-    expect(VERTEX_SHADER_SOURCE).toContain("gl_Position");
+    expect(VERTEX_SHADER_SOURCE).toContain(
+      "gl_Position = vec4(a_position * u_scale + u_offset, 0.0, 1.0);",
+    );
   });
 
   it("WebGL2用の#version 300 esフラグメントシェーダーが高精度浮動小数とtextureサンプリングを含むこと", () => {

@@ -31,6 +31,7 @@ related_tests:
   - src/webgl/WebGLRendererCore.test.ts
   - src/webgl/ReaderCanvas.test.tsx
   - src/webgl/l1PageCache.test.ts
+  - src/features/reader/spreadLayout.test.ts
   - src/features/reader/ReaderHudOverlay.test.tsx
   - src/features/reader/ReaderErrorView.test.tsx
   - src/features/reader/ReaderPage.test.tsx
