@@ -67,6 +67,7 @@ related_tests:
    - `!result.fromIndexCache` で通常オープンに成功した場合は `zipIndexCacheRepo.put(source.indexCacheKey, result.entries)` を非ブロッキングで保存し、失敗しても閲覧自体は継続する。
 4. **Fast-Path・L1 近傍バッチ・10MB Warm Prefetch 連携（単ページ／見開き共用）**:
    - 有効表示モード（`effectiveSpreadMode`）・`spreadPageOffset`・セッション内既知寸法（`knownDimensions`）から現在の取得候補 `visibleTargets`（単ページ確定時は `[N]`、見開きペア候補時は `[N, N+1]`）を決定し、保護ウィンドウ `protectedPages`（単ページ時 `[N-1, N, N+1, N+2]` 最大 4 枚、見開き時 `[first-1, first, last, last+1, last+2]` 最大 5 枚＝`L1_MAX_PAGES`）、近傍先読み `neighbors`（単ページ時 `[N+1, N+2, N-1]`、見開き時 `[last+1, last+2, first-1]`）、および閲覧優先順 `prefetchTargets`（進行方向 `[last+1 .. last+20]` ＋ 逆方向 `[first-1, first-2]`、`0 <= idx < totalPages`）を算出する。
+   - **モード／オフセット／向き変化時の再同期**: `spreadMode`・`effectiveSpreadMode`・`spreadPageOffset` の変更により表示候補が変化した場合（`currentPageIndex === 0` での `[0] ↔ [0, 1]`、`"single" → "spread"` 切替、`"auto"` による縦→横回転追従を含む）は、`currentPageIndex` が同一でも新 `epoch` を発行し `cancelEpochBelow(epoch)` の上で `loadPageWindow` を再実行する（ただし `effectiveSpreadMode` が変化しない同向き内の単なる寸法変化では再実行しない）。`initialSnapshot` 指定時は `framesByPage` から即座に再レイアウトする。また `readingDirection`（`rtl` ↔ `ltr`）変更時は L1 保持フレームを用いて即座にスロット再配置・再描画する。
    - **現在表示候補 `visibleTargets` に L1 未ヒットが含まれる場合**: 未ヒット分 `missingVisible` に対して Fast-Path `requestVisiblePages(missingVisible, prefetchTargets, epoch, { visiblePageIndices: visibleTargets })` を待機し、デコード完了とともに `knownDimensions`（`{ width, height }`）へ寸法を記録してレイアウトを確定描画する（同時に Worker 側で 10MB 結合 Warm Prefetch が非同期開始）。直後に `missingNeighbors` があれば `requestVisiblePages(missingNeighbors, [], epoch, { visiblePageIndices: visibleTargets })` を 1 バッチで非同期要求する。
    - **現在表示候補 `visibleTargets` がすべて L1 ヒット時**: 即座に描画した上で、`missingNeighbors` または `prefetchTargets` が非空であれば `requestVisiblePages(missingNeighbors, prefetchTargets, epoch, { visiblePageIndices: visibleTargets })` を 1 回非同期要求し、L2 キャッシュからの L1 近傍補充・表示ピン更新・L2 先読み補充を一括実行する。
 
@@ -88,9 +89,12 @@ related_tests:
    - ペア候補の次ページ（`currentPageIndex + 1`）が存在しない（末尾到達）または元画像が横長（`width > height`）
    - 上記以外の場合、`rtl` では `[{ pageIndex: N + 1, position: "left" }, { pageIndex: N, position: "right" }]`、`ltr` では `[{ pageIndex: N, position: "left" }, { pageIndex: N + 1, position: "right" }]` の 2 スロット見開きとする。
 3. **動的再ペアリング・戻る履歴整合・「1ページずらし」**:
-   - **次へ進行**: 現在の表示スロット数 `displayedSlots.length`（単独なら `+1`、見開きなら `+2`）だけ進むため、途中に横長見開き結合済み画像が存在しても後続ページから自動的に正しい見開きペアへ再整合する。
-   - **前へ戻る**: セッション内見開き遷移スタック（`spreadHistory`）を保持し（`spreadPageOffset` 変更時や `"single"` モード切替時にスタックをクリア）、履歴がある場合は往路と厳密一致する開始ページへ戻る。履歴が空の場合（単ページからの切替直後等）は近傍既知寸法と `spreadPageOffset` から `computePreviousAnchorIndex`（`prev2 === 0 && offset === 0` または `prev1`/`prev2` が横長なら `N - 1`、それ以外は `N - 2`）で決定する。
-   - **1ページずらし切替**: `spreadPageOffset` を `0 ↔ 1` へ反転した際、`currentPageIndex === 0` は基準 `0` を維持して `[0] ↔ [0, 1]` を切り替え、`currentPageIndex >= 1` は `computeShiftedAnchorOnOffsetToggle` により基準ページを ±1 シフトして即座に表示ペアを更新する。
+   - **次へ進行と最終見開き境界**: 現在の表示スロット数 `displayedSlots.length`（単独なら `+1`、見開きなら `+2`）だけ進むため、途中に横長見開き結合済み画像が存在しても後続ページから自動的に正しい見開きペアへ再整合する。**表示中の最大ページインデックス `maxDisplayedPageIndex >= totalPages - 1` に到達している場合は、HUD ボタンだけでなくタップ・スワイプ・キーボードを含むすべての次頁遷移を無効（no-op）とし、最終見開きから最終 1 枚単独への意図しない再遷移を起こさない**。
+   - **前へ戻る**: セッション内見開き遷移スタック（`spreadHistory`）を保持し（`spreadPageOffset` 変更時および **`effectiveSpreadMode === "single"`** 状態への遷移・単ページ移動時にスタックをクリア）、履歴がある場合は往路と厳密一致する開始ページへ戻る。履歴が空の場合（単ページからの切替直後等）は `computePreviousAnchorIndex` で決定する（`currentPageIndex <= 1` 時は先頭境界ガードとして `0`、`effectiveSpreadMode === "single"` 時は `currentPageIndex - 1`、見開き時 `prev1 = currentPageIndex - 1`, `prev2 = currentPageIndex - 2` に対し `(prev2 === 0 && spreadPageOffset === 0)` または `prev1`/`prev2` が横長なら `prev1`、それ以外は `prev2`）。
+   - **1ページずらし切替（`computeShiftedAnchorOnOffsetToggle(currentPageIndex, nextOffset, totalPages)`）**:
+     - `totalPages <= 1 || currentPageIndex <= 0`: `0` を維持する（0 頁目では `[0] ↔ [0, 1]` を切り替え）。
+     - `currentPageIndex >= 1` かつ `nextOffset === 1`: `currentPageIndex + 1 < totalPages ? currentPageIndex + 1 : currentPageIndex - 1`（原則 `+1` シフト、最終頁上でのみ `-1` へ逃がしてペアを再構成）。
+     - `currentPageIndex >= 1` かつ `nextOffset === 0`: `currentPageIndex - 1 >= 1 ? currentPageIndex - 1 : currentPageIndex + 1 < totalPages ? currentPageIndex + 1 : 0`（原則 `-1` シフトで元ペアへ復帰し、`currentPageIndex === 1` 時のみ 3 頁以上なら `2` へシフトして表紙 `0` への意図しない巻戻りを防ぐ〔2 頁本時は `0`〕）。
 
 ### 2.2 ページ送り操作契約（`rtl` / `ltr` 対称反転）
 
@@ -124,7 +128,7 @@ related_tests:
      - `disabled` 境界: 先頭ページ（`currentPageIndex <= 0`）では「前へ」を `disabled`、表示中の最大ページが最終ページ（`maxDisplayedPageIndex >= totalPages - 1`）では「次へ」を `disabled` とする。
    - **下段（表示・綴じ方向コントロール行）**:
      - **表示モード循環ボタン**（`data-testid="reader-spread-mode-button"`, `data-spread-mode`, `data-effective-spread-mode`）: クリックごとに `auto → spread → single → auto` を循環し、`自動(見開き)` / `自動(単頁)` / `見開き` / `単ページ` を表示する。
-     - **1ページずらしトグル**（`data-testid="reader-offset-toggle-button"`, `aria-pressed={spreadPageOffset === 1}`）: `spreadPageOffset` を `0 ↔ 1` で切り替える。**実効表示が単ページ（`effectiveSpreadMode === "single"`）のときは `disabled`** とする。
+     - **1ページずらしトグル**（`data-testid="reader-offset-toggle-button"`, `aria-pressed={spreadPageOffset === 1}`）: `spreadPageOffset` を `0 ↔ 1` で切り替える。**`totalPages <= 1` または実効表示が単ページ（`effectiveSpreadMode === "single"`）のときは `disabled`** とする。
      - **右/左開き切替ボタン**（`data-testid="reader-direction-button"`, `data-reading-direction={readingDirection}`）: `rtl`（`右開き`）と `ltr`（`左開き`）をトグルする。
 4. **システムバー非重複・セーフエリア＆タッチ応答保護**:
    - 上部バーは `paddingTop: "calc(0.75rem + env(safe-area-inset-top, 0px))"`、下部バーは `paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))"` を設定し、全 HUD ボタンに `touch-manipulation` を付与する。
@@ -149,8 +153,9 @@ related_tests:
 特定ページ `k` が `DecodedPageFrame`（`status: "error"`, `errorCode: "DECODE_FAILED" | "CORRUPT_ZIP" | "READ_ERROR"`）で失敗した場合：
 
 - `diagnosticLogger.error("reader", ...)` へ記録し、`L1PageCache` へ `error` 状態を格納する。
-- **単ページ時、または見開き 2 ページとも失敗時**: 画面中央（`slotPosition: "center"`）にページエラーカード（`data-testid="reader-page-error"`, `data-slot-position="center"`）を表示する。
-- **見開きで片側のみ失敗し相方が `status: "ready"` 時**: 正常ページは WebGL2 で対応スロット（`left` / `right`）にそのまま描画し、失敗した側の半面（`slotPosition: "left" | "right"`, `w-1/2`）のみにページエラーカード（該当 1 始まり `pageNumber` 付記）を重ねて表示する。いずれの場合も **前後ページへの移動・スワイプ・HUD・戻る操作はそのまま継続可能** とする。
+- `ReaderErrorView`（`mode="page"`）は全 `slotPosition`（`"center" | "left" | "right"`、デフォルト `"center"`）において `data-slot-position={slotPosition}` を出力する。
+- **単ページ時、または見開き 2 ページとも失敗時**: 画面中央（`slotPosition="center"`, `pageNumber` 省略）にページエラーカード（`data-testid="reader-page-error"`, `data-slot-position="center"`）を 1 枚表示する。見開き両側失敗時は **基準ページ（`currentPageIndex` 側、該当なし時は先頭スロット）の `errorCode` / `message` を代表** として採用する。
+- **見開きで片側のみ失敗し相方が `status: "ready"` 時**: 正常ページは WebGL2 で対応スロット（`left` / `right`）にそのまま描画し、失敗した側の半面（`slotPosition: "left" | "right"`, `w-1/2`, `data-slot-position="left" | "right"`）のみに該当 1 始まり `pageNumber` 付きのページエラーカードを重ねて表示する。いずれの場合も **前後ページへの移動・スワイプ・HUD・戻る操作はそのまま継続可能** とする。
 
 ### 4.3 ローディング表示
 

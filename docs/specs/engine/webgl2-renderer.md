@@ -92,14 +92,14 @@ WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React D
      - `TEXTURE_WRAP_S = gl.CLAMP_TO_EDGE`
      - `TEXTURE_WRAP_T = gl.CLAMP_TO_EDGE`
 3. **`MAX_TEXTURE_SIZE` 超過時の自動タイル分割／安全リサイズフォールバック（`AC-GL-07`）**:
-   - `bitmap.width > maxTextureSize || bitmap.height > maxTextureSize` を検知し、まだ当該 `bitmap` のテクスチャが未準備かつ未着手の場合：
-     1. `diagnosticLogger.warn("webgl2", ...)` へ画像サイズ・上限値・フォールバック方式を記録する。
-     2. `cols = Math.ceil(bitmap.width / maxTextureSize)`、`rows = Math.ceil(bitmap.height / maxTextureSize)` を算出し、合計タイル数 `cols * rows <= 16`（`MAX_SPLIT_TILES = 16`）の場合は各タイル矩形 `(sx, sy, sw, sh)` を `bitmapCropper`（デフォルト `createImageBitmap(bitmap, sx, sy, sw, sh)`）で非同期切り出しする。
-     3. `cols * rows > 16` の極端な超高解像度画像または `bitmapCropper` 失敗時は、アスペクト比を維持して長辺 `<= maxTextureSize`（最小 `1`）に収めた縮小寸法を算出し、`bitmapResizer`（デフォルト `createImageBitmap(bitmap, { resizeWidth, resizeHeight, resizeQuality: "high" })`）へ自動フォールバックする。
+   - `bitmap.width > maxTextureSize || bitmap.height > maxTextureSize` を検知し、まだ当該 `bitmap` のテクスチャが未準備・未着手かつ同一コンテキスト世代内で準備失敗記録（`failedOversizedBitmaps`）に未登録の場合：
+     1. `diagnosticLogger.warn("webgl2", ...)` へ画像サイズ・上限値・フォールバック方式を 1 回記録する。
+     2. `cols = Math.ceil(bitmap.width / maxTextureSize)`、`rows = Math.ceil(bitmap.height / maxTextureSize)` を算出し、合計タイル数 `cols * rows <= 16`（`MAX_SPLIT_TILES = 16`）の場合は各タイル矩形 `(sx, sy, sw, sh)` を `bitmapCropper`（デフォルト `createImageBitmap(bitmap, sx, sy, sw, sh)`）で非同期切り出しする。**各 `await` の前後** で `!disposed && contextGeneration === capturedGen && pendingBitmaps.get(pageIndex) === frame.bitmap && !(gl.isContextLost?.() ?? false)` を再検証し、中断時は保持中の一時 `ImageBitmap` を即 `close()` し、リサイズフォールバックや `diagnosticLogger.error` を行わず終了する。
+     3. `cols * rows > 16` の極端な超高解像度画像または（未キャンセル状態での）`bitmapCropper` 失敗時は、分割途中で生成済みの途中 `WebGLTexture`／一時 `ImageBitmap` を即解放した上で、アスペクト比を維持して長辺 `<= maxTextureSize`（最小 `1`）に収めた縮小寸法を算出し、`bitmapResizer`（デフォルト `createImageBitmap(bitmap, { resizeWidth, resizeHeight, resizeQuality: "high" })`）へ自動フォールバックする（完了後にも同じキャンセル・コンテキストロスト再検証を実施）。
      4. 取得した一時 `ImageBitmap` 群は `gl.texImage2D` ＋ `gl.generateMipmap` 転送直後（およびキャンセル・コンテキストロスト・破棄・例外発生時の `finally`）に **必ず即時 `close()` を呼び出し**、リークを完全に防ぐ。
-     5. 非同期準備が完了した時点で依然 `!disposed` かつ `contextGeneration` 一致かつ当該 `pageIndex` が同 `bitmap` を待機中の場合のみ全タイル `WebGLTexture` を登録し、`onAsyncTextureReady(pageIndex)` コールバックを通知して再描画を発火する。`bitmapResizer` も失敗した場合は `diagnosticLogger.error("webgl2", ...)` を記録して安全に中断する。
+     5. 非同期準備が未キャンセル・有効世代で完了した場合のみ全タイル `WebGLTexture` を登録し、`onAsyncTextureReady(pageIndex)` コールバックを通知して再描画を発火する。未キャンセル状態で `bitmapResizer` も失敗した場合（またはアップロードに失敗した場合）は途中生成した `WebGLTexture` をすべて `gl.deleteTexture()` で破棄し、`failedOversizedBitmaps` へ登録して再レンダー時の無限リトライを抑止した上で `diagnosticLogger.error("webgl2", ...)` を 1 回記録して安全に中断する。
 4. **複数タイル対応のテクスチャキャッシュ連携**:
-   - ページ番号ごとに生成済み `WebGLTexture` 配列（`tiles`）をマップ管理し、`deletePageTexture(pageIndex)`・同一ページ別画像上書き・`clearAllTextures()` 時に **対象ページの全タイル `gl.deleteTexture(tile.texture)` と進行中非同期準備のキャンセル** を確実に実行する。
+   - ページ番号ごとに生成済み `WebGLTexture` 配列（`tiles`）をマップ管理し、`deletePageTexture(pageIndex)`・同一ページ別画像上書き・`clearAllTextures()` 時に **対象ページの全タイル `gl.deleteTexture(tile.texture)`、進行中非同期準備のキャンセル、および失敗ガード解除** を確実に実行する。
 
 ### 3.3 単ページ／2スロット見開き配置描画（`renderSlots`）
 
@@ -108,15 +108,15 @@ WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React D
 2. **単ページモード（`position: "center"`）**:
    - ビューポートアスペクト比と画像アスペクト比を比較し、純黒レターボックス付きで中央最大内接矩形へフィット描画する。
 3. **2スロット見開きモード（`position: "left" | "right"`）**:
-   - **両スロット `ready` 時**: 左右画像を共通の縦表示高さに正規化し（`normWidthL = wL / hL`, `normWidthR = wR / hR`）、結合アスペクト比 `normWidthL + normWidthR` をビューポートへ最大内接フィットした上で、左右ページの背表紙接点を隙間ゼロで結合してビューポート中央へ配置する。
-   - **片側のみ `ready` 時（相方が `error` または `null`）**: `ready` 側スロットを自身の半画面領域（`left`: `[-1, 0]`、`right`: `[0, 1]`）に内接フィットし、背表紙 `x = 0` 境界へ寄せて描画する（失敗側半面には上位 UI のスロットエラーオーバーレイを表示可能にする）。
-4. **戻り値契約**:
-   - `renderSlots(slots: readonly RenderSlotFrame[]): readonly ViewportSlot[]` は、当該呼び出しで実際に WebGL2 描画を完了したスロット配列を返す（`MAX_TEXTURE_SIZE` 非同期準備待機中のスロットは完了通知まで含めない）。`renderFrame(frame)` は `renderSlots` への単一 `"center"` 委譲ラッパーとして提供する。
+   - **両スロット `status === "ready"` 時**: 左右画像の寸法を用い共通の縦表示高さに正規化（`normWidthL = wL / hL`, `normWidthR = wR / hR`）した結合アスペクト比 `normWidthL + normWidthR` で両スロットの描画矩形を確定し、背表紙接点隙間ゼロ・ビューポート中央配置で描画する。**片側が `MAX_TEXTURE_SIZE` 非同期タイル準備待機中の間もこの結合配置矩形を維持したまま準備済み側スロットのみ先行描画** し（未準備側領域は黒待機）、準備完了後の再描画時に両スロットが座標ズレなく揃うようにする。
+   - **片側のみ `status === "ready"`・相方が `error` または `null` 時**: `ready` 側スロットを自身の半画面領域（`left`: `[-1, 0]`、`right`: `[0, 1]`）に内接フィットし、背表紙 `x = 0` 境界へ寄せて描画する（失敗側半面には上位 UI のスロットエラーオーバーレイを表示可能にする）。
+4. **戻り値契約と `renderFrame`**:
+   - `renderSlots(slots: readonly RenderSlotFrame[]): readonly ViewportSlot[]` は、当該呼び出しで実際に WebGL2 描画を完了したスロット配列を返す（`MAX_TEXTURE_SIZE` 非同期準備待機中のスロットは完了通知まで含めない）。既存 `renderFrame(frame)` は `renderSlots` への単一 `"center"` 委譲ラッパーとして維持・提供する。
 
 ### 3.4 `webglcontextlost` / `webglcontextrestored` 耐性
 
-1. `<ReaderCanvas>` は `canvas` 要素で `webglcontextlost` リスナーを登録し、必ず **`event.preventDefault()`** を実行してコンテキスト復元を許可した上で、`diagnosticLogger.warn("webgl2", ...)` へ記録する。
-2. `webglcontextrestored` 発火時、`WebGLRendererCore.reinitializeAfterContextLost()` を呼び出して `contextGeneration` を進め（進行中の古い非同期分割を無効化）、シェーダープログラム・VAO/VBO・`MAX_TEXTURE_SIZE` を再構築した上で、**`L1PageCache` に残存している `ImageBitmap` 群から現在スロットのテクスチャと Mipmap（必要時は `MAX_TEXTURE_SIZE` ガード含む）を自動再生成して再描画** する。
+1. `<ReaderCanvas>` は `canvas` 要素で `webglcontextlost` リスナーを登録し、必ず **`event.preventDefault()`** を実行してコンテキスト復元を許可した上で、即座に **`renderer.notifyContextLost()`**（`contextGeneration` インクリメント・進行中非同期分割無効化・ロスト済み `textures`／`failedOversizedBitmaps` クリア）を呼び出してロスト〜リストア間の非同期完了レースを遮断し、`diagnosticLogger.warn("webgl2", ...)` へ記録する。
+2. `webglcontextrestored` 発火時、`WebGLRendererCore.reinitializeAfterContextLost()` を呼び出して `contextGeneration` を進め、シェーダープログラム・VAO/VBO・`MAX_TEXTURE_SIZE` を再構築した上で、**`L1PageCache` に残存している `ImageBitmap` 群から現在スロットのテクスチャと Mipmap（必要時は `MAX_TEXTURE_SIZE` ガード含む）を自動再生成して再描画** する。
 3. WebGL2 コンテキスト自体が取得不可、またはシェーダーのコンパイル/リンクに失敗した場合は、致命的エラーコールバック（`WEBGL_UNSUPPORTED` / `WEBGL_INIT_FAILED`）を発火する。
 
 ---
@@ -134,9 +134,9 @@ WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React D
 - **決定論的テスト用 DOM 属性**:
   - `data-testid="reader-canvas"`
   - `data-webgl-status`: `"initializing" | "ready" | "context-lost" | "error"`
-  - `data-rendered-page`: 描画完了済み先頭スロットの 0 始まり `pageIndex`（未描画時は `""`）
+  - `data-rendered-page`: 描画完了済み全スロットに含まれるページの **昇順最小 0 始まり `pageIndex`**（例: `rtl` 見開き `"left:2,right:1"` では `"1"`、単ページ `"center:0"` では `"0"`、未描画時は `""`）
   - `data-rendered-pages`: 描画完了済み全スロットの 0 始まり `pageIndex` を昇順カンマ区切り（例: `"1,2"`、未描画時は `""`）
-  - `data-rendered-slots`: 描画完了済みスロット位置＋頁のカンマ区切り（例: `"left:2,right:1"` / `"center:0"`、未描画時は `""`）
+  - `data-rendered-slots`: 描画完了済みスロット配列順の `position:pageIndex` カンマ区切り（例: `"left:2,right:1"` / `"center:0"`、未描画時は `""`）
   - `data-rendered-epoch`: 描画したスロット群の最大 `requestEpoch`（未描画時は `""`）
 - **テスト分離**: `<ReaderCanvas>` の単体テストおよび上位 `<ReaderPage>` の単体テストでは、モック `WebGL2RenderingContext` または子コンポーネントスパイにより Headless JSDOM 環境でも 100% 検証可能とする。
 

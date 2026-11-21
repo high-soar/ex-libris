@@ -332,8 +332,8 @@ export interface PageDimensions {
 - **インテリジェント見開き判定・動的アンカーペアリングルール**:
   - `SpreadMode === "auto"`（初期値）時は、ビューポートが横長（`viewportWidth > viewportHeight`）の場合に実効 `"spread"`、縦長・正方形の場合に実効 `"single"` へ自動追従する（`"single"` / `"spread"` 明示選択時は画面向きに依存せず固定表示）。
   - 実効 `"spread"` 状態であっても、①表紙先頭ページ（`pageIndex === 0 && spreadPageOffset === 0`）、②自身またはペア候補の次ページが横長スキャン（`width > height`、厳密不等号）、または ③末尾単独ページのいずれかに該当する場合は自動的に **1枚単独中央表示（`position: "center"`）** とする。
-  - 通常 2 ページ見開き時は `ReadingDirection` に従い、`rtl` は `[次: left, 現: right]`、`ltr` は `[現: left, 次: right]` に配置する。途中に横長画像（見開き結合済みスキャン等）が存在しても次頁へ `displayedSlots.length` 分だけ進行して後続ページから自動再ペアリングし、セッション内既知寸法＋遷移履歴により前頁戻りも整合させる。
-  - ユーザーが「1ページずらし」トグル（`spreadPageOffset: 0 | 1`）を切り替えた場合、`pageIndex === 0` は `[0] ↔ [0, 1]`、それ以降は基準ページを即座に 1 ページシフトして再レイアウトする。
+  - 通常 2 ページ見開き時は `ReadingDirection` に従い、`rtl` は `[次: left, 現: right]`、`ltr` は `[現: left, 次: right]` に配置する。途中に横長画像（見開き結合済みスキャン等）が存在しても次頁へ `displayedSlots.length` 分だけ進行して後続ページから自動再ペアリングし、セッション内既知寸法＋遷移履歴（`spreadPageOffset` 変更および `effectiveSpreadMode === "single"` 遷移時にクリア）により前頁戻りも整合させる。
+  - ユーザーが「1ページずらし」トグル（`spreadPageOffset: 0 | 1`）を切り替えた場合、`pageIndex === 0`（または `totalPages <= 1`）では基準 `0` を維持して `[0] ↔ [0, 1]` を切り替え、`pageIndex >= 1` では `nextOffset === 1` 時に原則 `+1`（最終頁時のみ `-1`）、`nextOffset === 0` 時に原則 `-1`（`pageIndex === 1` 時のみ 3 頁以上なら `2`、2 頁本なら `0`）へ基準ページをシフトして即座に再レイアウト・窓再同期を行う。
 
 ### 3.2 GPU テクスチャ・`MAX_TEXTURE_SIZE` ガード・L1 解放規律
 
