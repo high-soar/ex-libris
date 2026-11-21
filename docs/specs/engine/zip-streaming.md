@@ -16,6 +16,7 @@ related_tests:
   - src/engine/constants.test.ts
   - src/engine/io/LocalFileReader.test.ts
   - src/engine/zip/errors.test.ts
+  - src/engine/zip/zipIndexValidation.test.ts
   - src/engine/zip/zipParser.test.ts
   - src/engine/workers/DecodeWorkerCore.test.ts
   - src/engine/workers/DecodeWorkerPool.test.ts
@@ -23,6 +24,7 @@ related_tests:
   - src/engine/workers/comlinkErrorHandler.test.ts
   - src/engine/workers/coordinatorTransfer.test.ts
   - src/app/coordinatorClient.test.ts
+  - src/storage/repositories/zipIndexCacheRepository.test.ts
   - test/it/local-reader.spec.ts
 ---
 

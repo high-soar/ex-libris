@@ -14,6 +14,7 @@ import type {
   ArchiveSourceDescriptor,
   DecodedPageFrame,
   ZipErrorCode,
+  ZipPageEntry,
 } from "../../engine/types";
 import { ZipArchiveError, isAbortError } from "../../engine/zip/errors";
 import { matchRoute } from "../../shared/router/routeMatcher";
@@ -117,11 +118,15 @@ function closeReadyFrames(frames: readonly DecodedPageFrame[]): void {
   }
 }
 
+function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function ReaderPage({
   onRegisterExit,
   initialSnapshot,
 }: ReaderPageProps): ReactNode {
-  const { createCoordinatorSession } = useServices();
+  const { createCoordinatorSession, zipIndexCacheRepo } = useServices();
   const { replace, back } = useRouter();
   const session = useLocalReaderSessionStore((state) => state.session);
   const clearSession = useLocalReaderSessionStore(
@@ -372,9 +377,30 @@ export function ReaderPage({
 
     void (async () => {
       try {
+        let cachedEntries: readonly ZipPageEntry[] | null = null;
+        try {
+          cachedEntries = await zipIndexCacheRepo.get(source.indexCacheKey);
+        } catch (cacheError) {
+          if (
+            runtimeRef.current === runtime &&
+            epochRef.current === openEpoch
+          ) {
+            diagnosticLogger.warn(
+              "reader",
+              "目次キャッシュの取得に失敗しました",
+              `${source.indexCacheKey}: ${formatErrorMessage(cacheError)}`,
+            );
+          }
+          cachedEntries = null;
+        }
+
+        if (runtimeRef.current !== runtime || epochRef.current !== openEpoch) {
+          return;
+        }
+
         const result = await coordinator.api.openArchive(
           source,
-          null,
+          cachedEntries,
           openEpoch,
         );
         if (runtimeRef.current !== runtime || epochRef.current !== openEpoch) {
@@ -386,6 +412,27 @@ export function ReaderPage({
             "表示できる画像ファイルが見つかりませんでした",
           );
         }
+
+        diagnosticLogger.info(
+          "reader",
+          result.fromIndexCache
+            ? "目次キャッシュからアーカイブを開きました (0RTT)"
+            : "Central Directory解析でアーカイブを開きました",
+          `${source.indexCacheKey} (pages=${result.pageCount}, fromIndexCache=${String(result.fromIndexCache)})`,
+        );
+
+        if (!result.fromIndexCache) {
+          void zipIndexCacheRepo
+            .put(source.indexCacheKey, result.entries)
+            .catch((cacheError: unknown) => {
+              diagnosticLogger.warn(
+                "reader",
+                "目次キャッシュの保存に失敗しました",
+                `${source.indexCacheKey}: ${formatErrorMessage(cacheError)}`,
+              );
+            });
+        }
+
         totalPagesRef.current = result.pageCount;
         setTotalPages(result.pageCount);
         isOpeningRef.current = false;
@@ -413,6 +460,7 @@ export function ReaderPage({
     session,
     initialSnapshot,
     createCoordinatorSession,
+    zipIndexCacheRepo,
     loadPageWindow,
     releaseRuntime,
     replace,

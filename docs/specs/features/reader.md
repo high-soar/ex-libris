@@ -26,6 +26,7 @@ related_tests:
   - src/webgl/ReaderCanvas.test.tsx
   - src/bridges/app/capacitorAppBridge.test.ts
   - src/bridges/app/mockAppBridge.test.ts
+  - src/storage/repositories/zipIndexCacheRepository.test.ts
   - test/vrt/vrt.spec.ts
   - test/it/local-reader.spec.ts
 ---

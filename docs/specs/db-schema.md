@@ -13,6 +13,8 @@ related_specs:
   - docs/guidelines/testing.md
 related_tests:
   - src/storage/db.test.ts
+  - src/storage/repositories/zipIndexCacheRepository.test.ts
+  - src/engine/zip/zipIndexValidation.test.ts
 ---
 
 # ExLibris Dexie.js（IndexedDB）ローカルDBスキーマ定義

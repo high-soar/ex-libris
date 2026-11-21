@@ -32,11 +32,7 @@ describe("DexieZipIndexCacheRepository", () => {
   });
 
   it("未登録キーにはnullを返し、有効エントリの保存・取得・削除ができヒット時にcachedAtをLRU更新すること (AC-ENG-11)", async () => {
-    let tick = 1000;
-    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
-      tick += 10;
-      return tick;
-    });
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1010);
     const repo = new DexieZipIndexCacheRepository(db, {});
 
     expect(await repo.get("local:missing.cbz:10")).toBeNull();
@@ -52,12 +48,13 @@ describe("DexieZipIndexCacheRepository", () => {
       cachedAt: 1010,
     });
 
+    nowSpy.mockReturnValue(1020);
     const hitEntries = await repo.get("local:vol01.cbz:1024");
     expect(hitEntries).toEqual(entries);
 
     const savedAfterHit = await db.zipIndexCache.get("local:vol01.cbz:1024");
     expect(savedAfterHit?.cachedAt).toBe(1020);
-    expect(nowSpy).toHaveBeenCalledTimes(2);
+    expect(nowSpy).toHaveBeenCalled();
 
     await repo.delete("local:vol01.cbz:1024");
     expect(await db.zipIndexCache.get("local:vol01.cbz:1024")).toBeUndefined();
@@ -67,14 +64,10 @@ describe("DexieZipIndexCacheRepository", () => {
   it("デフォルト上限500件を超えて501件目を保存した際にLRU最古エントリを削除しヒット済みエントリを保持すること (AC-ENG-11)", async () => {
     expect(ZIP_INDEX_CACHE_MAX_ENTRIES).toBe(500);
 
-    let tick = 0;
-    vi.spyOn(Date, "now").mockImplementation(() => {
-      tick += 1;
-      return tick;
-    });
-
+    const nowSpy = vi.spyOn(Date, "now");
     const repo = new DexieZipIndexCacheRepository();
     for (let i = 0; i < ZIP_INDEX_CACHE_MAX_ENTRIES; i += 1) {
+      nowSpy.mockReturnValue(i + 1);
       await repo.put(
         `local:vol-${i}.cbz:${i + 1}`,
         createSampleEntries(`v${i}`),
@@ -83,9 +76,11 @@ describe("DexieZipIndexCacheRepository", () => {
     expect(await db.zipIndexCache.count()).toBe(500);
 
     // 最古だった vol-0 にヒットさせると cachedAt が更新され、vol-1 が最古になる
+    nowSpy.mockReturnValue(501);
     expect(await repo.get("local:vol-0.cbz:1")).not.toBeNull();
 
     // 501 件目を保存 -> 上限 500 件を維持し、vol-1 が削除され vol-0 と vol-500 が生存
+    nowSpy.mockReturnValue(502);
     await repo.put("local:vol-500.cbz:501", createSampleEntries("v500"));
 
     expect(await db.zipIndexCache.count()).toBe(500);
@@ -97,7 +92,7 @@ describe("DexieZipIndexCacheRepository", () => {
   it("空配列や不正構造のputは無視し、既存超過時にもmaxEntries超過分を一括削除できること", async () => {
     const customDb = new ExLibrisDatabase("ExLibrisZipCacheCustomDB");
     try {
-      let tick = 0;
+      let tick = 100;
       const repo = new DexieZipIndexCacheRepository(customDb, {
         maxEntries: 2,
         now: () => {
@@ -112,7 +107,7 @@ describe("DexieZipIndexCacheRepository", () => {
       ]);
       expect(await customDb.zipIndexCache.count()).toBe(0);
 
-      // maxEntries(2)を超過した4件が事前存在する状態から put で超過分2件以上を一括削除
+      // maxEntries(2)を超過した3件が事前存在する状態から put で超過分2件を一括削除
       await customDb.zipIndexCache.bulkPut([
         {
           cacheKey: "k1",

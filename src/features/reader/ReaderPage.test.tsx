@@ -1543,7 +1543,7 @@ describe("ReaderPage", () => {
     const session1 = createMockCoordinatorSession();
     const registeredExit: { current: (() => void) | null } = { current: null };
 
-    renderWithSession(
+    const { unmount: unmountRace1 } = renderWithSession(
       {
         onRegisterExit: (fn) => {
           registeredExit.current = fn;
@@ -1568,8 +1568,10 @@ describe("ReaderPage", () => {
 
     expect(session1.api.openArchive).not.toHaveBeenCalled();
     expect(repo1.put).not.toHaveBeenCalled();
+    unmountRace1();
 
     // 2. get待機中にアンマウント -> 遅延rejectしてもwarnログ・openArchive・エラー表示は呼ばれない
+    window.history.replaceState(null, "", "/read/local");
     diagnosticLogger.clear();
     errorViewSpy.mockClear();
     const getDeferred2 = createDeferred<readonly ZipPageEntry[] | null>();

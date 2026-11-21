@@ -15,6 +15,11 @@ export class ExLibrisDatabase extends Dexie {
     this.version(1).stores({
       syncMeta: "key",
     });
+    this.version(2).stores({
+      syncMeta: "key",
+      zipIndexCache: "cacheKey, cachedAt",
+      readingProgress: "targetKey, volumeId, readStatus, lastReadAt, updatedAt",
+    });
   }
 }
 
