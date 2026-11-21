@@ -1,10 +1,13 @@
 import type { ReactNode } from "react";
+import type { SlotPosition } from "../../webgl/types";
 
 export interface ReaderErrorViewProps {
   readonly mode: "archive" | "page";
   readonly message: string;
   readonly errorCode?: string;
   readonly onBackToHome?: () => void;
+  readonly slotPosition?: SlotPosition;
+  readonly pageNumber?: number;
 }
 
 function ErrorCodeCaption({

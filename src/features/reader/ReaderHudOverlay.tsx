@@ -1,4 +1,10 @@
 import type { ReactNode, SyntheticEvent } from "react";
+import type {
+  EffectiveSpreadMode,
+  ReadingDirection,
+  SpreadMode,
+  SpreadPageOffset,
+} from "../../webgl/types";
 
 export interface ReaderHudOverlayProps {
   readonly isOpen: boolean;
@@ -8,6 +14,15 @@ export interface ReaderHudOverlayProps {
   readonly onClose: () => void;
   readonly onNextPage: () => void;
   readonly onPrevPage: () => void;
+  readonly readingDirection?: ReadingDirection;
+  readonly spreadMode?: SpreadMode;
+  readonly effectiveSpreadMode?: EffectiveSpreadMode;
+  readonly spreadPageOffset?: SpreadPageOffset;
+  readonly pageIndicatorText?: string;
+  readonly maxDisplayedPageIndex?: number;
+  readonly onCycleSpreadMode?: () => void;
+  readonly onToggleSpreadPageOffset?: () => void;
+  readonly onToggleReadingDirection?: () => void;
 }
 
 function stopEventPropagation(event: SyntheticEvent<HTMLElement>): void {
