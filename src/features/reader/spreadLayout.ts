@@ -171,18 +171,30 @@ export function computeViewportSlotLayout(
   };
 }
 
+function resolveVisibleBounds(
+  visiblePages: readonly number[],
+  totalPages: number,
+): { readonly first: number; readonly last: number } | null {
+  if (totalPages <= 0 || visiblePages.length === 0) {
+    return null;
+  }
+  return {
+    first: Math.min(...visiblePages),
+    last: Math.max(...visiblePages),
+  };
+}
+
 export function buildSpreadProtectedWindow(
   visiblePages: readonly number[],
   effectiveSpreadMode: EffectiveSpreadMode,
   totalPages: number,
 ): number[] {
-  if (totalPages <= 0 || visiblePages.length === 0) {
+  const bounds = resolveVisibleBounds(visiblePages, totalPages);
+  if (bounds === null) {
     return [];
   }
 
-  const first = Math.min(...visiblePages);
-  const last = Math.max(...visiblePages);
-
+  const { first, last } = bounds;
   const rawCandidates =
     effectiveSpreadMode === "single"
       ? [first - 1, first, first + 1, first + 2]
@@ -200,13 +212,12 @@ export function buildSpreadNeighborTargets(
   effectiveSpreadMode: EffectiveSpreadMode,
   totalPages: number,
 ): number[] {
-  if (totalPages <= 0 || visiblePages.length === 0) {
+  const bounds = resolveVisibleBounds(visiblePages, totalPages);
+  if (bounds === null) {
     return [];
   }
 
-  const first = Math.min(...visiblePages);
-  const last = Math.max(...visiblePages);
-
+  const { first, last } = bounds;
   const rawCandidates =
     effectiveSpreadMode === "single"
       ? [first + 1, first + 2, first - 1]
@@ -221,12 +232,12 @@ export function buildSpreadPrefetchTargets(
   visiblePages: readonly number[],
   totalPages: number,
 ): number[] {
-  if (totalPages <= 0 || visiblePages.length === 0) {
+  const bounds = resolveVisibleBounds(visiblePages, totalPages);
+  if (bounds === null) {
     return [];
   }
 
-  const first = Math.min(...visiblePages);
-  const last = Math.max(...visiblePages);
+  const { first, last } = bounds;
   const targets: number[] = [];
 
   for (let offset = 1; offset <= PREFETCH_FORWARD_PAGES; offset += 1) {

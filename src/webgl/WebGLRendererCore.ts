@@ -642,6 +642,131 @@ export class WebGLRendererCore {
     );
   }
 
+  private async prepareTiledTextures(
+    frame: ReadyPageFrame,
+    capturedGen: number,
+    capturedMaxTex: number,
+    createdTextures: WebGLTexture[],
+  ): Promise<
+    | { readonly cancelled: true }
+    | { readonly cancelled: false; readonly tiles: TileTexture[] | null }
+  > {
+    const bw = frame.bitmap.width;
+    const bh = frame.bitmap.height;
+    const cols = Math.ceil(bw / capturedMaxTex);
+    const rows = Math.ceil(bh / capturedMaxTex);
+    const splitTiles: TileTexture[] = [];
+
+    for (let row = 0; row < rows; row += 1) {
+      for (let col = 0; col < cols; col += 1) {
+        if (
+          !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
+        ) {
+          return { cancelled: true };
+        }
+
+        const sx = col * capturedMaxTex;
+        const sy = row * capturedMaxTex;
+        const sw = Math.min(capturedMaxTex, bw - sx);
+        const sh = Math.min(capturedMaxTex, bh - sy);
+
+        let tileBitmap: ImageBitmap | null = null;
+        try {
+          tileBitmap = await this.bitmapCropper(frame.bitmap, sx, sy, sw, sh);
+          if (
+            !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
+          ) {
+            return { cancelled: true };
+          }
+          const texture = this.uploadBitmapToTexture(tileBitmap);
+          if (!texture) {
+            if (
+              !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
+            ) {
+              return { cancelled: true };
+            }
+            return { cancelled: false, tiles: null };
+          }
+          createdTextures.push(texture);
+          splitTiles.push({
+            texture,
+            xFrac: sx / bw,
+            yFrac: sy / bh,
+            wFrac: sw / bw,
+            hFrac: sh / bh,
+          });
+        } catch {
+          if (
+            !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
+          ) {
+            return { cancelled: true };
+          }
+          return { cancelled: false, tiles: null };
+        } finally {
+          tileBitmap?.close();
+        }
+      }
+    }
+
+    return { cancelled: false, tiles: splitTiles };
+  }
+
+  private async prepareResizedTexture(
+    frame: ReadyPageFrame,
+    capturedGen: number,
+    capturedMaxTex: number,
+    createdTextures: WebGLTexture[],
+  ): Promise<TileTexture[] | null> {
+    const { resizeWidth, resizeHeight } = computeResizedDimensions(
+      frame.bitmap.width,
+      frame.bitmap.height,
+      capturedMaxTex,
+    );
+    let resizedBitmap: ImageBitmap | null = null;
+    let result: TileTexture[] | null = null;
+
+    try {
+      resizedBitmap = await this.bitmapResizer(
+        frame.bitmap,
+        resizeWidth,
+        resizeHeight,
+      );
+      if (!this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)) {
+        this.deleteTextureList(createdTextures);
+        return null;
+      }
+      const texture = this.uploadBitmapToTexture(resizedBitmap);
+      if (!texture) {
+        if (
+          !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
+        ) {
+          this.deleteTextureList(createdTextures);
+          return null;
+        }
+        this.handleOversizedFailure(
+          frame,
+          createdTextures,
+          "createTexture returned null during resize fallback",
+        );
+        return null;
+      }
+      createdTextures.push(texture);
+      result = [{ texture, xFrac: 0, yFrac: 0, wFrac: 1, hFrac: 1 }];
+    } catch (error) {
+      if (!this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)) {
+        this.deleteTextureList(createdTextures);
+        return null;
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      this.handleOversizedFailure(frame, createdTextures, detail);
+      return null;
+    } finally {
+      resizedBitmap?.close();
+    }
+
+    return result;
+  }
+
   private async prepareOversizedTexture(
     frame: ReadyPageFrame,
     capturedGen: number,
@@ -649,143 +774,38 @@ export class WebGLRendererCore {
   ): Promise<void> {
     const bw = frame.bitmap.width;
     const bh = frame.bitmap.height;
-    const cols = Math.ceil(bw / capturedMaxTex);
-    const rows = Math.ceil(bh / capturedMaxTex);
-    const tileCount = cols * rows;
+    const tileCount =
+      Math.ceil(bw / capturedMaxTex) * Math.ceil(bh / capturedMaxTex);
     const createdTextures: WebGLTexture[] = [];
 
     let tiles: TileTexture[] | null = null;
-    let cancelled = false;
-
     if (tileCount <= MAX_SPLIT_TILES) {
-      const splitTiles: TileTexture[] = [];
-      let splitFailed = false;
-
-      for (let row = 0; row < rows; row += 1) {
-        for (let col = 0; col < cols; col += 1) {
-          if (
-            !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
-          ) {
-            cancelled = true;
-            break;
-          }
-
-          const sx = col * capturedMaxTex;
-          const sy = row * capturedMaxTex;
-          const sw = Math.min(capturedMaxTex, bw - sx);
-          const sh = Math.min(capturedMaxTex, bh - sy);
-
-          let tileBitmap: ImageBitmap | null = null;
-          try {
-            tileBitmap = await this.bitmapCropper(frame.bitmap, sx, sy, sw, sh);
-            if (
-              !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
-            ) {
-              cancelled = true;
-              break;
-            }
-            const texture = this.uploadBitmapToTexture(tileBitmap);
-            if (!texture) {
-              if (
-                !this.isAsyncPrepValid(
-                  frame.pageIndex,
-                  frame.bitmap,
-                  capturedGen,
-                )
-              ) {
-                cancelled = true;
-              } else {
-                splitFailed = true;
-              }
-              break;
-            }
-            createdTextures.push(texture);
-            splitTiles.push({
-              texture,
-              xFrac: sx / bw,
-              yFrac: sy / bh,
-              wFrac: sw / bw,
-              hFrac: sh / bh,
-            });
-          } catch {
-            if (
-              !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
-            ) {
-              cancelled = true;
-            } else {
-              splitFailed = true;
-            }
-            break;
-          } finally {
-            tileBitmap?.close();
-          }
-        }
-
-        if (cancelled || splitFailed) {
-          break;
-        }
-      }
-
-      if (cancelled) {
+      const splitResult = await this.prepareTiledTextures(
+        frame,
+        capturedGen,
+        capturedMaxTex,
+        createdTextures,
+      );
+      if (splitResult.cancelled) {
         this.deleteTextureList(createdTextures);
         return;
       }
-
-      if (splitFailed) {
+      if (splitResult.tiles === null) {
         this.deleteTextureList(createdTextures);
       } else {
-        tiles = splitTiles;
+        tiles = splitResult.tiles;
       }
     }
 
     if (tiles === null) {
-      const { resizeWidth, resizeHeight } = computeResizedDimensions(
-        bw,
-        bh,
+      tiles = await this.prepareResizedTexture(
+        frame,
+        capturedGen,
         capturedMaxTex,
+        createdTextures,
       );
-      let resizedBitmap: ImageBitmap | null = null;
-      try {
-        resizedBitmap = await this.bitmapResizer(
-          frame.bitmap,
-          resizeWidth,
-          resizeHeight,
-        );
-        if (
-          !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
-        ) {
-          this.deleteTextureList(createdTextures);
-          return;
-        }
-        const texture = this.uploadBitmapToTexture(resizedBitmap);
-        if (!texture) {
-          if (
-            !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
-          ) {
-            this.deleteTextureList(createdTextures);
-            return;
-          }
-          this.handleOversizedFailure(
-            frame,
-            createdTextures,
-            "createTexture returned null during resize fallback",
-          );
-          return;
-        }
-        createdTextures.push(texture);
-        tiles = [{ texture, xFrac: 0, yFrac: 0, wFrac: 1, hFrac: 1 }];
-      } catch (error) {
-        if (
-          !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
-        ) {
-          this.deleteTextureList(createdTextures);
-          return;
-        }
-        const detail = error instanceof Error ? error.message : String(error);
-        this.handleOversizedFailure(frame, createdTextures, detail);
+      if (tiles === null) {
         return;
-      } finally {
-        resizedBitmap?.close();
       }
     }
 

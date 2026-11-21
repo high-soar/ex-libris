@@ -31,6 +31,7 @@ related_specs:
 related_tests:
   - scripts/android-build-config.test.ts
   - src/App.test.tsx
+  - src/features/reader/spreadLayout.test.ts
   - src/features/reader/ReaderPage.test.tsx
   - src/features/reader/ReaderHudOverlay.test.tsx
   - src/features/reader/ReaderErrorView.test.tsx

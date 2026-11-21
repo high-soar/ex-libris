@@ -728,7 +728,24 @@ describe("WebGLRendererCore", () => {
       { pageIndex: 5, position: "right" },
     ]);
 
-    // 6. 2要素とも center のような非標準入力でも安全にフォールバック処理すること
+    // 6. [right, left] 配列順で渡した場合も左右配置が正しく維持されること
+    expect(
+      renderer.renderSlots([
+        {
+          slot: { pageIndex: 1, position: "right" },
+          frame: createReadyFrame(1, createFakeBitmap(800, 1200)),
+        },
+        {
+          slot: { pageIndex: 2, position: "left" },
+          frame: createReadyFrame(2, createFakeBitmap(800, 1200)),
+        },
+      ]),
+    ).toEqual([
+      { pageIndex: 1, position: "right" },
+      { pageIndex: 2, position: "left" },
+    ]);
+
+    // 7. 2要素とも center のような非標準入力（ready あり／なし双方）でも安全にフォールバック処理すること
     expect(
       renderer.renderSlots([
         {
@@ -741,6 +758,19 @@ describe("WebGLRendererCore", () => {
         },
       ]),
     ).toEqual([{ pageIndex: 6, position: "center" }]);
+
+    expect(
+      renderer.renderSlots([
+        {
+          slot: { pageIndex: 6, position: "center" },
+          frame: null,
+        },
+        {
+          slot: { pageIndex: 7, position: "center" },
+          frame: createErrorFrame(7),
+        },
+      ]),
+    ).toEqual([]);
   });
 
   it("MAX_TEXTURE_SIZE超過画像を非同期タイル分割し一時bitmap.close()・連続描画・片側待機結合配置維持を実行すること (AC-GL-07, AC-GL-08)", async () => {
@@ -981,7 +1011,27 @@ describe("WebGLRendererCore", () => {
       diagnosticLogger.getEntries().filter((e) => e.level === "error"),
     ).toHaveLength(1);
 
-    // 4. リサイズ側 createTexture null 失敗も安全に失敗ガード登録・error記録すること
+    // 4. リサイズ側 Error インスタンス送出および createTexture null 失敗も安全に失敗ガード登録・error記録すること
+    diagnosticLogger.clear();
+    const { gl: gl4Err } = createMockWebGL2Context({ maxTextureSize: 100 });
+    const renderer4Err = new WebGLRendererCore(gl4Err, {
+      bitmapResizer: async () => {
+        throw new Error("resize Error instance");
+      },
+    });
+    renderer4Err.renderSlots([
+      {
+        slot: { pageIndex: 4, position: "center" },
+        frame: createReadyFrame(4, createFakeBitmap(2000, 1000)),
+      },
+    ]);
+    await flushMicrotasks();
+    const errorEntries4 = diagnosticLogger
+      .getEntries()
+      .filter((e) => e.level === "error" && e.scope === "webgl2");
+    expect(errorEntries4).toHaveLength(1);
+    expect(errorEntries4[0]?.detail).toContain("resize Error instance");
+
     diagnosticLogger.clear();
     const resizedTempNull = createFakeBitmap(100, 50);
     const renderer4 = new WebGLRendererCore(gl3, {
@@ -1165,6 +1215,7 @@ describe("WebGLRendererCore", () => {
       },
     ]);
     await flushMicrotasks();
+    lostOnCreateTex = false;
     renderer6.renderSlots([
       {
         slot: { pageIndex: 6, position: "center" },
@@ -1178,17 +1229,30 @@ describe("WebGLRendererCore", () => {
 
     // 6. gl.isContextLost 未定義環境かつ gl.isContextLost()===true 時の renderSlots スキップ
     const { gl: glNoMethod } = createMockWebGL2Context({
+      maxTextureSize: 100,
       omitIsContextLost: true,
     });
-    const rendererNoMethod = new WebGLRendererCore(glNoMethod);
+    const onReadyNoMethod = vi.fn();
+    const rendererNoMethod = new WebGLRendererCore(glNoMethod, {
+      onAsyncTextureReady: onReadyNoMethod,
+      bitmapCropper: async () => createFakeBitmap(100, 100),
+    });
     expect(
       rendererNoMethod.renderSlots([
         {
           slot: { pageIndex: 0, position: "center" },
-          frame: createReadyFrame(0),
+          frame: createReadyFrame(0, createFakeBitmap(50, 50)),
         },
       ]),
     ).toEqual([{ pageIndex: 0, position: "center" }]);
+    rendererNoMethod.renderSlots([
+      {
+        slot: { pageIndex: 1, position: "center" },
+        frame: createReadyFrame(1, createFakeBitmap(200, 100)),
+      },
+    ]);
+    await flushMicrotasks();
+    expect(onReadyNoMethod).toHaveBeenCalledWith(1);
 
     const { gl: glLost } = createMockWebGL2Context({
       isContextLost: () => true,
