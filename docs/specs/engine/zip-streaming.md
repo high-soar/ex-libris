@@ -2,7 +2,7 @@
 type: spec-engine
 title: "ZIPストリーミング・I/O・Worker エンジン仕様書"
 description: "LocalFileReader、標準ZIP/ZIP64/CP932パーサー、80MB L2ByteCache LRU、10MB/64KB結合 AdaptivePrefetcher、Coordinator/Decode Worker構成、zipIndexCache 0RTT、HO-03所有権分離、およびrequestEpoch世代キャンセル制御の正本"
-status: "Review (#20)"
+status: "Approved (#20)"
 updated: "2026-11-21"
 tags:
   [

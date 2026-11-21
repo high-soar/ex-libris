@@ -2,7 +2,7 @@
 type: spec-delta
 title: "Issue #20 差分仕様: Fast-Path＋10MB先読み・80MB L2 LRU・Epoch制御（HO-03対応）"
 description: "80MB L2ByteCache LRU（単一80MB超表示中一時保持・独立Uint8Array正規化）、10MB予算・64KBギャップ結合 AdaptivePrefetcher、HO-03共有バッファ非破壊、およびCoordinatorCore/ReaderPageのIn-Flight共有・Epoch制御統合を定義する差分仕様"
-status: "Review (#20)"
+status: "Completed (Archived)"
 updated: "2026-11-21"
 issue: "#20"
 tags:
@@ -43,8 +43,8 @@ related_tests:
 
 ## 1. 背景・目的（Why）
 
-- [requirements.md §3](../requirements.md#3-非機能要件システムリソース基準nfr-xx) の **`NFR-01`**（初速 TTFP < 1.0s / 再開 < 0.5s）および **`NFR-02`**（Worker 内 L2 キャッシュ上限 **80MB**、Warm Prefetch 1 リクエスト上限 **10MB**、物理ギャップ **64KB** 以内結合）を実現し、高解像度連続めくり・次期 Google Drive ストリーミング（`v0.2`）における通信往復回数（RTT）とデコード待ち時間を最小化する。
-- Phase 3 横断レビューからの申し送り事項 [`HO-03`](../../quality/bug-and-handover-log.md)（後半）である **`L2ByteCache` 導入時の共有 `ArrayBuffer` 非破壊（`prepareDecodeTransfer` での所有権分離）** を完遂し、L1（5 ページ）退避後の再めくり時にも `L2ByteCache` から再通信ゼロで安全に再デコードできるようにする。
+- [requirements.md §3](../../requirements.md#3-非機能要件システムリソース基準nfr-xx) の **`NFR-01`**（初速 TTFP < 1.0s / 再開 < 0.5s）および **`NFR-02`**（Worker 内 L2 キャッシュ上限 **80MB**、Warm Prefetch 1 リクエスト上限 **10MB**、物理ギャップ **64KB** 以内結合）を実現し、高解像度連続めくり・次期 Google Drive ストリーミング（`v0.2`）における通信往復回数（RTT）とデコード待ち時間を最小化する。
+- Phase 3 横断レビューからの申し送り事項 [`HO-03`](../../../quality/bug-and-handover-log.md)（後半）である **`L2ByteCache` 導入時の共有 `ArrayBuffer` 非破壊（`prepareDecodeTransfer` での所有権分離）** を完遂し、L1（5 ページ）退避後の再めくり時にも `L2ByteCache` から再通信ゼロで安全に再デコードできるようにする。
 
 ### 1.1 Step 1 合意事項（`/grill-me` 確定内容：Q1〜Q6）
 
@@ -59,7 +59,7 @@ related_tests:
    - `L2ByteCache` は `allowOversized: true`（現在表示ページの Fast-Path 格納）に限り、`byteLength > maxBytes`（80MB 超）の単一エントリ格納を許容（既存エントリ全退避＋表示中ピン保護により後続 Warm Prefetch による誤退避や追加格納を防止）し、表示対象（`pinnedPages`）から外れた時点または `clear()` 時に即時退避して `totalBytes <= maxBytes` へ復帰させる。Warm Prefetch や L1 近傍（`allowOversized: false`）の 80MB 超エントリは L2 格納をスキップする。
    - 10MB 結合バッファの部分 `subarray` 保持による裏側 `ArrayBuffer` 居残りリークを防ぐため、`L2ByteCache.put` は `byteOffset !== 0 || byteLength !== buffer.byteLength`（または非 `ArrayBuffer`）のスライスを必ず `slice()` で独立 `Uint8Array` へ正規化して保持する。
 4. **`HO-03`（共有 `ArrayBuffer` 非破壊）の実装方式（Q4）**:
-   - `coordinator.worker.ts` の条件分岐ゼロ規約（[testing.md §2.1](../../guidelines/testing.md)）と既存の `DecodeWorkerApi` シグネチャを維持するため、`coordinatorTransfer.ts` に `WeakSet<ArrayBuffer>` ベースの `markSharedBuffer` / `isSharedBuffer` と明示オプション `PrepareDecodeTransferOptions`（`{ shared?: boolean }`）を導入する。
+   - `coordinator.worker.ts` の条件分岐ゼロ規約（[testing.md §2.1](../../../guidelines/testing.md)）と既存の `DecodeWorkerApi` シグネチャを維持するため、`coordinatorTransfer.ts` に `WeakSet<ArrayBuffer>` ベースの `markSharedBuffer` / `isSharedBuffer` と明示オプション `PrepareDecodeTransferOptions`（`{ shared?: boolean }`）を導入する。
    - `L2ByteCache.put`（および複数待機者が共有する In-Flight スライス）で `markSharedBuffer(buffer)` を自動付与し、`prepareDecodeTransfer` は共有印付きバッファまたは `options?.shared === true` に対して `byteOffset === 0` であっても必ず `compressedData.slice()` の複製バッファを `transferables` に渡す。
 5. **`AdaptivePrefetcher` の結合境界式と投機的先読みの異常系挙動（Q5）**:
    - 結合条件は `gap = next.localHeaderOffset - prev.physicalEnd` が `0 <= gap <= MAX_COALESCE_GAP_BYTES`（`65_536` = 64KB）かつブロック実 Range 長 `nextFetchEnd - blockStart <= WARM_PREFETCH_BUDGET_BYTES`（`10_485_760` = 10MB、単一ページ単独超過時のみ 1 件許容）の双方を満たすこととする。
@@ -72,13 +72,13 @@ related_tests:
 
 ## 2. 変更対象の App 全体正本一覧
 
-|   種別   | 正本ファイル                                                     | 変更概要                                                                                                                                                                                        |
-| :------: | :--------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **更新** | [zip-streaming.md](../engine/zip-streaming.md)                   | `L2ByteCache`・`AdaptivePrefetcher`・LFH 共通抽出ヘルパ・`CoordinatorCore` In-Flight 共有＆Epoch プリエンプション・`HO-03` `markSharedBuffer` 所有権分離を追記、`AC-ENG-12`〜`14` を追加        |
-| **更新** | [architecture.md](../architecture.md)                            | `RequestVisiblePagesOptions`（`visiblePageIndices`）追加および `CoordinatorWorkerApi.requestVisiblePages` の `v0.1` 契約（Fast-Path ＋ L1 近傍バッチ ＋ 10MB Warm Prefetch ＋ 80MB L2 LRU）更新 |
-| **更新** | [reader.md](../features/reader.md)                               | `ReaderPage` の優先順 `prefetchIndices`（進行 `+1..+20`・逆 `-1..-2`）構築、L1 近傍バッチ要求、L1 全ヒット時の L2 補充呼び出し、`AC-RD-05` 連携を更新                                           |
-| **更新** | [screen-transitions.md](../screen-transitions.md)                | `SCN-02` 対応要件へ `AC-ENG-12`〜`AC-ENG-14` を追加し、7 ページ以上の連続往復による L1(5P) 退避後の L2 再デコード（`HO-03` 非破壊実 Worker 検証）を追記                                         |
-| **更新** | [bug-and-handover-log.md](../../quality/bug-and-handover-log.md) | `HO-03` の解決先 Issue を `#20` へ具体化し、区分 B の Android 実機検証申し送り **`HO-06`**（完了ゲート: `Milestone v0.1 完了前`）を新規登録                                                     |
+|   種別   | 正本ファイル                                                        | 変更概要                                                                                                                                                                                        |
+| :------: | :------------------------------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **更新** | [zip-streaming.md](../../engine/zip-streaming.md)                   | `L2ByteCache`・`AdaptivePrefetcher`・LFH 共通抽出ヘルパ・`CoordinatorCore` In-Flight 共有＆Epoch プリエンプション・`HO-03` `markSharedBuffer` 所有権分離を追記、`AC-ENG-12`〜`14` を追加        |
+| **更新** | [architecture.md](../../architecture.md)                            | `RequestVisiblePagesOptions`（`visiblePageIndices`）追加および `CoordinatorWorkerApi.requestVisiblePages` の `v0.1` 契約（Fast-Path ＋ L1 近傍バッチ ＋ 10MB Warm Prefetch ＋ 80MB L2 LRU）更新 |
+| **更新** | [reader.md](../../features/reader.md)                               | `ReaderPage` の優先順 `prefetchIndices`（進行 `+1..+20`・逆 `-1..-2`）構築、L1 近傍バッチ要求、L1 全ヒット時の L2 補充呼び出し、`AC-RD-05` 連携を更新                                           |
+| **更新** | [screen-transitions.md](../../screen-transitions.md)                | `SCN-02` 対応要件へ `AC-ENG-12`〜`AC-ENG-14` を追加し、7 ページ以上の連続往復による L1(5P) 退避後の L2 再デコード（`HO-03` 非破壊実 Worker 検証）を追記                                         |
+| **更新** | [bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) | `HO-03` を `Resolved` へ精算し、区分 B の Android 実機検証申し送り **`HO-06`**（完了ゲート: `Milestone v0.1 完了前`）および各工程の不備記録を同期                                               |
 
 ---
 
@@ -171,26 +171,26 @@ related_tests:
 
 ---
 
-## 5. 実装 Sub-issue 分割計画（MK 2分割 ＋ 最終 IT）
+## 5. 実装 Sub-issue 分割計画・完了結果（MK 2分割 ＋ 最終 IT）
 
-1. **MK-1: `HO-03` 共有バッファ保護・`L2ByteCache`（80MB LRU）・`AdaptivePrefetcher`（10MB 予算・64KB ギャップ結合）実装（Engine 層）**:
-   - 対象: `src/engine/workers/coordinatorTransfer.ts`, `src/engine/cache/L2ByteCache.ts`, `src/engine/zip/zipParser.ts`, `src/engine/prefetch/AdaptivePrefetcher.ts`, 各 `*.test.ts`（および関連仕様書 `related_tests` への新規テストパス追記）
-   - 完了条件: TDD（Red → Green → Refactor）、C0/C1/Functions/Lines 100%、Gate 1〜6 完了後に AI 自律マージ（`Closes #Sub-issue`）
-2. **MK-2: `CoordinatorCore` / `coordinator.worker.ts` L2・Prefetch・先行 In-Flight・Epoch 統合 ＆ `ReaderPage` 先読み窓・近傍バッチ配線（Worker & UI 層）**:
+1. **MK-1（`#38` / PR #41 @ `97e0be7` マージ完了）: `HO-03` 共有バッファ保護・`L2ByteCache`（80MB LRU）・`AdaptivePrefetcher`（10MB 予算・64KB ギャップ結合）実装（Engine 層）**:
+   - 対象: `src/engine/workers/coordinatorTransfer.ts`, `src/engine/cache/L2ByteCache.ts`, `src/engine/zip/zipParser.ts`, `src/engine/prefetch/AdaptivePrefetcher.ts`, 各 `*.test.ts`（`related_tests` 追記含む）
+   - 実績: Red `1b41b4c` → Green `7b02848` → Refactor `ff14324`、38 files / 211 tests PASS・C0/C1/Functions/Lines 100%、独立レビュー Round 1 指摘 0 件、AI 自律マージ完了（`Closes #38`）
+2. **MK-2（`#39` / PR #42 @ `9120c60` マージ完了）: `CoordinatorCore` / `coordinator.worker.ts` L2・Prefetch・先行 In-Flight・Epoch 統合 ＆ `ReaderPage` 先読み窓・近傍バッチ配線（Worker & UI 層）**:
    - 対象: `src/engine/types.ts`, `src/engine/workers/CoordinatorCore.ts`, `src/engine/workers/coordinator.worker.ts`, `src/features/reader/ReaderPage.tsx`, 各 `*.test.*`
-   - 完了条件: TDD（Red → Green → Refactor）、`coordinator.worker.ts` 条件分岐ゼロ維持、親子分離、C0/C1/Functions/Lines 100%、VRT PASS、Gate 1〜6 完了後に AI 自律マージ（`Closes #Sub-issue`）
-3. **Step 4 (IT PR): Playwright `SCN-02` L1退避→L2再デコード往復検証・`HO-03` `Resolved` 精算・差分仕様アーカイブ（`Closes #20`）**:
-   - 対象: `test/it/helpers.ts`, `test/it/local-reader.spec.ts`, `docs/quality/bug-and-handover-log.md`（`HO-03` → `Resolved`）, 本差分仕様書の `Completed (Archived)` 化 ＆ `docs/specs/changes/archive/` 移動
-   - 完了条件: 全 IT PASS、Gate 1〜6 完了後に **人間レビュー・マージ** で親 Issue `#20` をクローズ
+   - 実績: Red `57960a3` → Green `4711819` → Refactor `34b5ea0`、38 files / 220 tests PASS・C0/C1/Functions/Lines 100%・VRT 62/62 PASS、独立レビュー Round 1 指摘 0 件、AI 自律マージ完了（`Closes #39`）
+3. **Step 4 (IT `#40` / 本 PR `Closes #20`, `Closes #40`): Playwright `SCN-02` L1退避→L2再デコード往復検証・`HO-03` `Resolved` 精算・差分仕様アーカイブ**:
+   - 対象: `test/it/helpers.ts`, `test/it/local-reader.spec.ts`, `docs/quality/bug-and-handover-log.md`（`HO-03` → `Resolved`）, 本差分仕様書の `Completed (Archived)` 化 ＆ `docs/specs/changes/archive/` 移動、正本 4 冊の `Approved (#20)` 化
+   - 完了条件: 全 IT 17/17 PASS、Gate 1〜6 完了後に **人間レビュー・マージ** で `#20` / `#40` をクローズ
 
 ---
 
 ## 6. 申し送り事項・Android 実機検証計画
 
-- **判定（[workflow.md §2.2](../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 B（Milestone `v0.1` 完了前に一括実施）**
+- **判定（[workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 B（Milestone `v0.1` 完了前に一括実施）**
   - **根拠**: Coordinator Worker 内のオンメモリ LRU キャッシュ・Range 結合プランナー・Epoch キャンセルおよび `ReaderPage` の RPC 引数配線であり、Android ネイティブ層・Google OAuth・WebGL2 シェーダー・物理ジェスチャー操作の新設・変更を含まないため。
 - **申し送り事項管理**:
-  - **`HO-03`**（既存 `Open`）: 本 Issue `#20` の MK-1 / MK-2 で実装し、Step 4 最終 IT PR（実 Worker 間 `Comlink.transfer` 往復検証 PASS）にて `Open` → `Resolved` へ精算する。
-  - **`HO-06`**（新規登録・状態: `Open`、完了ゲート: `Milestone v0.1 完了前`）: Milestone `v0.1` 完了時の一括実機検証にて以下を確認する：
+  - **`HO-03`**: `#38`（PR #41 @ `97e0be7`）・`#39`（PR #42 @ `9120c60`）・Step 4 IT（`#40` 実 Worker 7 頁超往復検証 PASS）を経て **`Resolved`** へ精算完了。
+  - **`HO-06`**（[bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) 登録済み・状態: `Open`、完了ゲート: `Milestone v0.1 完了前`）: Milestone `v0.1` 完了時の一括実機検証にて以下を確認する：
     1. 10 ページ以上のローカル `.zip` / `.cbz` を開き、連続めくりおよび前後往復（L1 5 ページ退避後の再表示）を行ってもデコードエラー・黒画面・WebView OOM クラッシュが発生せず即座に描画されること。
     2. 高速連続タップ／スワイプめくり時に表示ページの追従が詰まらず、不要なエラーログが診断ロガーに記録されないこと。

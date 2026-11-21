@@ -4,6 +4,7 @@ import {
   buildCorruptZipBytes,
   buildPartialCorruptArchive,
   buildSyntheticCp932Archive,
+  buildSyntheticSevenPageArchive,
   buildSyntheticThreePageArchive,
   buildSyntheticZip64Archive,
   readPngCenterPixel,
@@ -659,6 +660,150 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     expect(secondReport).toContain(
       `${cacheKey} (pages=3, fromIndexCache=true)`,
     );
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("7ページ超アーカイブでL1(5P)退避後の往復表示が実WorkerのL2ByteCacheからHO-03非破壊で再デコード描画されること (AC-ENG-12, AC-ENG-13, AC-ENG-14)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    const sevenPageBytes = buildSyntheticSevenPageArchive();
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "seven-pages-l2-roundtrip.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(sevenPageBytes),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    // 初回 Page 0 (赤) を確認
+    const initialP0 = readPngCenterPixel(await canvas.screenshot());
+    expect(initialP0.r).toBeGreaterThan(200);
+    expect(initialP0.g).toBeLessThan(30);
+    expect(initialP0.b).toBeLessThan(30);
+
+    // 0 -> 6 まで順送りし、L1_MAX_PAGES=5 から Page 0・Page 1 を確実に退避させる
+    for (let nextPage = 1; nextPage <= 6; nextPage += 1) {
+      await page.keyboard.press("ArrowLeft");
+      await expect(canvas).toHaveAttribute(
+        "data-rendered-page",
+        String(nextPage),
+      );
+      await expect(page.getByTestId("reader-loading")).toBeHidden();
+    }
+
+    // Page 6 (白) を確認
+    const p6 = readPngCenterPixel(await canvas.screenshot());
+    expect(p6.r).toBeGreaterThan(200);
+    expect(p6.g).toBeGreaterThan(200);
+    expect(p6.b).toBeGreaterThan(200);
+
+    // 6 -> 0 まで逆戻りし、L1退避済み Page 1 (緑) / Page 0 (赤) が実WorkerのL2ByteCacheからデタッチ破壊なく再デコードされることを確認
+    for (let prevPage = 5; prevPage >= 0; prevPage -= 1) {
+      await page.keyboard.press("ArrowRight");
+      await expect(canvas).toHaveAttribute(
+        "data-rendered-page",
+        String(prevPage),
+      );
+      await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+      if (prevPage === 1) {
+        const returnedP1 = readPngCenterPixel(await canvas.screenshot());
+        expect(returnedP1.g).toBeGreaterThan(200);
+        expect(returnedP1.r).toBeLessThan(30);
+        expect(returnedP1.b).toBeLessThan(30);
+      }
+      if (prevPage === 0) {
+        const returnedP0 = readPngCenterPixel(await canvas.screenshot());
+        expect(returnedP0.r).toBeGreaterThan(200);
+        expect(returnedP0.g).toBeLessThan(30);
+        expect(returnedP0.b).toBeLessThan(30);
+      }
+    }
+
+    // 再往路でもう一度 Page 6 まで送り、2回目デコード後も L2 バッファが健全であることを追加検証
+    for (let nextPage = 1; nextPage <= 6; nextPage += 1) {
+      await page.keyboard.press("ArrowLeft");
+      await expect(canvas).toHaveAttribute(
+        "data-rendered-page",
+        String(nextPage),
+      );
+    }
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    const secondP6 = readPngCenterPixel(await canvas.screenshot());
+    expect(secondP6.r).toBeGreaterThan(200);
+    expect(secondP6.g).toBeGreaterThan(200);
+    expect(secondP6.b).toBeGreaterThan(200);
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("高速連続めくり時にrequestEpoch世代キャンセルが追従し最終ページの描画と診断健全性を保つこと (AC-ENG-07, AC-RD-05)", async ({
+    context,
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    const sevenPageBytes = buildSyntheticSevenPageArchive();
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "rapid-epoch-cancel.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(sevenPageBytes),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    // 待機なしで4連続順送り (0 -> 4: シアン)
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowLeft");
+
+    await expect(canvas).toHaveAttribute("data-rendered-page", "4");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    const p4 = readPngCenterPixel(await canvas.screenshot());
+    expect(p4.r).toBeLessThan(30);
+    expect(p4.g).toBeGreaterThan(200);
+    expect(p4.b).toBeGreaterThan(200);
+
+    // 待機なしで4連続逆戻り (4 -> 0: 赤)
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowRight");
+
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    const p0 = readPngCenterPixel(await canvas.screenshot());
+    expect(p0.r).toBeGreaterThan(200);
+    expect(p0.g).toBeLessThan(30);
+    expect(p0.b).toBeLessThan(30);
+
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/$/);
+    await page.getByTestId("copy-diagnostics-button").click();
+    await expect
+      .poll(async () => page.evaluate(() => navigator.clipboard.readText()))
+      .toContain("# ExLibris Diagnostic Report");
+    const report = await page.evaluate(() => navigator.clipboard.readText());
+    expect(report).not.toContain("[ERROR]");
 
     expect(pageErrors).toEqual([]);
   });

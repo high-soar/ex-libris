@@ -305,6 +305,30 @@ export function buildSyntheticCp932Archive(): Uint8Array {
   });
 }
 
+export function buildSyntheticSevenPageArchive(): Uint8Array {
+  const pageColors: readonly {
+    readonly name: string;
+    readonly rgba: readonly [number, number, number, number];
+    readonly compressionMethod: 0 | 8;
+  }[] = [
+    { name: "001.png", rgba: [255, 0, 0, 255], compressionMethod: 0 }, // 0: 赤
+    { name: "002.png", rgba: [0, 255, 0, 255], compressionMethod: 8 }, // 1: 緑
+    { name: "003.png", rgba: [0, 0, 255, 255], compressionMethod: 0 }, // 2: 青
+    { name: "004.png", rgba: [255, 255, 0, 255], compressionMethod: 8 }, // 3: 黄
+    { name: "005.png", rgba: [0, 255, 255, 255], compressionMethod: 0 }, // 4: シアン
+    { name: "006.png", rgba: [255, 0, 255, 255], compressionMethod: 8 }, // 5: マゼンタ
+    { name: "007.png", rgba: [255, 255, 255, 255], compressionMethod: 0 }, // 6: 白
+  ];
+
+  return buildSyntheticZip({
+    entries: pageColors.map((page) => ({
+      name: page.name,
+      data: createSyntheticPng(page.rgba),
+      compressionMethod: page.compressionMethod,
+    })),
+  });
+}
+
 export interface InspectableZipIndexCacheRecord {
   readonly cacheKey: string;
   readonly pageCount: number;

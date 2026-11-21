@@ -2,7 +2,7 @@
 type: spec-feature
 title: "WebGL2 ストリーミングリーダー画面仕様書（SCR-03: Reader）"
 description: "SCR-03（/read/local）の右開き単ページ閲覧、Fast-Path＋L1近傍バッチ＋10MB Warm Prefetch連携、タップ/スワイプ/キー操作、最小HUD開閉、異常系復帰、およびTR-08/TR-10リソース解放仕様の正本"
-status: "Review (#20)"
+status: "Approved (#20)"
 updated: "2026-11-21"
 tags: [feature, reader, scr-03, rtl, hud, touch, webgl2, prefetch, back-button]
 related_specs:
