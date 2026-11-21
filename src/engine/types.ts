@@ -87,6 +87,15 @@ export interface OpenArchiveResult {
   readonly fromIndexCache: boolean;
 }
 
+export interface RequestVisiblePagesOptions {
+  /**
+   * L1 近傍プリデコードまたは L2 補充呼び出し（`pageIndices` が空配列の場合を含む）において、
+   * 現在画面に表示中の論理ページ番号群を明示指定する（省略時は `pageIndices` を表示中とみなす）。
+   * L2ByteCache の 80MB 超例外ページの一時保持ピン管理および `allowOversized` 判定に使用する。
+   */
+  readonly visiblePageIndices?: readonly number[];
+}
+
 export interface CoordinatorWorkerApi {
   openArchive(
     source: ArchiveSourceDescriptor,
@@ -98,6 +107,7 @@ export interface CoordinatorWorkerApi {
     pageIndices: readonly number[],
     prefetchIndices: readonly number[],
     epoch: number,
+    options?: RequestVisiblePagesOptions,
   ): Promise<DecodedPageFrame[]>;
 
   updateAccessToken(accessToken: string | null): void;
