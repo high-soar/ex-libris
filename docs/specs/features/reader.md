@@ -1,10 +1,10 @@
 ---
 type: spec-feature
 title: "WebGL2 ストリーミングリーダー画面仕様書（SCR-03: Reader）"
-description: "SCR-03（/read/local）の右開き単ページ閲覧、タップ/スワイプ/キー操作、最小HUD開閉、異常系復帰、およびTR-08/TR-10リソース解放仕様の正本"
-status: "Approved (#19)"
+description: "SCR-03（/read/local）の右開き単ページ閲覧、Fast-Path＋L1近傍バッチ＋10MB Warm Prefetch連携、タップ/スワイプ/キー操作、最小HUD開閉、異常系復帰、およびTR-08/TR-10リソース解放仕様の正本"
+status: "Review (#20)"
 updated: "2026-11-21"
-tags: [feature, reader, scr-03, rtl, hud, touch, webgl2, back-button]
+tags: [feature, reader, scr-03, rtl, hud, touch, webgl2, prefetch, back-button]
 related_specs:
   - docs/index.md
   - docs/specs/requirements.md
@@ -37,14 +37,14 @@ related_tests:
 
 ---
 
-## 1. セッション保護（`TR-10`）と終了シーケンス（`TR-08`）
+## 1. セッション保護（`TR-10`）・終了シーケンス（`TR-08`）・先読み連携
 
 1. **セッション不在フォールバック（`TR-10`）**:
    - `/read/local` マウント時にオンメモリセッション（`useLocalReaderSessionStore.session`）が `null` の場合（リロードや URL 直接入力時）、エラー画面や空白で停止せず、即座に `router.replace("/")` で `SCR-01` へ遷移する。
 2. **リーダー終了と完全リソース解放（`TR-08`）**:
    - 上部 HUD の「戻る」ボタン、`Escape` キー、エラー画面の「ホームへ戻る」ボタン、Android ハードウェア戻るボタン（`AppBridge` `backButton`）、またはブラウザ戻る（`popstate`）によるルート離脱で発動する。
    - 以下の順序でリソースを確定解放した上で `/` へ戻る：
-     1. 進行中 `requestEpoch` を無効化（`cancelEpochBelow`）＋ `CoordinatorWorker.closeArchive()` 呼び出し
+     1. 進行中 `requestEpoch` を無効化（`cancelEpochBelow`）＋ `CoordinatorWorker.closeArchive()` 呼び出し（Worker 内 `L2ByteCache` 全破棄含む）
      2. `L1PageCache.clear()` により保持中の全 `ImageBitmap.close()` ＋ `WebGLRendererCore` 全テクスチャ `gl.deleteTexture()` 実行
      3. `WebGLRendererCore.dispose()` 実行
      4. オンメモリ `File` セッションを `null` へクリア
@@ -52,6 +52,10 @@ related_tests:
 3. **`zipIndexCache` による 0 RTT オープンと透過フォールバック**:
    - アーカイブオープン時、`ReaderPage` は `ServiceContext.zipIndexCacheRepo.get(source.indexCacheKey)` を試行して有効な `entries` を取得できた場合は `coordinator.api.openArchive(source, cachedEntries, epoch)` へ渡して 0 RTT で開く（IndexedDB 参照エラー時やキャッシュ破損時は警告ログ記録の上で `null` にフォールバック）。
    - `!result.fromIndexCache` で通常オープンに成功した場合は `zipIndexCacheRepo.put(source.indexCacheKey, result.entries)` を非ブロッキングで保存し、失敗しても閲覧自体は継続する。
+4. **Fast-Path・L1 近傍バッチ・10MB Warm Prefetch 連携**:
+   - 各ページ遷移・初回表示（`loadPageWindow`）において、閲覧優先順の先読み候補 `prefetchTargets`（進行方向 `[N+1 .. N+20]` ＋ 逆方向 `[N-1, N-2]`、`0 <= idx < totalPages`）を算出する。
+   - **現在ページ `N` が L1 未ヒット時**: 先に Fast-Path として `requestVisiblePages([N], prefetchTargets, epoch)` を待機して `N` を最速描画（同時に Worker 側で 10MB 結合 Warm Prefetch が非同期開始）し、その直後に L1 未保持の近傍ページ群 `missingNeighbors`（`[N+1, N+2, N-1]` のうち `l1Cache.peek` 未存在分）があれば `requestVisiblePages(missingNeighbors, [], epoch, { visiblePageIndices: [N] })` を 1 バッチで非同期要求する。
+   - **現在ページ `N` が L1 ヒット時**: 即座に L1 から描画した上で、`missingNeighbors` または `prefetchTargets` が非空であれば `requestVisiblePages(missingNeighbors, prefetchTargets, epoch, { visiblePageIndices: [N] })` を 1 回非同期要求し、L2 キャッシュからの L1 近傍補充・表示ピン更新・L2 先読み補充を一括実行する。
 
 ---
 
@@ -118,12 +122,12 @@ related_tests:
 
 ## 5. コンポーネント構成と親子分離（1対1 Story / UT 対象）
 
-| コンポーネント     | ファイルパス                               | 責務（テスト分離方針）                                                                                                          |
-| :----------------- | :----------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------ |
-| `ReaderPage`       | `src/features/reader/ReaderPage.tsx`       | `TR-10` ガード、`ZipIndexCacheRepository` 0RTT 参照・保存、Coordinator RPC 制御、`L1PageCache` / Epoch 管理、入力判定、終了解放 |
-| `ReaderCanvas`     | `src/webgl/ReaderCanvas.tsx`               | 生 WebGL2 キャンバス、`ResizeObserver`、コンテキストロスト復帰（`webgl2-renderer.md`）                                          |
-| `ReaderHudOverlay` | `src/features/reader/ReaderHudOverlay.tsx` | 上下オーバーレイ HUD（戻る・ファイル名・`N / Total`・次へ/前へボタン）                                                          |
-| `ReaderErrorView`  | `src/features/reader/ReaderErrorView.tsx`  | アーカイブ全体エラーパネルおよび個別ページデコードエラー表示                                                                    |
+| コンポーネント     | ファイルパス                               | 責務（テスト分離方針）                                                                                                                                                           |
+| :----------------- | :----------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ReaderPage`       | `src/features/reader/ReaderPage.tsx`       | `TR-10` ガード、`ZipIndexCacheRepository` 0RTT 参照・保存、Coordinator RPC（Fast-Path・L1 近傍バッチ・優先順 `prefetchIndices`）・`L1PageCache` / Epoch 管理、入力判定、終了解放 |
+| `ReaderCanvas`     | `src/webgl/ReaderCanvas.tsx`               | 生 WebGL2 キャンバス、`ResizeObserver`、コンテキストロスト復帰（`webgl2-renderer.md`）                                                                                           |
+| `ReaderHudOverlay` | `src/features/reader/ReaderHudOverlay.tsx` | 上下オーバーレイ HUD（戻る・ファイル名・`N / Total`・次へ/前へボタン）                                                                                                           |
+| `ReaderErrorView`  | `src/features/reader/ReaderErrorView.tsx`  | アーカイブ全体エラーパネルおよび個別ページデコードエラー表示                                                                                                                     |
 
 - `ReaderPage` の単体テストでは `ReaderCanvas`, `ReaderHudOverlay`, `ReaderErrorView` を `vi.spyOn(...).mockImplementation(() => null)` で完全分離する。
 
@@ -131,14 +135,14 @@ related_tests:
 
 ## 6. 受け入れ条件（`AC-RD-xx`）
 
-|   AC ID    | 受け入れ条件                                                                                                                                               |
-| :--------: | :--------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AC-RD-01` | `/read/local` でメモリ上の `File` セッションが不在の場合、エラー停止せず即時 `/` へフォールバックする（`TR-10`）。                                         |
-| `AC-RD-02` | オープン直後は HUD 非表示のフルスクリーンで開始し、中央 40% タップで上下 HUD を開閉できる。                                                                |
-| `AC-RD-03` | 右開き（`rtl`）ルールで左 30% タップ／左→右スワイプ／`ArrowLeft` が次ページ、右 30% タップ／右→左スワイプ／`ArrowRight` が前ページへ移動する。             |
-| `AC-RD-04` | 下部 HUD に 1 始まりの `N / Total` と「← 次へ」「前へ →」ボタンが表示され、先頭・末尾ページで適切に `disabled` になる。                                    |
-| `AC-RD-05` | 連続めくり時に `requestEpoch` が更新され、古い要求の進行中 I/O 中断および遅延到着 `ImageBitmap` の即時 `close()` が行われる。                              |
-| `AC-RD-06` | 破損・空・暗号化・未対応圧縮・読込失敗（`READ_ERROR`）・WebGL2 失敗時は診断ログ記録の上で理由別エラー画面と「ホームへ戻る」を表示する。                    |
-| `AC-RD-07` | 個別ページのみのデコード失敗時は当該ページのみエラー表示とし、前後ページへの移動を阻害しない。                                                             |
-| `AC-RD-08` | 戻るボタン・`Escape` キー・Android ハードウェア戻るボタンで `TR-08`（Worker 停止・L1 `bitmap.close()`・WebGL 破棄・セッションクリア）を実行し `/` へ戻る。 |
-| `AC-RD-09` | 対象 TSX/TS ファイルすべてが 1 対 1 Story/UT・親子分離・C0/C1/Functions/Lines 100%・1280px/375px VRT を PASS する。                                        |
+|   AC ID    | 受け入れ条件                                                                                                                                                                                                                        |
+| :--------: | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AC-RD-01` | `/read/local` でメモリ上の `File` セッションが不在の場合、エラー停止せず即時 `/` へフォールバックする（`TR-10`）。                                                                                                                  |
+| `AC-RD-02` | オープン直後は HUD 非表示のフルスクリーンで開始し、中央 40% タップで上下 HUD を開閉できる。                                                                                                                                         |
+| `AC-RD-03` | 右開き（`rtl`）ルールで左 30% タップ／左→右スワイプ／`ArrowLeft` が次ページ、右 30% タップ／右→左スワイプ／`ArrowRight` が前ページへ移動する。                                                                                      |
+| `AC-RD-04` | 下部 HUD に 1 始まりの `N / Total` と「← 次へ」「前へ →」ボタンが表示され、先頭・末尾ページで適切に `disabled` になる。                                                                                                             |
+| `AC-RD-05` | ページ遷移ごとに閲覧優先順の `prefetchIndices`（`+1..+20`, `-1..-2`）および L1 近傍バッチ要求を 1 `epoch` 単位で連携し、連続めくり時の古い `requestEpoch` 進行中 I/O 中断および遅延到着 `ImageBitmap` の即時 `close()` が行われる。 |
+| `AC-RD-06` | 破損・空・暗号化・未対応圧縮・読込失敗（`READ_ERROR`）・WebGL2 失敗時は診断ログ記録の上で理由別エラー画面と「ホームへ戻る」を表示する。                                                                                             |
+| `AC-RD-07` | 個別ページのみのデコード失敗時は当該ページのみエラー表示とし、前後ページへの移動を阻害しない。                                                                                                                                      |
+| `AC-RD-08` | 戻るボタン・`Escape` キー・Android ハードウェア戻るボタンで `TR-08`（Worker 停止・L1 `bitmap.close()`・WebGL 破棄・セッションクリア）を実行し `/` へ戻る。                                                                          |
+| `AC-RD-09` | 対象 TSX/TS ファイルすべてが 1 対 1 Story/UT・親子分離・C0/C1/Functions/Lines 100%・1280px/375px VRT を PASS する。                                                                                                                 |

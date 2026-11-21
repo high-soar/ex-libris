@@ -1,10 +1,23 @@
 ---
 type: spec-engine
 title: "ZIPストリーミング・I/O・Worker エンジン仕様書"
-description: "LocalFileReader、標準ZIP/ZIP64/CP932対応パーサー、Coordinator/Decode Worker構成、zipIndexCache 0RTTオープン、およびrequestEpoch世代キャンセル制御の正本"
-status: "Approved (#19)"
+description: "LocalFileReader、標準ZIP/ZIP64/CP932パーサー、80MB L2ByteCache LRU、10MB/64KB結合 AdaptivePrefetcher、Coordinator/Decode Worker構成、zipIndexCache 0RTT、HO-03所有権分離、およびrequestEpoch世代キャンセル制御の正本"
+status: "Review (#20)"
 updated: "2026-11-21"
-tags: [engine, zip, zip64, cp932, streaming, web-worker, comlink, cache, epoch]
+tags:
+  [
+    engine,
+    zip,
+    zip64,
+    cp932,
+    streaming,
+    web-worker,
+    comlink,
+    cache,
+    prefetch,
+    lru,
+    epoch,
+  ]
 related_specs:
   - docs/index.md
   - docs/specs/requirements.md
@@ -30,7 +43,7 @@ related_tests:
 
 # ZIP ストリーミング・I/O・Worker エンジン仕様書
 
-本ドキュメントは、ExLibris の **Layer 1（Streaming & I/O）** および **Layer 2（Engine Worker）** に属するランダムアクセス読込、ZIP 解析・1 RTT スライス切り出し、Coordinator / Decode Worker 連携、ならびに世代キャンセル制御（`requestEpoch`）の正本（Single Source of Truth）です。
+本ドキュメントは、ExLibris の **Layer 1（Streaming & I/O）** および **Layer 2（Engine Worker）** に属するランダムアクセス読込、ZIP 解析・1 RTT スライス切り出し、80MB `L2ByteCache`、10MB 予算・64KB ギャップ結合 `AdaptivePrefetcher`、Coordinator / Decode Worker 連携、ならびに世代キャンセル制御（`requestEpoch`）の正本（Single Source of Truth）です。
 
 ---
 
@@ -38,19 +51,22 @@ related_tests:
 
 Worker グローバル（`self`）への直接依存を避けて Vitest による C0/C1/Functions/Lines 100% 単体テストを可能にするため、ロジック本体（`*Core.ts` および純関数モジュール）と Worker ブートストラップ（`*.worker.ts`）を厳格に分離します。
 
-| モジュールパス                              | レイヤー | 責務                                                                                                                                                                                                            |
-| :------------------------------------------ | :------: | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/engine/constants.ts`                   | 共通定数 | ストリーミング読込・先読み・L1/L2 キャッシュ・Worker プール数・表紙抽出レートの予算定数（`ENGINE_BUDGETS`）定義                                                                                                 |
-| `src/engine/io/LocalFileReader.ts`          | Layer 1  | 端末ローカル `File` を `File.slice` で範囲読込する `RandomAccessReader` 実装（Web / Android WebView 共通）                                                                                                      |
-| `src/engine/zip/zipParser.ts`               | Layer 2  | 論理名 `ZipParserCore`（実装関数: `parseZipDirectory`, `readCompressedPageSlice`）。EOCD 検索、Central Directory 解析、画像フィルタ・ゴミ除外、自然順ソート、LFH 可変長ヘッダスキップによる圧縮本体スライス抽出 |
-| `src/engine/zip/errors.ts`                  | Layer 2  | 型付きエンジンエラー（`ZipArchiveError` / エラーコード列挙 / `isAbortError`）                                                                                                                                   |
-| `src/engine/workers/DecodeWorkerCore.ts`    | Layer 2  | Store (`0`) / Deflate (`8`: `DecompressionStream('deflate-raw')` ＋ `fflate` フォールバック) 伸長 ＋ `createImageBitmap` デコード                                                                               |
-| `src/engine/workers/DecodeWorkerPool.ts`    | Layer 2  | `DecodeWorkerApi` を実装し、複数 Decode Worker 間の最小負荷＋ラウンドロビン割り当ておよび `dispose()` ライフサイクル制御を行うプール                                                                            |
-| `src/engine/workers/CoordinatorCore.ts`     | Layer 2  | `CoordinatorWorkerApi` 実装。アーカイブオープン、Fast-Path 最優先実行、近傍先読みスケジューリング、`requestEpoch` 世代キャンセル                                                                                |
-| `src/engine/workers/comlinkErrorHandler.ts` | Layer 2  | Worker 側・UI クライアント側双方の Comlink `throw` ハンドラを拡張し、`ZipArchiveError.code` および `DOMException`（`AbortError` 等）を RPC 越しに保持・復元する純関数シリアライザ                               |
-| `src/engine/workers/coordinatorTransfer.ts` | Layer 2  | Decode Worker 送信時の `ArrayBuffer` 所有境界チェック＆必要時 `slice()` コピー（`prepareDecodeTransfer`）および `ready` フレームの `ImageBitmap` 抽出（`collectFrameTransferables`）を行う純関数モジュール      |
-| `src/engine/workers/decode.worker.ts`       | Layer 2  | `registerZipArchiveErrorTransferHandler()` 登録、`DecodeWorkerCore` 初期化、`Comlink.transfer` 返却および `Comlink.expose` のみの薄いブートストラップ（数行のみ）                                               |
-| `src/engine/workers/coordinator.worker.ts`  | Layer 2  | `registerZipArchiveErrorTransferHandler()` 登録、`DecodeWorkerPool`・`CoordinatorCore`・`coordinatorTransfer` の結線と `Comlink.expose` のみの薄いブートストラップ（数行のみ）                                  |
+| モジュールパス                              | レイヤー | 責務                                                                                                                                                                                                                                                         |
+| :------------------------------------------ | :------: | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/engine/constants.ts`                   | 共通定数 | ストリーミング読込・先読み・L1/L2 キャッシュ・Worker プール数・表紙抽出レートの予算定数（`ENGINE_BUDGETS`）定義                                                                                                                                              |
+| `src/engine/io/LocalFileReader.ts`          | Layer 1  | 端末ローカル `File` を `File.slice` で範囲読込する `RandomAccessReader` 実装（Web / Android WebView 共通）                                                                                                                                                   |
+| `src/engine/zip/zipParser.ts`               | Layer 2  | 論理名 `ZipParserCore`（実装関数: `parseZipDirectory`, `readCompressedPageSlice`, `computeEntryFetchSpan`, `extractCompressedSliceFromBuffer`）。EOCD/CDH 解析、画像フィルタ・ゴミ除外、自然順ソート、LFH 可変長ヘッダスキップ＆2 RTT 補完による圧縮本体抽出 |
+| `src/engine/zip/zipIndexValidation.ts`      | Layer 2  | `zipIndexCache` 復元時および `CoordinatorCore.openArchive` 入口での `ZipPageEntry[]` 構造・境界検証純関数                                                                                                                                                    |
+| `src/engine/zip/errors.ts`                  | Layer 2  | 型付きエンジンエラー（`ZipArchiveError` / エラーコード列挙 / `isAbortError`）                                                                                                                                                                                |
+| `src/engine/cache/L2ByteCache.ts`           | Layer 2  | 80MB 上限（`L2_CACHE_MAX_BYTES`）の未デコード圧縮 `Uint8Array` LRU キャッシュ。単一 80MB 超表示ページのピン付き一時保持・表示外即時退避、独立 `Uint8Array` 正規化、および `markSharedBuffer` 自動付与                                                        |
+| `src/engine/prefetch/AdaptivePrefetcher.ts` | Layer 2  | 閲覧優先順 10MB 予算選抜（単一 10MB 超〜80MB 以下単独許容・80MB 超除外）＋物理オフセット昇順・ギャップ 64KB 以内・実 Range 長 10MB 以内の結合取得および L2 格納エンジン                                                                                      |
+| `src/engine/workers/DecodeWorkerCore.ts`    | Layer 2  | Store (`0`) / Deflate (`8`: `DecompressionStream('deflate-raw')` ＋ `fflate` フォールバック) 伸長 ＋ `createImageBitmap` デコード                                                                                                                            |
+| `src/engine/workers/DecodeWorkerPool.ts`    | Layer 2  | `DecodeWorkerApi` を実装し、複数 Decode Worker 間の最小負荷＋ラウンドロビン割り当ておよび `dispose()` ライフサイクル制御を行うプール                                                                                                                         |
+| `src/engine/workers/CoordinatorCore.ts`     | Layer 2  | `CoordinatorWorkerApi` 実装。アーカイブオープン、L2 0RTT ヒット、Fast-Path 最優先実行、ページ単位 In-Flight 共有、10MB Warm Prefetch 非同期起動、`requestEpoch` 世代キャンセル                                                                               |
+| `src/engine/workers/comlinkErrorHandler.ts` | Layer 2  | Worker 側・UI クライアント側双方の Comlink `throw` ハンドラを拡張し、`ZipArchiveError.code` および `DOMException`（`AbortError` 等）を RPC 越しに保持・復元する純関数シリアライザ                                                                            |
+| `src/engine/workers/coordinatorTransfer.ts` | Layer 2  | `WeakSet<ArrayBuffer>` 共有バッファ保護（`markSharedBuffer` / `isSharedBuffer` / `HO-03` 対応）を含む Decode Worker 送信ペイロード構築（`prepareDecodeTransfer`）および `ready` フレームの `ImageBitmap` 抽出（`collectFrameTransferables`）純関数モジュール |
+| `src/engine/workers/decode.worker.ts`       | Layer 2  | `registerZipArchiveErrorTransferHandler()` 登録、`DecodeWorkerCore` 初期化、`Comlink.transfer` 返却および `Comlink.expose` のみの薄いブートストラップ（数行のみ、条件分岐禁止）                                                                              |
+| `src/engine/workers/coordinator.worker.ts`  | Layer 2  | `registerZipArchiveErrorTransferHandler()` 登録、`DecodeWorkerPool`・`CoordinatorCore`・`coordinatorTransfer` の結線と `Comlink.expose` のみの薄いブートストラップ（数行のみ、条件分岐禁止）                                                                 |
 
 ---
 
@@ -124,24 +140,56 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
    - 有効画像エントリが 0 件の場合は `EMPTY_ARCHIVE` を送出する。
    - `entryName.split(/[\\/]/)` でパスセグメント配列へ分割し、先頭セグメントから順に `new Intl.Collator("ja", { numeric: true, sensitivity: "base" }).compare(segA, segB)` で比較（共通接頭辞が同値ならセグメント数が少ない方を先）し、0 始まりの `pageIndex` を付与する。
 
-### 3.4 LFH 可変長 1 RTT スライス切り出し
+### 3.4 LFH 可変長 1 RTT スライス切り出しと共通抽出ヘルパ
 
-1. `readCompressedPageSlice(reader, entry, signal?)`:
+1. `computeEntryFetchSpan(entry)`:
+   - `maxSpan = entry.physicalEnd - entry.localHeaderOffset` に対し、1 RTT 取得目安長 `Math.min(maxSpan, 30 + entry.entryNameByteLength + entry.compressedSize + ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES)` を返す純関数（`readCompressedPageSlice` と `AdaptivePrefetcher` で共通利用）。
+2. `readCompressedPageSlice(reader, entry, signal?)` および `extractCompressedSliceFromBuffer(reader, entry, initialBuf, signal?)`:
    - まず `maxSpan = entry.physicalEnd - entry.localHeaderOffset` を算出し、`entry.localHeaderOffset < 0 || maxSpan < 30` の場合は即座に `ZipArchiveError("CORRUPT_ZIP")` を送出する。
-   - 取得長 `fetchLength = Math.min(maxSpan, 30 + entry.entryNameByteLength + entry.compressedSize + ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES)` を算出し、`readRange(entry.localHeaderOffset, fetchLength, signal)` を 1 回だけ呼び出す。
+   - 単一ページ取得時は `fetchLength = computeEntryFetchSpan(entry)` を算出し、`readRange(entry.localHeaderOffset, fetchLength, signal)` を 1 回呼び出して `initialBuf` を得る（結合先読み時は結合バッファ内の該当ページ部分 `subarray` を `initialBuf` として渡す）。
    - `initialBuf.byteLength < 30` または Local File Header シグネチャ `0x04034b50` 不一致の場合は `CORRUPT_ZIP` を送出する。
    - LFH 側の `fileNameLength`（offset 26）と `extraFieldLength`（offset 28）を読み取って実データ開始相対位置 `dataStart = 30 + lfhFileNameLength + lfhExtraFieldLength` を算出する（CDH と LFH の `extraFieldLength` が異なる ZIP にも対応）。
    - `dataStart + entry.compressedSize > maxSpan` の場合は境界違反として `ZipArchiveError("CORRUPT_ZIP")` を送出する。
    - `dataStart + entry.compressedSize <= initialBuf.byteLength` であれば `initialBuf.subarray(dataStart, dataStart + entry.compressedSize)` を返却する（1 RTT 完了、ゼロコピービュー）。
-   - LFH `extraField` が 1KB マージンを超過し（かつ `maxSpan` 内に収まり）`dataStart + entry.compressedSize > initialBuf.byteLength` となった場合は、以下の 2 ケースに分岐して 2 RTT で返却する：
+   - LFH `extraField` が 1KB マージンを超過し（かつ `maxSpan` 内に収まり）`dataStart + entry.compressedSize > initialBuf.byteLength` となった場合は、以下の 2 ケースに分岐して 2 RTT 補完取得を行う：
      - **ケース 2a（`dataStart < initialBuf.byteLength`）**: 未取得の末尾差分 `[entry.localHeaderOffset + initialBuf.byteLength, entry.compressedSize - (initialBuf.byteLength - dataStart)]` のみを `readRange` で追加取得し、`new Uint8Array(entry.compressedSize)` を直接確保して先頭に `initialBuf.subarray(dataStart)`・後続に末尾差分をコピーした `byteOffset === 0` の独立バッファを返却する（不要なヘッダ確保と `prepareDecodeTransfer` での再コピーを排除）。
      - **ケース 2b（`dataStart >= initialBuf.byteLength`：`lfhExtraFieldLength` が `compressedSize + 1KB` を上回り `initialBuf` に圧縮本体を一切含まない）**: `readRange(entry.localHeaderOffset + dataStart, entry.compressedSize, signal)` で圧縮本体のみを直接追加取得し、`initialBuf` と結合せずそのまま返却する（`RangeError` と余剰コピーを防止）。
 
 ---
 
-## 4. `DecodeWorkerCore` と `CoordinatorCore`（Layer 2）仕様
+## 4. `L2ByteCache`・`AdaptivePrefetcher`・`DecodeWorkerCore`・`CoordinatorCore`（Layer 2）仕様
 
-### 4.1 `DecodeWorkerCore`（2 Worker プール）
+### 4.1 `L2ByteCache`（80MB 圧縮バイト LRU キャッシュ / `src/engine/cache/L2ByteCache.ts`）
+
+1. **容量予算と状態管理**:
+   - 上限 `maxBytes` はデフォルトで `ENGINE_BUDGETS.L2_CACHE_MAX_BYTES`（`83_886_080` = 80MB、任意の正整数注入可、非有限値はデフォルト、1 未満は `1` にクランプ）。
+   - 現在開いているアーカイブ内の論理 `pageIndex` をキーとして未デコード圧縮 `Uint8Array` を保持し、`size`（件数）・`totalBytes`（保持合計バイト数）・`has(pageIndex)`・`peek(pageIndex)`・`get(pageIndex)`（ヒット時に MRU 昇格）・`delete(pageIndex)`・`clear()` を提供する。
+2. **独立 `Uint8Array` 正規化 ＆ `HO-03` 共有バッファ印付与**:
+   - 10MB 結合バッファからの部分 `subarray` をそのまま保持すると 9 ページ退避後も裏側の 10MB `ArrayBuffer` 全体が GC されず Worker RAM を圧迫するため、`put` 時は `byteOffset !== 0 || byteLength !== data.buffer.byteLength || !(data.buffer instanceof ArrayBuffer)` のスライスを必ず `data.slice()` で独立 `Uint8Array` に正規化する。
+   - 格納確定した `stored.buffer` には必ず `markSharedBuffer(stored.buffer)` を付与し、`Comlink.transfer` によるデタッチ破壊を防止する。
+3. **LRU 退避と単一 80MB 超例外ページの表示中一時保持（`NFR-02`）**:
+   - `setPinnedPages(pageIndices)`: 現在表示中のページ集合 `pinnedPages` を更新し、保持中に `entry.byteLength > maxBytes` の 80MB 超例外エントリがあって新 `pinnedPages` から外れた場合は即座に退避して `totalBytes <= maxBytes` へ復帰させる。
+   - `put(pageIndex, data, options?: { allowOversized?: boolean })`:
+     - **単一 80MB 超（`data.byteLength > maxBytes`）**: `allowOversized === true`（現在表示ページの Fast-Path）の場合のみ既存エントリを全退避して当該 1 件の一時保持を許容する。`allowOversized !== true`（Warm Prefetch・L1 近傍）では既存キャッシュを退避せず格納をスキップ（`false` 返却）する。
+     - **通常サイズ（`data.byteLength <= maxBytes`）**: `pinnedPages` 内に 80MB 超例外エントリが保持されている間、背景格納（`allowOversized !== true`）は当該ピン中エントリを保護するため格納をスキップ（`false` 返却）する。通常時は `totalBytes + data.byteLength <= maxBytes` になるまで非ピン最古エントリから優先して LRU 退避（全候補がピン中通常ページの場合のみ最古エントリを退避して `maxBytes` を厳守）し、MRU として格納する。
+   - `hasOversizedPinnedEntry()` を提供し、80MB 超ページ表示中の不要な Warm Prefetch 起動を抑止する。
+
+### 4.2 `AdaptivePrefetcher`（10MB 予算・64KB ギャップ結合先読み / `src/engine/prefetch/AdaptivePrefetcher.ts`）
+
+1. **2 段階バッチ計画（`planPrefetchBatches`）**:
+   - `l2Cache.hasOversizedPinnedEntry() === true` の場合は空配列 `[]` を返す。
+   - **Step 1（閲覧優先順 10MB 予算選抜）**:
+     - `prefetchIndices` の優先順で非整数・範囲外・重複・除外集合（表示中・`l2Cache.has`・In-Flight 取得中）・構造不正（`localHeaderOffset < 0 || physicalEnd - localHeaderOffset < 30`）・単一 `compressedSize > l2Cache.maxBytes`（80MB 超）を除外する。
+     - 各候補の `span = computeEntryFetchSpan(entry)` を積算し、先頭 1 件目が単独で `span > WARM_PREFETCH_BUDGET_BYTES`（10MB 超〜80MB 以下）の場合はその 1 件のみを選抜して打ち切る。通常時は `accumulatedBytes + span <= WARM_PREFETCH_BUDGET_BYTES`（`10_485_760` = 10MB）を満たす連続候補のみを選抜し、最初の予算超過で打ち切る。
+   - **Step 2（物理オフセット昇順ソート ＆ 結合判定）**:
+     - 選抜されたエントリ群を `localHeaderOffset` 昇順へ並べ替え、隣接する `prev` と `next` が以下 2 条件を同時に満たす限り単一の `PrefetchBatch`（`{ entries, rangeOffset, rangeLength }`）へ結合する（満たさない境界で次バッチへ分割）：
+       1. 物理ギャップ `gap = next.localHeaderOffset - prev.physicalEnd` が `0 <= gap <= ENGINE_BUDGETS.MAX_COALESCE_GAP_BYTES`（`65_536` = 64KB）
+       2. ブロック実 Range 長 `(next.localHeaderOffset + computeEntryFetchSpan(next)) - currentBatch.rangeOffset <= ENGINE_BUDGETS.WARM_PREFETCH_BUDGET_BYTES`（`10_485_760` = 10MB）
+2. **非同期実行と異常系部分救済**:
+   - バッチごとに `reader.readRange(batch.rangeOffset, batch.rangeLength, signal)` を 1 RTT 実行し、各エントリ範囲 `[entry.localHeaderOffset - batch.rangeOffset, Math.min(buf.byteLength, entry.physicalEnd - batch.rangeOffset))` から `extractCompressedSliceFromBuffer` で圧縮スライスを抽出して `l2Cache.put(entry.pageIndex, slice, { allowOversized: false })` に格納する（末尾エントリで LFH `extraField` が 1KB を超えた場合はケース 2a/2b で不足分のみ補完読込する）。
+   - 投機的先読みのため、結合バッファ内の一部エントリで LFH 破損（`CORRUPT_ZIP`）が発生しても正常な他エントリの L2 格納は継続し、通信失敗（`READ_ERROR`）や `AbortError` 時も未処理例外を送出せず安全に停止する（実表示到達時の Fast-Path で既存のページ単位エラーとして確定させる）。
+
+### 4.3 `DecodeWorkerCore`（2 Worker プール）
 
 1. `decodePageSlice(compressedData, compressionMethod)`:
    - `compressionMethod === 0`（Store）: `compressedData` をそのまま画像 Blob 化。
@@ -149,37 +197,44 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
    - 伸長済みバイト列から `new Blob([rawBytes])` を生成し、`createImageBitmap(blob)` でオフスレッドデコードを行う（失敗時は `ZipArchiveError("DECODE_FAILED")`）。
    - 返却値 `{ bitmap, width: bitmap.width, height: bitmap.height }`。Worker ラッパー側では `Comlink.transfer(result, [result.bitmap])` で所有権ごと親側へ Zero-Copy 転送する。
 
-### 4.2 `CoordinatorCore`（Phase 3 最小実行モデル ＋ 世代キャンセル）
+### 4.4 `CoordinatorCore`（L2 0RTT ヒット・In-Flight 共有・Warm Prefetch・世代キャンセル）
 
 1. **状態管理**:
    - `activeReader: RandomAccessReader | null`
    - `entries: ZipPageEntry[]`
+   - `l2Cache: L2ByteCache`（アーカイブ単位、80MB 上限）
    - `minActiveEpoch: number`
-   - `inflightAbortControllers: Map<number, Set<AbortController>>`（epoch 単位の進行中 I/O 中断管理）
+   - `inflightAbortControllers: Map<number, Set<AbortController>>`（epoch 単位の Fast-Path および Warm Prefetch 進行中 I/O 中断管理）
+   - `inflightPageReads: Map<number, InflightPageRead>`（ページ単位の進行中スライス取得共有マップ）
 2. **`openArchive(source, cachedEntries, epoch)`**:
    - `epoch < minActiveEpoch` の場合は即キャンセルエラー。
-   - 既存アーカイブがあれば `closeArchive()` 相当のクリーンアップを実施。
+   - 既存アーカイブがあれば `closeArchive()` 相当のクリーンアップ（進行中全 I/O 中断＋`l2Cache.clear()`）を実施。
    - `source.kind === "local-session"` に対し `LocalFileReader(source.file)` を生成する。`cachedEntries` に非空配列かつ基本構造検証（`validateZipIndexEntries`：必須フィールド型・非負有限数値・`localHeaderOffset < physicalEnd` 等）を通過した配列が渡された場合のみ `parseZipDirectory` をスキップして 0 RTT（`fromIndexCache: true`）で即座に完了し、`null`・空配列・不整合配列の場合は自動的に `parseZipDirectory` へフォールバックする（`fromIndexCache: false`）。
    - UI スレッド（`ReaderPage` + `ZipIndexCacheRepository`）が `source.indexCacheKey`（`local:${rawFileName}:${fileSize}`）で Dexie `zipIndexCache`（最大 500 件 LRU）を参照し、不整合キャッシュ検知時は自動削除して `cachedEntries = null` へ透過フォールバックし、通常オープン成功時に `entries` を非ブロッキング保存する。
-3. **`requestVisiblePages(pageIndices, prefetchIndices, epoch)`**:
-   - `epoch < minActiveEpoch` の場合は `[]` を返却する。
-   - `pageIndices` の各ページを `readCompressedPageSlice` ＋ `DecodeWorkerPool`（2 Worker）で処理し、`DecodedPageFrame[]` として返却する：
+3. **`requestVisiblePages(pageIndices, prefetchIndices, epoch, options?)`**:
+   - `epoch < minActiveEpoch` または `activeReader === null` の場合は `[]` を返却する。
+   - 進行中の古い世代（`activePrefetchEpoch < epoch`）の Warm Prefetch が存在する場合は即座に `abort()` して Fast-Path 帯域を保護し、`effectiveVisible = options?.visiblePageIndices ?? pageIndices` で `l2Cache.setPinnedPages(effectiveVisible)` を更新する。
+   - `pageIndices` の各ページを以下の優先順で取得し、`DecodeWorkerPool`（2 Worker）でデコードして `DecodedPageFrame[]` を返却する：
+     1. **`L2ByteCache` ヒット**: `l2Cache.get(pageIndex)` で MRU 昇格しつつ `readRange` 0 回で即座に Decode Worker へ投入する。
+     2. **In-Flight 共有ヒット**: 同世代 Warm Prefetch または並行リクエストが当該 `pageIndex` を取得中の場合はその完了を待機して二重 `readRange` を防ぐ（複数待機者で共有されるバッファには `markSharedBuffer` を適用し、Warm Prefetch 側が失敗/中断して `null` 解決かつ自身の `signal` が未中断の場合のみ直接 `readCompressedPageSlice` へフォールバックする）。
+     3. **Fast-Path 直接取得**: `readCompressedPageSlice` を実行し、`l2Cache.put(pageIndex, slice, { allowOversized: isVisiblePage })` でキャッシュ格納を試行した上で Decode Worker へ投入する。
      - 成功時: `{ status: "ready", pageIndex, epoch, width, height, bitmap }`
      - 個別ページ失敗時（`DECODE_FAILED` / `CORRUPT_ZIP` / `READ_ERROR` 等、`AbortError` 除く）: 同一バッチ内の他ページを巻き込まず `{ status: "error", pageIndex, epoch, errorCode, message }` を返却する。
-   - **Phase 3 における Fast-Path と L1 先読みの呼び出し契約**:
-     - `Phase 3` では L2 キャッシュ未実装のため、UI スレッド（`ReaderPage`）が先に Fast-Path として `requestVisiblePages([N], [], epoch)` を実行して現在ページ `N` を即時描画し、その完了後に L1 窓用の近傍ページ（`[N+1]`, `[N+2]`, `[N-1]`）を個別に `requestVisiblePages([neighbor], [], epoch)` としてバックグラウンド呼び出しする（`DecodeWorkerPool` x2 で並列処理され、完了順に `L1PageCache` へ格納される）。
-     - `prefetchIndices` 引数は `v0.1` の 10MB バイト予算 L2 Warm Prefetch 起動用として契約を維持し、`Phase 3` では空配列または無視（no-op）とする。
-   - **世代チェックと即時破棄**: `DecodeWorker` から `ImageBitmap` が戻った時点で `epoch < minActiveEpoch` になっていた場合、**UI スレッドへ返却せず Coordinator 側で即座に `bitmap.close()` を実行して破棄する**。
+   - **バックグラウンド Warm Prefetch 起動（1 `epoch` 最大 1 サイクル）**:
+     - `pageIndices` の処理完了後（`pageIndices.length === 0` の L2 補充呼び出し時を含む）、未中断かつ `prefetchIndices.length > 0` かつ当該 `epoch` で Warm Prefetch 未起動であれば、`epoch` に紐づく専用 `AbortController` を登録して `AdaptivePrefetcher` をバックグラウンド非同期起動し、RPC 自体は待たずに `DecodedPageFrame[]` を返却する。
+   - **世代チェックと即時破棄**: `DecodeWorker` から `ImageBitmap` が戻った時点で中断済み（`epoch < minActiveEpoch`）になっていた場合、**UI スレッドへ返却せず Coordinator 側で即座に `bitmap.close()` を実行して破棄する**。
    - **Zero-Copy 転送**: `coordinator.worker.ts` ラッパーは `collectFrameTransferables(frames)` により `frame.status === "ready"` の `frame.bitmap` のみを抽出し、`transferables.length > 0` の場合のみ `Comlink.transfer(frames, transferables)` で UI スレッドへ転送する。
 4. **`cancelEpochBelow(minActiveEpoch)` / `closeArchive()`**:
-   - `minActiveEpoch` 未満のすべての `AbortController.abort()` を即時発火する。
-   - `closeArchive()` 時は進行中全ジョブを中断し、`activeReader` および `entries` を解放する。
+   - `cancelEpochBelow`: `minActiveEpoch` 未満の Fast-Path および進行中 Warm Prefetch の `AbortController.abort()` をすべて即時発火する。
+   - `closeArchive()`: 進行中全ジョブを中断し、`l2Cache.clear()` で L2 保持メモリを全破棄した上で `activeReader` および `entries` を解放する。
 
-### 4.3 Worker 間 Zero-Copy 転送所有権規約と Comlink エラーシリアライズ契約
+### 4.5 Worker 間 Zero-Copy 転送所有権規約（`HO-03`）と Comlink エラーシリアライズ契約
 
-1. **Decode 送信時の `ArrayBuffer` 所有権規約（`prepareDecodeTransfer`）**:
-   - `coordinatorTransfer.ts` の `prepareDecodeTransfer(compressedData)` は、`byteOffset === 0 && byteLength === buffer.byteLength && buffer instanceof ArrayBuffer` の場合は元 `ArrayBuffer` をそのまま `Comlink.transfer` 対象としてデタッチするため、将来 `v0.1` で `L2ByteCache` 等の共有キャッシュ由来スライスを渡す際は事前にコピー（または共有フラグ導入）して元キャッシュを破壊しないこと。
-   - 部分 `subarray`（`byteOffset !== 0` または `byteLength !== buffer.byteLength`）および非 `ArrayBuffer`（`SharedArrayBuffer` 等）の場合は、`compressedData.slice()` により独立した `ArrayBuffer` を複製してから転送する。
+1. **Decode 送信時の `ArrayBuffer` 所有権分離規約（`prepareDecodeTransfer` / `markSharedBuffer`）**:
+   - `coordinatorTransfer.ts` は `WeakSet<ArrayBuffer>` ベースの `markSharedBuffer(buffer)` / `isSharedBuffer(buffer)` および `prepareDecodeTransfer(compressedData, options?: { shared?: boolean })` を提供する。
+   - `options?.shared === true` または `isSharedBuffer(compressedData.buffer) === true`（`L2ByteCache` 格納済みバッファまたは複数待機者共有バッファ）、あるいは部分 `subarray`（`byteOffset !== 0 || byteLength !== buffer.byteLength`）・非 `ArrayBuffer`（`SharedArrayBuffer` 等）の場合は、必ず `compressedData.slice()` で独立した新 `ArrayBuffer` を複製して `transferables` に設定し、`L2ByteCache` 内の元 `ArrayBuffer` が `Comlink.transfer` で 0 バイト化（デタッチ破壊）されることを完全に防ぐ。
+   - 非共有かつ `byteOffset === 0 && byteLength === buffer.byteLength && buffer instanceof ArrayBuffer` の一時独立バッファ（例: L2 非格納の 80MB 超近傍スライス等）のみ、元 `ArrayBuffer` をそのまま Zero-Copy 転送する。
+   - `coordinator.worker.ts` は条件分岐を持たず、`prepareDecodeTransfer(compressedData)` の戻り値をそのまま `Comlink.transfer` へ渡す。
 2. **Comlink 例外シリアライズ契約（`registerZipArchiveErrorTransferHandler`）**:
    - Worker 側（`src/engine/workers/decode.worker.ts`, `src/engine/workers/coordinator.worker.ts`）および UI クライアント側（`src/app/coordinatorClient.ts`）の双方で起動時に `registerZipArchiveErrorTransferHandler()` を冪等登録する。
    - Comlink の標準 `"throw"` ハンドラをラップし、`ZipArchiveError` の `code`・`name`・`message`・`stack` および `DOMException`（`AbortError` 等の `name`・`message`・`stack`）を Worker RPC 越しに保持・復元する。
@@ -188,16 +243,19 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 
 ## 5. 受け入れ条件（`AC-ENG-xx`）
 
-|    AC ID    | 受け入れ条件                                                                                                                                                                                                                                                   |
-| :---------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AC-ENG-01` | `LocalFileReader` は `File.slice` で指定範囲を読み取り、ファイル末尾超過時は実サイズまで安全にクランプし、`AbortSignal` で中断できる。                                                                                                                         |
-| `AC-ENG-02` | `zipParser.ts`（論理名 `ZipParserCore`: `parseZipDirectory`）は末尾 128KB から標準 ZIP の EOCD と CDH を解析し、128KB 超の巨大 CD も追加 1 RTT で完全解析できる。                                                                                              |
-| `AC-ENG-03` | 画像拡張子（`.jpg/.jpeg/.png/.webp/.avif` 大小非区別）のみ抽出し、`__MACOSX/`・`._*`・`Thumbs.db`・`.DS_Store`・`desktop.ini`・ディレクトリを除外し、`/`・`\` セグメント単位の日本語自然順でソートする。                                                       |
-| `AC-ENG-04` | GPBF Bit 11 判定＋UTF-8 非厳格／strict 失敗時 CP932（Shift_JIS）フォールバックで日本語ファイル名も正しくデコードし、暗号化・未対応圧縮・空アーカイブ・破損／マルチディスク ZIP には明示的 `ZipErrorCode` を返す。                                              |
-| `AC-ENG-05` | LFH 可変長 `extraFieldLength` を LFH 先頭から実読取りし、全 CDH 基準の `physicalEnd` 境界内で 1 RTT（`+1KB` マージン）により正確な圧縮ペイロードを切り出せる。                                                                                                 |
-| `AC-ENG-06` | `DecodeWorkerCore` は Store (`0`) と Deflate (`8`: `DecompressionStream` ＋ `fflate` フォールバック) の双方を `ImageBitmap` へデコードできる。                                                                                                                 |
-| `AC-ENG-07` | `CoordinatorCore` は古い `requestEpoch` の進行中 `readRange` を `AbortController` で即時中断し、遅延到着した `ImageBitmap` は即 `bitmap.close()` して破棄する。                                                                                                |
-| `AC-ENG-08` | `CoordinatorCore` / `DecodeWorkerCore` / `DecodeWorkerPool` / `coordinatorTransfer` / `comlinkErrorHandler` / `zipParser.ts`（論理名 `ZipParserCore`） / `LocalFileReader` のすべてが C0/C1/Functions/Lines 100% 単体テストを PASS する。                      |
-| `AC-ENG-09` | ZIP64 EOCD Locator / ZIP64 EOCD Record（4GB 超オフセット・`0x0001` Extra Field 全 CDH 先行解決含む）を安全整数範囲内で完全解析し、マルチディスク ZIP・`Number.MAX_SAFE_INTEGER` 超過・`totalEntries * 46 > cdSize` を `CORRUPT_ZIP` として拒否できる。         |
-| `AC-ENG-10` | GPBF Bit 11 未設定の Shift_JIS（CP932）日本語ファイル名を文字化けせず復元でき、`readCompressedPageSlice` の 2 RTT 経路も `byteOffset === 0` の独立バッファ直接返却により不要な二重コピーを発生させない（`HO-03` 前半）。                                       |
-| `AC-ENG-11` | `DexieZipIndexCacheRepository`（Dexie `version(2)` `zipIndexCache`・最大 500 件 LRU・不整合レコード自動削除フォールバック）と `ReaderPage` / `CoordinatorCore.openArchive` の連携により、同一アーカイブ 2 回目以降を 0 RTT（`fromIndexCache: true`）で開ける。 |
+|    AC ID    | 受け入れ条件                                                                                                                                                                                                                                                                     |
+| :---------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AC-ENG-01` | `LocalFileReader` は `File.slice` で指定範囲を読み取り、ファイル末尾超過時は実サイズまで安全にクランプし、`AbortSignal` で中断できる。                                                                                                                                           |
+| `AC-ENG-02` | `zipParser.ts`（論理名 `ZipParserCore`: `parseZipDirectory`）は末尾 128KB から標準 ZIP の EOCD と CDH を解析し、128KB 超の巨大 CD も追加 1 RTT で完全解析できる。                                                                                                                |
+| `AC-ENG-03` | 画像拡張子（`.jpg/.jpeg/.png/.webp/.avif` 大小非区別）のみ抽出し、`__MACOSX/`・`._*`・`Thumbs.db`・`.DS_Store`・`desktop.ini`・ディレクトリを除外し、`/`・`\` セグメント単位の日本語自然順でソートする。                                                                         |
+| `AC-ENG-04` | GPBF Bit 11 判定＋UTF-8 非厳格／strict 失敗時 CP932（Shift_JIS）フォールバックで日本語ファイル名も正しくデコードし、暗号化・未対応圧縮・空アーカイブ・破損／マルチディスク ZIP には明示的 `ZipErrorCode` を返す。                                                                |
+| `AC-ENG-05` | LFH 可変長 `extraFieldLength` を LFH 先頭から実読取りし、全 CDH 基準の `physicalEnd` 境界内で 1 RTT（`+1KB` マージン）により正確な圧縮ペイロードを切り出せる。                                                                                                                   |
+| `AC-ENG-06` | `DecodeWorkerCore` は Store (`0`) と Deflate (`8`: `DecompressionStream` ＋ `fflate` フォールバック) の双方を `ImageBitmap` へデコードできる。                                                                                                                                   |
+| `AC-ENG-07` | `CoordinatorCore` は古い `requestEpoch` の進行中 `readRange`（Fast-Path および Warm Prefetch 双方）を `AbortController` で即時中断し、遅延到着した `ImageBitmap` は即 `bitmap.close()` して破棄する。                                                                            |
+| `AC-ENG-08` | `CoordinatorCore` / `L2ByteCache` / `AdaptivePrefetcher` / `DecodeWorkerCore` / `DecodeWorkerPool` / `coordinatorTransfer` / `comlinkErrorHandler` / `zipParser.ts`（論理名 `ZipParserCore`） / `LocalFileReader` のすべてが C0/C1/Functions/Lines 100% 単体テストを PASS する。 |
+| `AC-ENG-09` | ZIP64 EOCD Locator / ZIP64 EOCD Record（4GB 超オフセット・`0x0001` Extra Field 全 CDH 先行解決含む）を安全整数範囲内で完全解析し、マルチディスク ZIP・`Number.MAX_SAFE_INTEGER` 超過・`totalEntries * 46 > cdSize` を `CORRUPT_ZIP` として拒否できる。                           |
+| `AC-ENG-10` | GPBF Bit 11 未設定の Shift_JIS（CP932）日本語ファイル名を文字化けせず復元でき、`readCompressedPageSlice` の 2 RTT 経路も `byteOffset === 0` の独立バッファ直接返却により不要な二重コピーを発生させない（`HO-03` 前半）。                                                         |
+| `AC-ENG-11` | `DexieZipIndexCacheRepository`（Dexie `version(2)` `zipIndexCache`・最大 500 件 LRU・不整合レコード自動削除フォールバック）と `ReaderPage` / `CoordinatorCore.openArchive` の連携により、同一アーカイブ 2 回目以降を 0 RTT（`fromIndexCache: true`）で開ける。                   |
+| `AC-ENG-12` | `L2ByteCache` は `L2_CACHE_MAX_BYTES`（80MB）上限で独立 `Uint8Array` を LRU 保持・退避し、単一 80MB 超例外画像は現在表示ページ（`allowOversized: true`）のみ一時保持して表示対象外移動時および `closeArchive()` 時に即座に解放する。                                             |
+| `AC-ENG-13` | `AdaptivePrefetcher` は優先順 10MB 予算選抜（単一 10MB 超〜80MB 以下単独許容・80MB 超除外）後に `localHeaderOffset` 昇順・物理ギャップ 64KB 以内・実 Range 長 10MB 以内で `readRange` を結合し、末尾 LFH 1KB 超過補完および一部破損時の正常ページ救済を行える。                  |
+| `AC-ENG-14` | `markSharedBuffer` / `prepareDecodeTransfer`（`HO-03` 後半）により `L2ByteCache` 保持バッファが `Comlink.transfer` でデタッチ破壊されず、同世代 In-Flight 共有で重複 `readRange` を防ぎつつ L1 退避後の再めくりでも L2 から 0 RTT で再デコードできる。                           |
