@@ -10,6 +10,12 @@ export interface ReaderErrorViewProps {
   readonly pageNumber?: number;
 }
 
+const PAGE_ERROR_WRAPPER_POSITION_CLASS: Record<SlotPosition, string> = {
+  center: "inset-0 p-6",
+  left: "inset-y-0 left-0 w-1/2 p-4",
+  right: "inset-y-0 right-0 w-1/2 p-4",
+};
+
 function ErrorCodeCaption({
   errorCode,
   marginClass,
@@ -24,7 +30,7 @@ function ErrorCodeCaption({
   return (
     <p
       data-testid="reader-error-code"
-      className={`${marginClass} font-mono text-xs text-slate-400`}
+      className={`${marginClass} font-mono text-xs break-words text-slate-400`}
     >
       エラーコード: {errorCode}
     </p>
@@ -36,6 +42,8 @@ export function ReaderErrorView({
   message,
   errorCode,
   onBackToHome,
+  slotPosition = "center",
+  pageNumber,
 }: ReaderErrorViewProps): ReactNode {
   if (mode === "archive") {
     return (
@@ -68,15 +76,25 @@ export function ReaderErrorView({
     );
   }
 
+  const wrapperPositionClass = PAGE_ERROR_WRAPPER_POSITION_CLASS[slotPosition];
+  const cardPaddingClass = slotPosition === "center" ? "p-6" : "p-4 sm:p-6";
+  const pageErrorTitle =
+    pageNumber !== undefined
+      ? `ページ読込エラー (p.${pageNumber})`
+      : "ページ読込エラー";
+
   return (
-    <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-6">
+    <div
+      className={`pointer-events-none absolute z-10 flex items-center justify-center ${wrapperPositionClass}`}
+    >
       <div
         role="alert"
         data-testid="reader-page-error"
-        className="max-w-sm w-full rounded-2xl border border-amber-500/40 bg-slate-900/90 p-6 text-center text-slate-100 shadow-xl"
+        data-slot-position={slotPosition}
+        className={`max-w-sm w-full rounded-2xl border border-amber-500/40 bg-slate-900/90 ${cardPaddingClass} text-center text-slate-100 shadow-xl`}
       >
         <p className="text-xs font-semibold uppercase tracking-wider text-amber-300">
-          ページ読込エラー
+          {pageErrorTitle}
         </p>
         <p className="mt-2 text-sm leading-relaxed text-slate-200">{message}</p>
         <ErrorCodeCaption errorCode={errorCode} marginClass="mt-2" />
