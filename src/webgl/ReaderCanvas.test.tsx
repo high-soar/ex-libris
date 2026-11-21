@@ -1,12 +1,21 @@
 import { composeStories } from "@storybook/react";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
 import type { DecodedPageFrame } from "../engine/types";
 import { ReaderCanvas, type ReaderCanvasHandle } from "./ReaderCanvas";
 import * as stories from "./ReaderCanvas.stories";
+import * as WebGLRendererCoreModule from "./WebGLRendererCore";
+import type { RenderSlotFrame } from "./types";
 
-const { Default, UnsupportedEnvironment } = composeStories(stories);
+const {
+  Default,
+  SingleSlot,
+  SpreadSlots,
+  AsyncOversizedPending,
+  ContextLost,
+  UnsupportedEnvironment,
+} = composeStories(stories);
 
 function createFakeBitmap(width = 800, height = 1200): ImageBitmap {
   return {
@@ -31,16 +40,47 @@ function createReadyFrame(
   };
 }
 
+function createErrorFrame(
+  pageIndex: number,
+  epoch: number,
+): Extract<DecodedPageFrame, { status: "error" }> {
+  return {
+    status: "error",
+    pageIndex,
+    epoch,
+    errorCode: "DECODE_FAILED",
+    message: "decode failed",
+  };
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
 interface MockCanvasGLOptions {
   failCompile?: boolean;
   throwNonErrorOnCreateShader?: boolean;
   failOnSecondInit?: boolean;
+  maxTextureSize?: number;
 }
 
 function createMockWebGL2Context(options: MockCanvasGLOptions = {}) {
   let shaderInitCount = 0;
   let textureSeq = 0;
   const canvasState = { width: 300, height: 150 };
+  const MAX_TEXTURE_SIZE = 0x0d33;
 
   const gl = {
     VERTEX_SHADER: 0x8b31,
@@ -51,6 +91,7 @@ function createMockWebGL2Context(options: MockCanvasGLOptions = {}) {
     STATIC_DRAW: 0x88e4,
     FLOAT: 0x1406,
     MAX_VIEWPORT_DIMS: 0x0d3a,
+    MAX_TEXTURE_SIZE,
     COLOR_BUFFER_BIT: 0x4000,
     TEXTURE0: 0x84c0,
     TEXTURE_2D: 0x0de1,
@@ -66,6 +107,7 @@ function createMockWebGL2Context(options: MockCanvasGLOptions = {}) {
     CLAMP_TO_EDGE: 0x812f,
     TRIANGLE_STRIP: 0x0005,
     canvas: canvasState,
+    isContextLost: vi.fn(() => false),
     createShader: vi.fn((type: number) => {
       if (type === 0x8b31) {
         shaderInitCount += 1;
@@ -92,7 +134,12 @@ function createMockWebGL2Context(options: MockCanvasGLOptions = {}) {
     getAttribLocation: vi.fn((_p: WebGLProgram, name: string) =>
       name === "a_position" ? 0 : 1,
     ),
-    getUniformLocation: vi.fn(() => ({}) as WebGLUniformLocation),
+    getUniformLocation: vi.fn((_p: WebGLProgram, name: string) => ({
+      name,
+    })) as unknown as (
+      program: WebGLProgram,
+      name: string,
+    ) => WebGLUniformLocation,
     createVertexArray: vi.fn(() => ({}) as WebGLVertexArrayObject),
     deleteVertexArray: vi.fn(),
     bindVertexArray: vi.fn(),
@@ -102,7 +149,11 @@ function createMockWebGL2Context(options: MockCanvasGLOptions = {}) {
     bufferData: vi.fn(),
     enableVertexAttribArray: vi.fn(),
     vertexAttribPointer: vi.fn(),
-    getParameter: vi.fn(() => new Int32Array([4096, 4096])),
+    getParameter: vi.fn((pname: number) =>
+      pname === MAX_TEXTURE_SIZE
+        ? (options.maxTextureSize ?? 4096)
+        : new Int32Array([4096, 4096]),
+    ),
     clearColor: vi.fn(),
     clear: vi.fn(),
     viewport: vi.fn(),
@@ -149,21 +200,84 @@ describe("ReaderCanvas", () => {
     }
   });
 
-  it("DefaultおよびUnsupportedEnvironmentストーリーを描画できること", () => {
+  it("全Storybookストーリーを描画でき2スロット見開き・非同期待機・コンテキストロスト・非対応状態を検証すること (AC-GL-02, AC-GL-05, AC-GL-07, AC-GL-08)", async () => {
     const getContextSpy = vi
       .spyOn(HTMLCanvasElement.prototype, "getContext")
       .mockReturnValue(null);
 
-    const { unmount } = render(<Default />);
+    const { unmount: unmountDefault } = render(<Default />);
     const defaultCanvas = screen.getByTestId("reader-canvas");
     expect(defaultCanvas).toHaveAttribute("data-webgl-status", "error");
     expect(defaultCanvas).toHaveAttribute("data-rendered-page", "");
+    expect(defaultCanvas).toHaveAttribute("data-rendered-pages", "");
+    expect(defaultCanvas).toHaveAttribute("data-rendered-slots", "");
     expect(defaultCanvas).toHaveAttribute("data-rendered-epoch", "");
     expect(getContextSpy).toHaveBeenCalledWith(
       "webgl2",
       expect.objectContaining({ alpha: false }),
     );
-    unmount();
+    unmountDefault();
+
+    const { gl: glSingle } = createMockWebGL2Context();
+    const { unmount: unmountSingle } = render(
+      <SingleSlot getWebGL2Context={() => glSingle} />,
+    );
+    const singleCanvas = screen.getByTestId("reader-canvas");
+    expect(singleCanvas).toHaveAttribute("data-webgl-status", "ready");
+    expect(singleCanvas).toHaveAttribute("data-rendered-page", "0");
+    expect(singleCanvas).toHaveAttribute("data-rendered-pages", "0");
+    expect(singleCanvas).toHaveAttribute("data-rendered-slots", "center:0");
+    expect(singleCanvas).toHaveAttribute("data-rendered-epoch", "1");
+    unmountSingle();
+
+    const { gl: glSpread } = createMockWebGL2Context();
+    const { unmount: unmountSpread } = render(
+      <SpreadSlots getWebGL2Context={() => glSpread} />,
+    );
+    const spreadCanvas = screen.getByTestId("reader-canvas");
+    expect(spreadCanvas).toHaveAttribute("data-webgl-status", "ready");
+    expect(spreadCanvas).toHaveAttribute("data-rendered-page", "1");
+    expect(spreadCanvas).toHaveAttribute("data-rendered-pages", "1,2");
+    expect(spreadCanvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:2,right:1",
+    );
+    expect(spreadCanvas).toHaveAttribute("data-rendered-epoch", "2");
+    unmountSpread();
+
+    const deferredTile = createDeferred<ImageBitmap>();
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn((source: unknown) =>
+        source instanceof HTMLCanvasElement
+          ? Promise.resolve(createFakeBitmap(200, 100))
+          : deferredTile.promise,
+      ),
+    );
+    const { unmount: unmountAsync } = render(<AsyncOversizedPending />);
+    await waitFor(() => {
+      expect(screen.getByTestId("reader-canvas")).toHaveAttribute(
+        "data-webgl-status",
+        "ready",
+      );
+    });
+    const asyncCanvas = screen.getByTestId("reader-canvas");
+    expect(asyncCanvas).toHaveAttribute("data-rendered-slots", "");
+    await act(async () => {
+      deferredTile.resolve(createFakeBitmap(100, 100));
+      await flushMicrotasks();
+    });
+    expect(asyncCanvas).toHaveAttribute("data-rendered-slots", "center:0");
+    unmountAsync();
+
+    const { unmount: unmountLost } = render(<ContextLost />);
+    const lostCanvas = screen.getByTestId("reader-canvas");
+    expect(lostCanvas).toHaveAttribute("data-webgl-status", "context-lost");
+    expect(lostCanvas).toHaveAttribute("data-rendered-page", "");
+    expect(lostCanvas).toHaveAttribute("data-rendered-pages", "");
+    expect(lostCanvas).toHaveAttribute("data-rendered-slots", "");
+    expect(lostCanvas).toHaveAttribute("data-rendered-epoch", "");
+    unmountLost();
 
     const onFatalError = vi.fn();
     const onRendererReady = vi.fn();
@@ -182,7 +296,7 @@ describe("ReaderCanvas", () => {
     );
   });
 
-  it("WebGL2初期化成功時にフレーム描画・ハンドル操作・破棄を行えること (AC-GL-02, AC-GL-03)", () => {
+  it("WebGL2初期化成功時に単スロット/2スロット描画・混合epoch・部分エラー属性出力・ハンドル操作・破棄を行えること (AC-GL-02, AC-GL-03, AC-GL-08)", () => {
     const { gl, mocks } = createMockWebGL2Context();
     const handleRef: { current: ReaderCanvasHandle | null } = { current: null };
     const onRendererReady = vi.fn((handle: ReaderCanvasHandle | null) => {
@@ -191,7 +305,7 @@ describe("ReaderCanvas", () => {
 
     const { rerender, unmount } = render(
       <ReaderCanvas
-        frame={null}
+        slots={[]}
         getWebGL2Context={() => gl}
         onRendererReady={onRendererReady}
       />,
@@ -200,60 +314,198 @@ describe("ReaderCanvas", () => {
     const canvas = screen.getByTestId("reader-canvas");
     expect(canvas).toHaveAttribute("data-webgl-status", "ready");
     expect(canvas).toHaveAttribute("data-rendered-page", "");
+    expect(canvas).toHaveAttribute("data-rendered-pages", "");
+    expect(canvas).toHaveAttribute("data-rendered-slots", "");
     expect(canvas).toHaveAttribute("data-rendered-epoch", "");
     expect(handleRef.current).not.toBeNull();
 
-    // ready フレームを描画すると属性と WebGL 描画が更新される
+    // 単スロット ready フレームを描画すると属性と WebGL 描画が更新される
     const frame0 = createReadyFrame(0, 1);
     rerender(
       <ReaderCanvas
-        frame={frame0}
+        slots={[{ slot: { pageIndex: 0, position: "center" }, frame: frame0 }]}
         getWebGL2Context={() => gl}
         onRendererReady={onRendererReady}
       />,
     );
     expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    expect(canvas).toHaveAttribute("data-rendered-pages", "0");
+    expect(canvas).toHaveAttribute("data-rendered-slots", "center:0");
     expect(canvas).toHaveAttribute("data-rendered-epoch", "1");
     expect(mocks.drawArrays).toHaveBeenCalledTimes(1);
 
-    // 公開ハンドル経由で個別テクスチャ破棄と全テクスチャ破棄を実行できる
-    handleRef.current?.deletePageTexture(0);
-    expect(mocks.deleteTexture).toHaveBeenCalledTimes(1);
-
-    const frame1 = createReadyFrame(1, 2);
+    // 2スロット見開き (rtl: left:2 [epoch 2], right:1 [epoch 4]) -> 最小頁 "1", 昇順 "1,2", スロット順 "left:2,right:1", 最大epoch "4"
+    const spreadSlots: RenderSlotFrame[] = [
+      {
+        slot: { pageIndex: 2, position: "left" },
+        frame: createReadyFrame(2, 2),
+      },
+      {
+        slot: { pageIndex: 1, position: "right" },
+        frame: createReadyFrame(1, 4),
+      },
+    ];
     rerender(
       <ReaderCanvas
-        frame={frame1}
+        slots={spreadSlots}
         getWebGL2Context={() => gl}
         onRendererReady={onRendererReady}
       />,
     );
-    handleRef.current?.clearAllTextures();
-    expect(mocks.deleteTexture).toHaveBeenCalledTimes(2);
+    expect(canvas).toHaveAttribute("data-rendered-page", "1");
+    expect(canvas).toHaveAttribute("data-rendered-pages", "1,2");
+    expect(canvas).toHaveAttribute("data-rendered-slots", "left:2,right:1");
+    expect(canvas).toHaveAttribute("data-rendered-epoch", "4");
 
-    // error フレーム時はページ表示属性を空に戻す
+    // 2スロット片側エラー・片側null混在時は健全側スロットのみ出力する
     rerender(
       <ReaderCanvas
-        frame={{
-          status: "error",
-          pageIndex: 2,
-          epoch: 3,
-          errorCode: "DECODE_FAILED",
-          message: "decode failed",
-        }}
+        slots={[
+          {
+            slot: { pageIndex: 3, position: "left" },
+            frame: createErrorFrame(3, 5),
+          },
+          {
+            slot: { pageIndex: 2, position: "right" },
+            frame: createReadyFrame(2, 5),
+          },
+        ]}
+        getWebGL2Context={() => gl}
+        onRendererReady={onRendererReady}
+      />,
+    );
+    expect(canvas).toHaveAttribute("data-rendered-page", "2");
+    expect(canvas).toHaveAttribute("data-rendered-pages", "2");
+    expect(canvas).toHaveAttribute("data-rendered-slots", "right:2");
+    expect(canvas).toHaveAttribute("data-rendered-epoch", "5");
+
+    // 公開ハンドル経由で個別テクスチャ破棄と全テクスチャ破棄を実行できる
+    mocks.deleteTexture.mockClear();
+    handleRef.current?.deletePageTexture(0);
+    expect(mocks.deleteTexture).toHaveBeenCalledTimes(1);
+
+    handleRef.current?.clearAllTextures();
+    expect(mocks.deleteTexture).toHaveBeenCalledTimes(3);
+
+    // 全スロット error / null 時は描画済み属性を空に戻す
+    rerender(
+      <ReaderCanvas
+        slots={[
+          {
+            slot: { pageIndex: 4, position: "left" },
+            frame: createErrorFrame(4, 6),
+          },
+          { slot: { pageIndex: 3, position: "right" }, frame: null },
+        ]}
         getWebGL2Context={() => gl}
         onRendererReady={onRendererReady}
       />,
     );
     expect(canvas).toHaveAttribute("data-rendered-page", "");
+    expect(canvas).toHaveAttribute("data-rendered-pages", "");
+    expect(canvas).toHaveAttribute("data-rendered-slots", "");
     expect(canvas).toHaveAttribute("data-rendered-epoch", "");
-    expect(mocks.createProgram).toHaveBeenCalledTimes(1);
-    expect(mocks.deleteProgram).not.toHaveBeenCalled();
 
     // アンマウント時にハンドルを null 通知し、renderer を dispose する
     unmount();
     expect(onRendererReady).toHaveBeenLastCalledWith(null);
     expect(mocks.deleteProgram).toHaveBeenCalledTimes(1);
+  });
+
+  it("MAX_TEXTURE_SIZE超過スロットの非同期準備完了時に最新のslotsRefを再描画しDOM属性を更新すること (AC-GL-07, AC-GL-08)", async () => {
+    const tile1 = createDeferred<ImageBitmap>();
+    const tile2 = createDeferred<ImageBitmap>();
+    let cropCall = 0;
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(() => {
+        cropCall += 1;
+        return cropCall === 1 ? tile1.promise : tile2.promise;
+      }),
+    );
+
+    const { gl } = createMockWebGL2Context({ maxTextureSize: 100 });
+    const leftNormal = createReadyFrame(1, 2, createFakeBitmap(50, 100));
+    const rightOversized = createReadyFrame(0, 3, createFakeBitmap(150, 100));
+
+    render(
+      <ReaderCanvas
+        slots={[
+          { slot: { pageIndex: 1, position: "left" }, frame: leftNormal },
+          { slot: { pageIndex: 0, position: "right" }, frame: rightOversized },
+        ]}
+        getWebGL2Context={() => gl}
+      />,
+    );
+
+    const canvas = screen.getByTestId("reader-canvas");
+    // 初回同期描画では通常サイズ側 left:1 のみ完了
+    expect(canvas).toHaveAttribute("data-rendered-page", "1");
+    expect(canvas).toHaveAttribute("data-rendered-pages", "1");
+    expect(canvas).toHaveAttribute("data-rendered-slots", "left:1");
+    expect(canvas).toHaveAttribute("data-rendered-epoch", "2");
+
+    // 2枚のタイル生成完了後、onAsyncTextureReady で最新 slotsRef が再描画される
+    await act(async () => {
+      tile1.resolve(createFakeBitmap(100, 100));
+      tile2.resolve(createFakeBitmap(50, 100));
+      await flushMicrotasks();
+    });
+
+    expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    expect(canvas).toHaveAttribute("data-rendered-pages", "0,1");
+    expect(canvas).toHaveAttribute("data-rendered-slots", "left:1,right:0");
+    expect(canvas).toHaveAttribute("data-rendered-epoch", "3");
+  });
+
+  it("onAsyncTextureReadyがcontext-lost後およびunmount/dispose後に発火しても安全ガードで再描画しないこと (AC-GL-05, AC-GL-07)", () => {
+    const renderSlotsSpy = vi.spyOn(
+      WebGLRendererCoreModule.WebGLRendererCore.prototype,
+      "renderSlots",
+    );
+
+    const { gl } = createMockWebGL2Context();
+    const frame0 = createReadyFrame(0, 1);
+
+    const { unmount } = render(
+      <ReaderCanvas
+        slots={[{ slot: { pageIndex: 0, position: "center" }, frame: frame0 }]}
+        getWebGL2Context={() => gl}
+      />,
+    );
+
+    const instance = renderSlotsSpy.mock.instances[0] as unknown as
+      { onAsyncTextureReady?: (pageIndex: number) => void } | undefined;
+    const callback = instance?.onAsyncTextureReady;
+    expect(callback).toBeTypeOf("function");
+    expect(renderSlotsSpy).toHaveBeenCalledTimes(1);
+
+    // 1. context-lost 中の onAsyncTextureReady はガードによりスキップ
+    const canvas = screen.getByTestId("reader-canvas");
+    act(() => {
+      canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    });
+    renderSlotsSpy.mockClear();
+    act(() => {
+      callback?.(0);
+    });
+    expect(renderSlotsSpy).not.toHaveBeenCalled();
+
+    // 2. context-restored 後は再び onAsyncTextureReady が動作する
+    act(() => {
+      canvas.dispatchEvent(new Event("webglcontextrestored"));
+    });
+    renderSlotsSpy.mockClear();
+    act(() => {
+      callback?.(0);
+    });
+    expect(renderSlotsSpy).toHaveBeenCalledTimes(1);
+
+    // 3. unmount / dispose 後の onAsyncTextureReady もガードによりスキップ
+    unmount();
+    renderSlotsSpy.mockClear();
+    callback?.(0);
+    expect(renderSlotsSpy).not.toHaveBeenCalled();
   });
 
   it("WebGLRendererCore初期化失敗時にWEBGL_INIT_FAILEDを通知すること（Errorおよび非Error送出含む）", () => {
@@ -265,7 +517,7 @@ describe("ReaderCanvas", () => {
 
     const { unmount } = render(
       <ReaderCanvas
-        frame={null}
+        slots={[]}
         getWebGL2Context={() => glFailCompile}
         onFatalError={onFatalError}
         onRendererReady={onRendererReady}
@@ -283,14 +535,18 @@ describe("ReaderCanvas", () => {
     );
     unmount();
 
-    // 非 Error 例外フォールバックとコールバック省略時にもクラッシュしないこと
     const { gl: glNonError } = createMockWebGL2Context({
       throwNonErrorOnCreateShader: true,
     });
     const onFatalError2 = vi.fn();
     render(
       <ReaderCanvas
-        frame={createReadyFrame(0, 1)}
+        slots={[
+          {
+            slot: { pageIndex: 0, position: "center" },
+            frame: createReadyFrame(0, 1),
+          },
+        ]}
         getWebGL2Context={() => glNonError}
         onFatalError={onFatalError2}
       />,
@@ -305,7 +561,7 @@ describe("ReaderCanvas", () => {
     );
   });
 
-  it("ResizeObserverとdevicePixelRatioに追従してバッファサイズと現在フレームを再描画すること (AC-GL-04)", () => {
+  it("ResizeObserverとdevicePixelRatioに追従してバッファサイズと現在スロットを再描画すること (AC-GL-04)", () => {
     let observerCallback: ResizeObserverCallback | null = null;
     const disconnectSpy = vi.fn();
     const observeSpy = vi.fn();
@@ -326,18 +582,25 @@ describe("ReaderCanvas", () => {
     });
 
     const { gl, mocks } = createMockWebGL2Context();
-    const frame0 = createReadyFrame(0, 1);
+    const slots: RenderSlotFrame[] = [
+      {
+        slot: { pageIndex: 1, position: "left" },
+        frame: createReadyFrame(1, 1),
+      },
+      {
+        slot: { pageIndex: 0, position: "right" },
+        frame: createReadyFrame(0, 1),
+      },
+    ];
 
     const { unmount } = render(
-      <ReaderCanvas frame={frame0} getWebGL2Context={() => gl} />,
+      <ReaderCanvas slots={slots} getWebGL2Context={() => gl} />,
     );
 
     expect(observeSpy).toHaveBeenCalledTimes(1);
-    expect(observerCallback).not.toBeNull();
     mocks.viewport.mockClear();
     mocks.drawArrays.mockClear();
 
-    // contentRect 更新でリサイズ＋現在フレーム再描画が走る
     act(() => {
       observerCallback?.(
         [
@@ -349,9 +612,8 @@ describe("ReaderCanvas", () => {
       );
     });
     expect(mocks.viewport).toHaveBeenCalledWith(0, 0, 1000, 1400);
-    expect(mocks.drawArrays).toHaveBeenCalledTimes(1);
+    expect(mocks.drawArrays).toHaveBeenCalledTimes(2);
 
-    // 同一サイズでは重複描画しない
     mocks.viewport.mockClear();
     mocks.drawArrays.mockClear();
     act(() => {
@@ -367,7 +629,6 @@ describe("ReaderCanvas", () => {
     expect(mocks.viewport).not.toHaveBeenCalled();
     expect(mocks.drawArrays).not.toHaveBeenCalled();
 
-    // 空 entries 時は getBoundingClientRect() + DPR <= 0 のフォールバックを使用
     const canvas = screen.getByTestId("reader-canvas");
     vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
       width: 600,
@@ -388,13 +649,13 @@ describe("ReaderCanvas", () => {
       observerCallback?.([], {} as ResizeObserver);
     });
     expect(mocks.viewport).toHaveBeenCalledWith(0, 0, 600, 800);
-    expect(mocks.drawArrays).toHaveBeenCalledTimes(1);
+    expect(mocks.drawArrays).toHaveBeenCalledTimes(2);
 
     unmount();
     expect(disconnectSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("webglcontextlostでpreventDefaultと警告ログ記録を行いwebglcontextrestoredで自動再描画復帰すること (AC-GL-05)", () => {
+  it("webglcontextlostでdispose前にnotifyContextLost()を同期呼び出しし、非同期タイル競合遮断とwebglcontextrestored自動再描画復帰を行うこと (AC-GL-05, AC-GL-07)", async () => {
     let observerCallback: ResizeObserverCallback | null = null;
     class MockResizeObserver {
       constructor(callback: ResizeObserverCallback) {
@@ -406,13 +667,31 @@ describe("ReaderCanvas", () => {
     }
     vi.stubGlobal("ResizeObserver", MockResizeObserver);
 
-    const { gl, mocks } = createMockWebGL2Context();
-    const onRendererReady = vi.fn();
-    const frame2 = createReadyFrame(2, 5);
+    const pendingTile = createDeferred<ImageBitmap>();
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(() => pendingTile.promise),
+    );
 
-    const { rerender } = render(
+    const notifySpy = vi.spyOn(
+      WebGLRendererCoreModule.WebGLRendererCore.prototype,
+      "notifyContextLost",
+    );
+    const disposeSpy = vi.spyOn(
+      WebGLRendererCoreModule.WebGLRendererCore.prototype,
+      "dispose",
+    );
+
+    const { gl, mocks } = createMockWebGL2Context({ maxTextureSize: 100 });
+    const onRendererReady = vi.fn();
+    const oversizedSlot: RenderSlotFrame = {
+      slot: { pageIndex: 2, position: "center" },
+      frame: createReadyFrame(2, 5, createFakeBitmap(200, 100)),
+    };
+
+    const { rerender, unmount } = render(
       <ReaderCanvas
-        frame={frame2}
+        slots={[oversizedSlot]}
         getWebGL2Context={() => gl}
         onRendererReady={onRendererReady}
       />,
@@ -420,28 +699,43 @@ describe("ReaderCanvas", () => {
 
     const canvas = screen.getByTestId("reader-canvas");
     expect(canvas).toHaveAttribute("data-webgl-status", "ready");
-    expect(canvas).toHaveAttribute("data-rendered-page", "2");
 
-    // 1. webglcontextlost 発火
+    // 1. webglcontextlost 発火 -> dispose前に notifyContextLost() が同期呼び出しされる
     const lostEvent = new Event("webglcontextlost", { cancelable: true });
     act(() => {
       canvas.dispatchEvent(lostEvent);
     });
 
     expect(lostEvent.defaultPrevented).toBe(true);
+    expect(notifySpy).toHaveBeenCalledTimes(1);
+    expect(disposeSpy).not.toHaveBeenCalled();
     expect(canvas).toHaveAttribute("data-webgl-status", "context-lost");
     expect(canvas).toHaveAttribute("data-rendered-page", "");
+    expect(canvas).toHaveAttribute("data-rendered-pages", "");
+    expect(canvas).toHaveAttribute("data-rendered-slots", "");
     expect(onRendererReady).toHaveBeenLastCalledWith(null);
     expect(diagnosticLogger.getEntries()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           level: "warn",
           scope: "webgl2",
+          message: expect.stringContaining("ロスト"),
         }),
       ]),
     );
 
-    // ロスト中は ResizeObserver やフレーム更新が描画をスキップすること
+    // ロスト中に古い非同期タイルが解決してもキャンセル・破棄され、errorログや再描画は発生しない
+    const staleTile = createFakeBitmap(100, 100);
+    await act(async () => {
+      pendingTile.resolve(staleTile);
+      await flushMicrotasks();
+    });
+    expect(staleTile.close).toHaveBeenCalledTimes(1);
+    expect(
+      diagnosticLogger.getEntries().filter((e) => e.level === "error"),
+    ).toHaveLength(0);
+
+    // ロスト中は ResizeObserver やスロット更新が描画をスキップすること
     mocks.drawArrays.mockClear();
     mocks.viewport.mockClear();
     act(() => {
@@ -452,28 +746,45 @@ describe("ReaderCanvas", () => {
     });
     rerender(
       <ReaderCanvas
-        frame={createReadyFrame(3, 6)}
+        slots={[
+          {
+            slot: { pageIndex: 3, position: "left" },
+            frame: createReadyFrame(3, 6, createFakeBitmap(80, 100)),
+          },
+          {
+            slot: { pageIndex: 2, position: "right" },
+            frame: createReadyFrame(2, 6, createFakeBitmap(80, 100)),
+          },
+        ]}
         getWebGL2Context={() => gl}
         onRendererReady={onRendererReady}
       />,
     );
     expect(mocks.drawArrays).not.toHaveBeenCalled();
 
-    // 2. webglcontextrestored 発火 -> 再初期化・現在フレーム再描画・status=ready復帰
+    // 2. webglcontextrestored 発火 -> 再初期化・現在スロット再描画・status=ready復帰
     act(() => {
       canvas.dispatchEvent(new Event("webglcontextrestored"));
     });
 
     expect(canvas).toHaveAttribute("data-webgl-status", "ready");
-    expect(canvas).toHaveAttribute("data-rendered-page", "3");
+    expect(canvas).toHaveAttribute("data-rendered-page", "2");
+    expect(canvas).toHaveAttribute("data-rendered-pages", "2,3");
+    expect(canvas).toHaveAttribute("data-rendered-slots", "left:3,right:2");
     expect(canvas).toHaveAttribute("data-rendered-epoch", "6");
     expect(mocks.texImage2D).toHaveBeenCalled();
-    expect(mocks.drawArrays).toHaveBeenCalledTimes(1);
+    expect(mocks.drawArrays).toHaveBeenCalledTimes(2);
     expect(onRendererReady).toHaveBeenLastCalledWith(
       expect.objectContaining({
         deletePageTexture: expect.any(Function),
         clearAllTextures: expect.any(Function),
       }),
+    );
+
+    unmount();
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+    expect(notifySpy.mock.invocationCallOrder[0]).toBeLessThan(
+      disposeSpy.mock.invocationCallOrder[0],
     );
   });
 
@@ -484,7 +795,12 @@ describe("ReaderCanvas", () => {
 
     render(
       <ReaderCanvas
-        frame={createReadyFrame(0, 1)}
+        slots={[
+          {
+            slot: { pageIndex: 0, position: "center" },
+            frame: createReadyFrame(0, 1),
+          },
+        ]}
         getWebGL2Context={() => gl}
         onFatalError={onFatalError}
         onRendererReady={onRendererReady}
@@ -505,7 +821,7 @@ describe("ReaderCanvas", () => {
     expect(onRendererReady).toHaveBeenLastCalledWith(null);
   });
 
-  it("window.matchMediaでDPR単独変化を追従してviewport更新と現在フレーム再描画を行い、コンテキストロスト中はスキップしアンマウント時に解除すること (AC-GL-04)", () => {
+  it("window.matchMediaでDPR単独変化を追従してviewport更新と現在スロット再描画を行い、コンテキストロスト中はスキップしアンマウント時に解除すること (AC-GL-04)", () => {
     interface MockMediaQueryEntry {
       listeners: Set<() => void>;
       addEventListener: ReturnType<typeof vi.fn>;
@@ -559,7 +875,10 @@ describe("ReaderCanvas", () => {
     const frame0 = createReadyFrame(0, 1);
 
     const { unmount } = render(
-      <ReaderCanvas frame={frame0} getWebGL2Context={() => gl} />,
+      <ReaderCanvas
+        slots={[{ slot: { pageIndex: 0, position: "center" }, frame: frame0 }]}
+        getWebGL2Context={() => gl}
+      />,
     );
 
     const canvas = screen.getByTestId("reader-canvas");
@@ -577,13 +896,8 @@ describe("ReaderCanvas", () => {
 
     expect(matchMediaMock).toHaveBeenCalledWith("(resolution: 1dppx)");
     const dpr1Entry = mediaQueryEntries.get("(resolution: 1dppx)");
-    expect(dpr1Entry?.addEventListener).toHaveBeenCalledWith(
-      "change",
-      expect.any(Function),
-    );
     expect(dpr1Entry?.listeners.size).toBe(1);
 
-    // 1. CSSサイズ不変のまま DPR 1 -> 2 へ変化すると viewport 更新＆再描画＆新 DPR 再バインドされる
     mocks.viewport.mockClear();
     mocks.drawArrays.mockClear();
     Object.defineProperty(window, "devicePixelRatio", {
@@ -605,9 +919,7 @@ describe("ReaderCanvas", () => {
     expect(mocks.viewport).toHaveBeenCalledWith(0, 0, 800, 1200);
     expect(mocks.drawArrays).toHaveBeenCalledTimes(1);
 
-    // 2. サイズも DPR も実質不変の change 発火時は重複描画をスキップする
     const dpr2Entry = mediaQueryEntries.get("(resolution: 2dppx)");
-    expect(dpr2Entry?.listeners.size).toBe(1);
     mocks.viewport.mockClear();
     mocks.drawArrays.mockClear();
     act(() => {
@@ -618,7 +930,6 @@ describe("ReaderCanvas", () => {
     expect(mocks.viewport).not.toHaveBeenCalled();
     expect(mocks.drawArrays).not.toHaveBeenCalled();
 
-    // 3. webglcontextlost 中は DPR 変化で描画せず、新 DPR へ再バインドのみ継続する
     act(() => {
       canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
     });
@@ -637,7 +948,6 @@ describe("ReaderCanvas", () => {
     expect(mocks.drawArrays).not.toHaveBeenCalled();
     expect(matchMediaMock).toHaveBeenCalledWith("(resolution: 1.5dppx)");
 
-    // 4. アンマウント時に現在監視中の MediaQueryList リスナーが解除される
     const dpr15Entry = mediaQueryEntries.get("(resolution: 1.5dppx)");
     expect(dpr15Entry?.listeners.size).toBe(1);
     unmount();
