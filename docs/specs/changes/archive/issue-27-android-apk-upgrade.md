@@ -110,9 +110,9 @@ related_tests:
 
 - **判定（[workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 A（親 Issue `#27` 完了前に実施）**
   - **根拠**: Android Gradle ビルド・署名設定（`android/app/build.gradle`）の変更を含み、かつ実機端末上で異なるビルド種別・2 連続ビルド間の上書きインストール互換性（データ保持・`versionCode` 昇順・証明書一致）と起動・Edge-to-Edge 正常性を直接検証する必要があるため（実機観点 4 項目）。
-- **登録済み申し送り**: `HO-04`（[bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) 登録済み、状態: `Open`、完了ゲート: `親 Issue #27 完了前`）
-- **実機確認観点（統合 PR Gate 1〜6 通過後に `build-android.yml` 2 ビルドを提示）**:
+- **登録済み申し送り**: `HO-04`（[bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) 登録済み、状態: `Resolved`、完了ゲート: `親 Issue #27 完了前`）
+- **実機確認観点（`HO-04` 完了確認済み 全 4 項目 — Run `#44838514377` `debug` `versionCode=95218038` → Run `#44838657095` `release` `versionCode=95218112` @ `83dc26a`）**:
   1. **初回移行インストール**: Phase 3 PoC の旧ランダム署名 APK が端末にある場合のみ 1 回アンインストールし、固定署名ビルド 1 本目（`debug` APK）を新規インストールして正常起動・バージョン表示（`v0.0.0`）・Edge-to-Edge 表示を確認する。
   2. **2 本目ビルドへの上書きアップデート（アンインストール不要）**: 1 本目を削除せず（可能ならローカル ZIP 一時利用やアプリ起動状態を確認の上）に、2 本目のビルド（例: `build-android.yml` の `release` APK または 2 回目 `debug` APK）を上書きインストールし、「アプリがインストールされませんでした（署名不一致／ダウングレード拒否）」にならず更新完了すること。
   3. **上書き後の起動・基本スモーク**: 上書き更新後のアプリを起動し、クラッシュせず `SCR-01` 表示・ローカル ZIP 選択起動・診断ログコピーが正常動作すること。
-  4. **Step Summary フィンガープリント ＆ `versionCode` 照合**: GitHub Actions の 1 本目・2 本目双方の Job Summary で `applicationId` が `com.highsoar.exlibris`、`versionCode` が 2 本目 ＞ 1 本目（約 `95,xxx,xxx`）、署名証明書 `SHA-1` / `SHA-256` が完全一致し、Secret 値が非出力であることを確認する（記録した SHA-1 は `v0.2` `#23` Google OAuth 登録で参照）。
+  4. **Step Summary フィンガープリント ＆ `versionCode` 照合**: GitHub Actions の 1 本目・2 本目双方の Job Summary で `applicationId` が `com.highsoar.exlibris`、`versionCode` が 2 本目 ＞ 1 本目（`95218112 > 95218038`）、署名証明書 `SHA-1`（`5A:CC:CF:26:A0:B6:8F:4C:CC:8E:5B:C7:EC:EF:01:F0:C9:BB:DA:C9`） / `SHA-256`（`A9:BA:87:3D:DD:35:14:C1:C1:08:FF:DE:C9:9A:09:32:38:C2:31:B8:7F:0C:8B:5E:F6:BA:28:DB:90:B9:3F:68`）が完全一致し、Secret 値が非出力であることを確認する（記録した SHA-1 は `v0.2` `#23` Google OAuth 登録で参照）。
