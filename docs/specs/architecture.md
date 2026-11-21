@@ -2,7 +2,7 @@
 type: spec-architecture
 title: "4層＋マルチスレッドアーキテクチャと共通インターフェース契約"
 description: "Streaming & Provider・Engine Worker・Storage・Viewer & Bridge の4層責務境界、Zero-Copy 転送、メモリ予算定数、および TypeScript コア契約の正本"
-status: "Approved (#20)"
+status: "Review (#21)"
 updated: "2026-11-21"
 tags:
   [
@@ -292,7 +292,10 @@ export interface DecodeWorkerApi {
 
 ```ts
 export type ReadingDirection = "rtl" | "ltr"; // rtl: 右開き（標準）, ltr: 左開き
-export type SpreadMode = "single" | "spread"; // single: 単ページ, spread: 2ページ見開き
+export type SpreadMode = "auto" | "single" | "spread"; // auto: 画面向き連動, single: 単ページ, spread: 2ページ見開き
+export type EffectiveSpreadMode = "single" | "spread";
+export type SpreadPageOffset = 0 | 1;
+export type SlotPosition = "center" | "left" | "right";
 
 export interface ShaderCorrectionParams {
   /** LOD バイアス / アンシャープマスク強度（0.0 = 無補正 〜 1.0 = 強） */
@@ -305,32 +308,46 @@ export interface ShaderCorrectionParams {
   readonly gamma: number;
 }
 
+export interface ViewportSlot {
+  readonly pageIndex: number;
+  readonly position: SlotPosition;
+}
+
 export interface ViewportSlotLayout {
   /** 単ページ表示時は 1 要素、2ページ見開き表示時は左右 2 要素 */
-  readonly slots: readonly {
-    readonly pageIndex: number;
-    readonly position: "center" | "left" | "right";
-  }[];
+  readonly slots: readonly ViewportSlot[];
+}
+
+export interface RenderSlotFrame {
+  readonly slot: ViewportSlot;
+  readonly frame: DecodedPageFrame | null;
+}
+
+export interface PageDimensions {
+  readonly width: number;
+  readonly height: number;
 }
 ```
 
-- **インテリジェント見開き判定ルール**:
-  - `SpreadMode === "spread"`（主にタブレット横向き）であっても、①表紙先頭ページ（`pageIndex === 0` かつ `spreadPageOffset === 0`）、または ②元画像自体が横長スキャン（`width > height`）であるページ（またはペア候補の次ページが横長である場合）は、自動的に **1枚単独中央表示（`position: "center"`）** とする。
-  - ユーザーが「1ページずらし」トグル（`spreadPageOffset: 0 | 1`）を切り替えた場合、ペアリング基準を即座に 1 ページシフトして再レイアウトする。
+- **インテリジェント見開き判定・動的アンカーペアリングルール**:
+  - `SpreadMode === "auto"`（初期値）時は、ビューポートが横長（`viewportWidth > viewportHeight`）の場合に実効 `"spread"`、縦長・正方形の場合に実効 `"single"` へ自動追従する（`"single"` / `"spread"` 明示選択時は画面向きに依存せず固定表示）。
+  - 実効 `"spread"` 状態であっても、①表紙先頭ページ（`pageIndex === 0 && spreadPageOffset === 0`）、②自身またはペア候補の次ページが横長スキャン（`width > height`、厳密不等号）、または ③末尾単独ページのいずれかに該当する場合は自動的に **1枚単独中央表示（`position: "center"`）** とする。
+  - 通常 2 ページ見開き時は `ReadingDirection` に従い、`rtl` は `[次: left, 現: right]`、`ltr` は `[現: left, 次: right]` に配置する。途中に横長画像（見開き結合済みスキャン等）が存在しても次頁へ `displayedSlots.length` 分だけ進行して後続ページから自動再ペアリングし、セッション内既知寸法＋遷移履歴により前頁戻りも整合させる。
+  - ユーザーが「1ページずらし」トグル（`spreadPageOffset: 0 | 1`）を切り替えた場合、`pageIndex === 0` は `[0] ↔ [0, 1]`、それ以降は基準ページを即座に 1 ページシフトして再レイアウトする。
 
 ### 3.2 GPU テクスチャ・`MAX_TEXTURE_SIZE` ガード・L1 解放規律
 
 1. **ハードウェア Mipmap と 1 パス補正シェーダー**:
-   - 背景クリア色は純黒（`#000000`）とし、画像アスペクト比を維持した中央内接フィット描画を行う。
+   - 背景クリア色は純黒（`#000000`）とし、単ページ時は中央内接フィット、2ページ見開き時は高さを揃えた背表紙密着フィット描画（片側エラー/欠損時は有効側のみ半画面背表紙寄せ描画）を行う。
    - 各ページテクスチャは `gl.texImage2D` 転送直後に `gl.generateMipmap(gl.TEXTURE_2D)` と `gl.LINEAR_MIPMAP_LINEAR` を設定し、縮小表示時のスクリーントーン干渉縞（モアレ）を GPU で除去する。
    - 描画バッファ解像度は `ResizeObserver` とネイティブ `devicePixelRatio`（`gl.MAX_VIEWPORT_DIMS` 上限でクランプ）に追従する。
-   - フラグメントシェーダー 1 パス内で `ShaderCorrectionParams` Uniform に基づくシャープネスおよび白黒レベル・ガンマ補正を実行する（Phase 3 PoC では等倍パススルー、補正パラメータは `v0.1` で追加）。
-   - `webglcontextlost` 発生時は `event.preventDefault()` を行い、`webglcontextrestored` 時に `L1PageCache` に保持中の `ImageBitmap` からテクスチャと Mipmap を自動再生成して描画復帰する。
+   - フラグメントシェーダー 1 パス内で `ShaderCorrectionParams` Uniform に基づくシャープネスおよび白黒レベル・ガンマ補正を実行する（Phase 3 PoC では等倍パススルー、補正パラメータは `#22` で追加）。
+   - `webglcontextlost` 発生時は `event.preventDefault()` を行い、`webglcontextrestored` 時に `L1PageCache` に保持中の `ImageBitmap` 群からテクスチャと Mipmap を自動再生成して描画復帰する。
 2. **`MAX_TEXTURE_SIZE` 上限ガード**（`v0.1` で実装）:
-   - WebGL2 初期化時に `gl.getParameter(gl.MAX_TEXTURE_SIZE)` を取得して保持する。
-   - 大判見開き画像等で `bitmap.width > maxTextureSize` または `bitmap.height > maxTextureSize` を検知した場合、左右2分割テクスチャまたは上限内リサイズへ自動フォールバックし、診断ロガー（`diagnosticLogger.warn("webgl2", ...)`）へ記録して黒画面化を防ぐ。
+   - WebGL2 初期化・復帰時に `gl.getParameter(gl.MAX_TEXTURE_SIZE)` を取得して保持する。
+   - スロット画像の `bitmap.width > maxTextureSize || bitmap.height > maxTextureSize` を検知した場合、`diagnosticLogger.warn("webgl2", ...)` へ記録した上で、超過軸を `cols × rows` グリッド（最大 16 タイル）に `createImageBitmap(bitmap, sx, sy, sw, sh)` で非同期分割して複数 `WebGLTexture` へ転送・原寸描画する（16 タイル超過または分割失敗時は上限内安全リサイズ `createImageBitmap(..., { resizeWidth, resizeHeight })` へフォールバック）。一時生成したタイル用 `ImageBitmap` は `texImage2D` 転送直後（およびキャンセル/破棄時）に即 `close()` し、黒画面化・リーク双方を防ぐ。
 3. **厳格な `ImageBitmap.close()` とテクスチャ破棄**:
-   - L1 キャッシュが保持上限（`L1_MAX_PAGES = 5`）を超えて古いページを退避する際、古い `requestEpoch` のデコード結果が遅れて到着した際、および巻クローズ・コンポーネントアンマウント時には、対応する `WebGLTexture` の `gl.deleteTexture()` と **`bitmap.close()` を必ず即座に実行** する。
+   - L1 キャッシュが保持上限（`L1_MAX_PAGES = 5`）を超えて古いページを退避する際、古い `requestEpoch` のデコード結果が遅れて到着した際、および巻クローズ・コンポーネントアンマウント時には、対応する全タイル `WebGLTexture` の `gl.deleteTexture()` と **`bitmap.close()` を必ず即座に実行** する。
 
 ---
 
