@@ -25,12 +25,17 @@ import {
   type ReaderCanvasHandle,
   type WebGLFatalErrorCode,
 } from "../../webgl/ReaderCanvas";
+import { L1PageCache } from "../../webgl/l1PageCache";
 import type {
+  EffectiveSpreadMode,
+  PageDimensions,
   ReadingDirection,
+  RenderSlotFrame,
+  SlotPosition,
   SpreadMode,
   SpreadPageOffset,
+  ViewportSlot,
 } from "../../webgl/types";
-import { L1PageCache } from "../../webgl/l1PageCache";
 import { ReaderErrorView } from "./ReaderErrorView";
 import { ReaderHudOverlay } from "./ReaderHudOverlay";
 import {
@@ -43,6 +48,20 @@ import {
   extractReaderError,
   getReaderErrorMessage,
 } from "./readerErrors";
+import {
+  buildSpreadNeighborTargets,
+  buildSpreadPrefetchTargets,
+  buildSpreadProtectedWindow,
+  computePreviousAnchorIndex,
+  computeShiftedAnchorOnOffsetToggle,
+  computeViewportSlotLayout,
+  formatPageIndicator,
+  getCandidateFetchPages,
+  resolveDirectionActionForKey,
+  resolveDirectionActionForSwipe,
+  resolveDirectionActionForTapRatio,
+  resolveEffectiveSpreadMode,
+} from "./spreadLayout";
 
 export interface ReaderPageInitialSnapshot {
   readonly totalPages: number;
@@ -67,11 +86,19 @@ interface ReaderRuntime {
   readonly l1Cache: L1PageCache;
 }
 
-const SWIPE_THRESHOLD_PX = 40;
-const TAP_LEFT_BOUNDARY = 0.3;
-const TAP_RIGHT_BOUNDARY = 0.7;
-const PREFETCH_FORWARD_PAGES = 20;
-const PREFETCH_BACKWARD_PAGES = 2;
+interface PageErrorDescriptor {
+  readonly key: string;
+  readonly slotPosition: SlotPosition;
+  readonly pageNumber?: number;
+  readonly message: string;
+  readonly errorCode: ZipErrorCode;
+}
+
+const NEXT_SPREAD_MODE: Record<SpreadMode, SpreadMode> = {
+  auto: "spread",
+  spread: "single",
+  single: "auto",
+};
 
 const PAGE_ERROR_CODE_MAP: Record<ReaderFatalErrorCode, ZipErrorCode> = {
   CORRUPT_ZIP: "CORRUPT_ZIP",
@@ -98,35 +125,6 @@ function buildLocalArchiveSource(
   };
 }
 
-function buildProtectedWindow(pageIndex: number, totalPages: number): number[] {
-  return [pageIndex - 1, pageIndex, pageIndex + 1, pageIndex + 2].filter(
-    (candidate) => candidate >= 0 && candidate < totalPages,
-  );
-}
-
-function buildNeighborTargets(pageIndex: number, totalPages: number): number[] {
-  return [pageIndex + 1, pageIndex + 2, pageIndex - 1].filter(
-    (candidate) => candidate >= 0 && candidate < totalPages,
-  );
-}
-
-function buildPrefetchTargets(pageIndex: number, totalPages: number): number[] {
-  const targets: number[] = [];
-  for (let offset = 1; offset <= PREFETCH_FORWARD_PAGES; offset += 1) {
-    const candidate = pageIndex + offset;
-    if (candidate < totalPages) {
-      targets.push(candidate);
-    }
-  }
-  for (let offset = 1; offset <= PREFETCH_BACKWARD_PAGES; offset += 1) {
-    const candidate = pageIndex - offset;
-    if (candidate >= 0) {
-      targets.push(candidate);
-    }
-  }
-  return targets;
-}
-
 function collectMissingNeighbors(
   l1Cache: L1PageCache,
   neighbors: readonly number[],
@@ -142,10 +140,6 @@ function resolveTapRatio(clientX: number, rect: DOMRect): number {
   return Math.min(1, Math.max(0, raw));
 }
 
-function isHorizontalSwipe(dx: number, dy: number): boolean {
-  return Math.abs(dx) >= SWIPE_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy);
-}
-
 function closeReadyFrames(frames: readonly DecodedPageFrame[]): void {
   for (const frame of frames) {
     if (frame.status === "ready") {
@@ -156,6 +150,76 @@ function closeReadyFrames(frames: readonly DecodedPageFrame[]): void {
 
 function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function extractDimensionsFromFrames(
+  framesByPage?: Readonly<Record<number, DecodedPageFrame>>,
+): Map<number, PageDimensions> {
+  const dimensions = new Map<number, PageDimensions>();
+  if (framesByPage !== undefined) {
+    for (const frame of Object.values(framesByPage)) {
+      if (frame.status === "ready") {
+        dimensions.set(frame.pageIndex, {
+          width: frame.width,
+          height: frame.height,
+        });
+      }
+    }
+  }
+  return dimensions;
+}
+
+function readViewportSize(
+  container: HTMLElement,
+  observerEntry?: ResizeObserverEntry,
+): { readonly width: number; readonly height: number } {
+  const rect = observerEntry
+    ? observerEntry.contentRect
+    : container.getBoundingClientRect();
+  if (rect.width > 0 && rect.height > 0) {
+    return { width: rect.width, height: rect.height };
+  }
+  return {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  };
+}
+
+function isErrorSlotFrame(entry: RenderSlotFrame): entry is {
+  readonly slot: ViewportSlot;
+  readonly frame: Extract<DecodedPageFrame, { status: "error" }>;
+} {
+  return entry.frame !== null && entry.frame.status === "error";
+}
+
+function buildPageErrorDescriptors(
+  renderSlots: readonly RenderSlotFrame[],
+  currentPageIndex: number,
+): readonly PageErrorDescriptor[] {
+  const errorSlots = renderSlots.filter(isErrorSlotFrame);
+  if (errorSlots.length === 0) {
+    return [];
+  }
+  if (errorSlots.length === renderSlots.length) {
+    const representative =
+      errorSlots.find((entry) => entry.slot.pageIndex === currentPageIndex) ??
+      errorSlots[0];
+    return [
+      {
+        key: "center",
+        slotPosition: "center",
+        message: getReaderErrorMessage(representative.frame.errorCode),
+        errorCode: representative.frame.errorCode,
+      },
+    ];
+  }
+  return errorSlots.map((entry) => ({
+    key: `${entry.slot.position}-${entry.slot.pageIndex}`,
+    slotPosition: entry.slot.position,
+    pageNumber: entry.slot.pageIndex + 1,
+    message: getReaderErrorMessage(entry.frame.errorCode),
+    errorCode: entry.frame.errorCode,
+  }));
 }
 
 async function readZipIndexCacheSafely(
@@ -194,10 +258,9 @@ export function ReaderPage({
   const [currentPageIndex, setCurrentPageIndex] = useState<number>(
     initialSnapshot?.currentPageIndex ?? 0,
   );
-  const [currentFrame, setCurrentFrame] = useState<DecodedPageFrame | null>(
-    initialSnapshot?.framesByPage?.[initialSnapshot.currentPageIndex ?? 0] ??
-      null,
-  );
+  const [framesByPage, setFramesByPage] = useState<
+    Readonly<Record<number, DecodedPageFrame>>
+  >(initialSnapshot?.framesByPage ?? {});
   const [archiveError, setArchiveError] = useState<ExtractedReaderError | null>(
     initialSnapshot?.archiveError ?? null,
   );
@@ -209,13 +272,43 @@ export function ReaderPage({
   const [isHudOpen, setIsHudOpen] = useState<boolean>(
     initialSnapshot?.isHudOpen ?? false,
   );
+  const [readingDirection, setReadingDirection] = useState<ReadingDirection>(
+    initialSnapshot?.readingDirection ?? "rtl",
+  );
+  const [spreadMode, setSpreadMode] = useState<SpreadMode>(
+    initialSnapshot?.spreadMode ?? "auto",
+  );
+  const [spreadPageOffset, setSpreadPageOffset] = useState<SpreadPageOffset>(
+    initialSnapshot?.spreadPageOffset ?? 0,
+  );
+  const [viewportSize, setViewportSize] = useState<{
+    readonly width: number;
+    readonly height: number;
+  }>(() => ({
+    width: initialSnapshot?.viewportSize?.width ?? window.innerWidth,
+    height: initialSnapshot?.viewportSize?.height ?? window.innerHeight,
+  }));
+  const [knownDimensions, setKnownDimensions] = useState<
+    ReadonlyMap<number, PageDimensions>
+  >(() => extractDimensionsFromFrames(initialSnapshot?.framesByPage));
 
+  const effectiveSpreadMode = resolveEffectiveSpreadMode(
+    spreadMode,
+    viewportSize.width,
+    viewportSize.height,
+  );
+
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const runtimeRef = useRef<ReaderRuntime | null>(null);
   const rendererHandleRef = useRef<ReaderCanvasHandle | null>(null);
   const epochRef = useRef(0);
   const isClosingRef = useRef(false);
   const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
   const suppressNextClickRef = useRef(false);
+  const spreadHistoryRef = useRef<number[]>([]);
+  const knownDimensionsRef = useRef<Map<number, PageDimensions>>(
+    extractDimensionsFromFrames(initialSnapshot?.framesByPage),
+  );
 
   const totalPagesRef = useRef(totalPages);
   totalPagesRef.current = totalPages;
@@ -226,6 +319,25 @@ export function ReaderPage({
   const webglFatalErrorRef = useRef<ExtractedReaderError | null>(null);
   const isOpeningRef = useRef(isOpening);
   isOpeningRef.current = isOpening;
+  const readingDirectionRef = useRef(readingDirection);
+  readingDirectionRef.current = readingDirection;
+  const spreadModeRef = useRef(spreadMode);
+  spreadModeRef.current = spreadMode;
+  const spreadPageOffsetRef = useRef(spreadPageOffset);
+  spreadPageOffsetRef.current = spreadPageOffset;
+  const viewportSizeRef = useRef(viewportSize);
+  viewportSizeRef.current = viewportSize;
+  const effectiveSpreadModeRef = useRef(effectiveSpreadMode);
+  effectiveSpreadModeRef.current = effectiveSpreadMode;
+
+  const canNavigatePages = useCallback((): boolean => {
+    return (
+      webglFatalErrorRef.current === null &&
+      archiveErrorRef.current === null &&
+      !isOpeningRef.current &&
+      totalPagesRef.current > 0
+    );
+  }, []);
 
   const releaseRuntime = useCallback((runtime: ReaderRuntime) => {
     epochRef.current += 1;
@@ -300,11 +412,18 @@ export function ReaderPage({
         }
 
         const acceptedFrames: DecodedPageFrame[] = [];
+        let hasReadyFrame = false;
         for (const frame of frames) {
           if (!runtime.l1Cache.put(frame, protectedPages)) {
             continue;
           }
-          if (frame.status === "error") {
+          if (frame.status === "ready") {
+            knownDimensionsRef.current.set(frame.pageIndex, {
+              width: frame.width,
+              height: frame.height,
+            });
+            hasReadyFrame = true;
+          } else {
             diagnosticLogger.error(
               "reader",
               getReaderErrorMessage(frame.errorCode),
@@ -312,6 +431,9 @@ export function ReaderPage({
             );
           }
           acceptedFrames.push(frame);
+        }
+        if (hasReadyFrame) {
+          setKnownDimensions(new Map(knownDimensionsRef.current));
         }
 
         return acceptedFrames;
@@ -358,15 +480,72 @@ export function ReaderPage({
       pageIndex: number,
       pageTotal: number,
       epoch: number,
+      effectiveMode: EffectiveSpreadMode,
+      offset: SpreadPageOffset,
     ): Promise<void> => {
-      const protectedPages = buildProtectedWindow(pageIndex, pageTotal);
-      const prefetchTargets = buildPrefetchTargets(pageIndex, pageTotal);
-      const neighbors = buildNeighborTargets(pageIndex, pageTotal);
-      const visiblePageIndices = [pageIndex];
-      const cached = runtime.l1Cache.get(pageIndex);
+      const candidatePages = getCandidateFetchPages({
+        currentPageIndex: pageIndex,
+        totalPages: pageTotal,
+        effectiveSpreadMode: effectiveMode,
+        spreadPageOffset: offset,
+        knownDimensions: knownDimensionsRef.current,
+      });
 
-      if (cached !== undefined) {
-        setCurrentFrame(cached);
+      const cachedFrames: Record<number, DecodedPageFrame> = {};
+      const missingVisible: number[] = [];
+      let cachedReadyUpdated = false;
+
+      for (const candidatePage of candidatePages) {
+        const cached = runtime.l1Cache.get(candidatePage);
+        if (cached !== undefined) {
+          cachedFrames[candidatePage] = cached;
+          if (cached.status === "ready") {
+            knownDimensionsRef.current.set(cached.pageIndex, {
+              width: cached.width,
+              height: cached.height,
+            });
+            cachedReadyUpdated = true;
+          }
+        } else {
+          missingVisible.push(candidatePage);
+        }
+      }
+      if (cachedReadyUpdated) {
+        setKnownDimensions(new Map(knownDimensionsRef.current));
+      }
+
+      if (missingVisible.length === 0) {
+        const resolvedLayout = computeViewportSlotLayout({
+          currentPageIndex: pageIndex,
+          totalPages: pageTotal,
+          effectiveSpreadMode: effectiveMode,
+          readingDirection: readingDirectionRef.current,
+          spreadPageOffset: offset,
+          knownDimensions: knownDimensionsRef.current,
+        });
+        const visiblePageIndices = resolvedLayout.slots
+          .map((slot) => slot.pageIndex)
+          .sort((a, b) => a - b);
+        const resolvedFrames: Record<number, DecodedPageFrame> = {};
+        for (const visiblePage of visiblePageIndices) {
+          resolvedFrames[visiblePage] = cachedFrames[visiblePage];
+        }
+        setFramesByPage(resolvedFrames);
+
+        const protectedPages = buildSpreadProtectedWindow(
+          visiblePageIndices,
+          effectiveMode,
+          pageTotal,
+        );
+        const neighbors = buildSpreadNeighborTargets(
+          visiblePageIndices,
+          effectiveMode,
+          pageTotal,
+        );
+        const prefetchTargets = buildSpreadPrefetchTargets(
+          visiblePageIndices,
+          pageTotal,
+        );
         const missingNeighbors = collectMissingNeighbors(
           runtime.l1Cache,
           neighbors,
@@ -384,26 +563,61 @@ export function ReaderPage({
         return;
       }
 
-      setCurrentFrame(null);
-      const fetchedFrames = await fetchAndStorePages(
+      setFramesByPage({});
+      const preliminaryProtected = buildSpreadProtectedWindow(
+        candidatePages,
+        effectiveMode,
+        pageTotal,
+      );
+      const preliminaryPrefetch = buildSpreadPrefetchTargets(
+        candidatePages,
+        pageTotal,
+      );
+      await fetchAndStorePages(
         runtime,
-        visiblePageIndices,
-        prefetchTargets,
+        missingVisible,
+        preliminaryPrefetch,
         epoch,
-        protectedPages,
-        visiblePageIndices,
+        preliminaryProtected,
+        candidatePages,
       );
       if (runtimeRef.current !== runtime || epoch !== epochRef.current) {
         return;
       }
-      const fetched = fetchedFrames[0] ?? null;
-      if (fetched !== null) {
-        setCurrentFrame(fetched);
-      }
 
+      const resolvedLayout = computeViewportSlotLayout({
+        currentPageIndex: pageIndex,
+        totalPages: pageTotal,
+        effectiveSpreadMode: effectiveMode,
+        readingDirection: readingDirectionRef.current,
+        spreadPageOffset: offset,
+        knownDimensions: knownDimensionsRef.current,
+      });
+      const visiblePageIndices = resolvedLayout.slots
+        .map((slot) => slot.pageIndex)
+        .sort((a, b) => a - b);
+      const resolvedFrames: Record<number, DecodedPageFrame> = {};
+      for (const visiblePage of visiblePageIndices) {
+        const frame = runtime.l1Cache.peek(visiblePage);
+        if (frame !== undefined) {
+          resolvedFrames[visiblePage] = frame;
+        }
+      }
+      setFramesByPage(resolvedFrames);
+
+      const finalProtected = buildSpreadProtectedWindow(
+        visiblePageIndices,
+        effectiveMode,
+        pageTotal,
+      );
+      const finalNeighbors = buildSpreadNeighborTargets(
+        visiblePageIndices,
+        effectiveMode,
+        pageTotal,
+      );
       const missingNeighbors = collectMissingNeighbors(
         runtime.l1Cache,
-        neighbors,
+        finalNeighbors,
       );
       if (missingNeighbors.length > 0) {
         void fetchAndStorePages(
@@ -411,13 +625,100 @@ export function ReaderPage({
           missingNeighbors,
           [],
           epoch,
-          protectedPages,
+          finalProtected,
           visiblePageIndices,
         );
       }
     },
     [fetchAndStorePages],
   );
+
+  const resyncCurrentWindow = useCallback(
+    (
+      pageIndex: number,
+      effectiveMode: EffectiveSpreadMode,
+      offset: SpreadPageOffset,
+    ) => {
+      if (!canNavigatePages()) {
+        return;
+      }
+      const runtime = runtimeRef.current;
+      if (runtime === null) {
+        return;
+      }
+      const nextEpoch = epochRef.current + 1;
+      epochRef.current = nextEpoch;
+      runtime.l1Cache.setMinActiveEpoch(nextEpoch);
+      runtime.coordinator.api.cancelEpochBelow(nextEpoch);
+      void loadPageWindow(
+        runtime,
+        pageIndex,
+        totalPagesRef.current,
+        nextEpoch,
+        effectiveMode,
+        offset,
+      );
+    },
+    [canNavigatePages, loadPageWindow],
+  );
+
+  useEffect(() => {
+    if (session === null || initialSnapshot?.viewportSize !== undefined) {
+      return;
+    }
+    const container = containerRef.current as HTMLDivElement;
+
+    const applyViewportSize = (entry?: ResizeObserverEntry) => {
+      const nextSize = readViewportSize(container, entry);
+      const prevSize = viewportSizeRef.current;
+      if (
+        prevSize.width === nextSize.width &&
+        prevSize.height === nextSize.height
+      ) {
+        return;
+      }
+      viewportSizeRef.current = nextSize;
+      setViewportSize(nextSize);
+
+      const prevEffective = effectiveSpreadModeRef.current;
+      const nextEffective = resolveEffectiveSpreadMode(
+        spreadModeRef.current,
+        nextSize.width,
+        nextSize.height,
+      );
+      if (nextEffective !== prevEffective) {
+        effectiveSpreadModeRef.current = nextEffective;
+        if (nextEffective === "single") {
+          spreadHistoryRef.current = [];
+        }
+        resyncCurrentWindow(
+          currentPageIndexRef.current,
+          nextEffective,
+          spreadPageOffsetRef.current,
+        );
+      }
+    };
+
+    applyViewportSize();
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver((entries) => {
+        applyViewportSize(entries[0]);
+      });
+      observer.observe(container);
+    }
+
+    const handleWindowResize = () => {
+      applyViewportSize();
+    };
+    window.addEventListener("resize", handleWindowResize);
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", handleWindowResize);
+    };
+  }, [initialSnapshot?.viewportSize, resyncCurrentWindow, session]);
 
   useEffect(() => {
     if (session === null) {
@@ -456,7 +757,10 @@ export function ReaderPage({
     setIsOpening(true);
     archiveErrorRef.current = null;
     setArchiveError(null);
-    setCurrentFrame(null);
+    spreadHistoryRef.current = [];
+    knownDimensionsRef.current = new Map();
+    setKnownDimensions(new Map());
+    setFramesByPage({});
     currentPageIndexRef.current = 0;
     setCurrentPageIndex(0);
     totalPagesRef.current = 0;
@@ -516,7 +820,14 @@ export function ReaderPage({
         setTotalPages(result.pageCount);
         isOpeningRef.current = false;
         setIsOpening(false);
-        await loadPageWindow(runtime, 0, result.pageCount, openEpoch);
+        await loadPageWindow(
+          runtime,
+          0,
+          result.pageCount,
+          openEpoch,
+          effectiveSpreadModeRef.current,
+          spreadPageOffsetRef.current,
+        );
       } catch (error) {
         if (isAbortError(error) || !isCurrentAttempt()) {
           return;
@@ -566,60 +877,140 @@ export function ReaderPage({
     };
   }, [clearSession, initialSnapshot, releaseResources, session]);
 
-  const goToPage = useCallback(
+  const moveToPage = useCallback(
     (requestedIndex: number) => {
       const total = totalPagesRef.current;
-      if (
-        webglFatalErrorRef.current !== null ||
-        archiveErrorRef.current !== null ||
-        isOpeningRef.current ||
-        total <= 0
-      ) {
-        return;
-      }
       const clamped = Math.min(total - 1, Math.max(0, requestedIndex));
-      if (clamped === currentPageIndexRef.current) {
-        return;
-      }
-
       currentPageIndexRef.current = clamped;
       setCurrentPageIndex(clamped);
-
-      const runtime = runtimeRef.current;
-      if (runtime === null) {
-        return;
-      }
-
-      const nextEpoch = epochRef.current + 1;
-      epochRef.current = nextEpoch;
-      runtime.l1Cache.setMinActiveEpoch(nextEpoch);
-      runtime.coordinator.api.cancelEpochBelow(nextEpoch);
-      void loadPageWindow(runtime, clamped, total, nextEpoch);
+      resyncCurrentWindow(
+        clamped,
+        effectiveSpreadModeRef.current,
+        spreadPageOffsetRef.current,
+      );
     },
-    [loadPageWindow],
+    [resyncCurrentWindow],
   );
 
   const goNextPage = useCallback(() => {
-    goToPage(currentPageIndexRef.current + 1);
-  }, [goToPage]);
+    if (!canNavigatePages()) {
+      return;
+    }
+    const total = totalPagesRef.current;
+    const currentLayout = computeViewportSlotLayout({
+      currentPageIndex: currentPageIndexRef.current,
+      totalPages: total,
+      effectiveSpreadMode: effectiveSpreadModeRef.current,
+      readingDirection: readingDirectionRef.current,
+      spreadPageOffset: spreadPageOffsetRef.current,
+      knownDimensions: knownDimensionsRef.current,
+    });
+    const maxDisplayed = Math.max(
+      ...currentLayout.slots.map((slot) => slot.pageIndex),
+    );
+    if (maxDisplayed >= total - 1) {
+      return;
+    }
+    if (effectiveSpreadModeRef.current === "spread") {
+      spreadHistoryRef.current.push(currentPageIndexRef.current);
+    } else {
+      spreadHistoryRef.current = [];
+    }
+    moveToPage(currentPageIndexRef.current + currentLayout.slots.length);
+  }, [canNavigatePages, moveToPage]);
 
   const goPrevPage = useCallback(() => {
-    goToPage(currentPageIndexRef.current - 1);
-  }, [goToPage]);
+    if (!canNavigatePages() || currentPageIndexRef.current <= 0) {
+      return;
+    }
+    if (effectiveSpreadModeRef.current === "single") {
+      spreadHistoryRef.current = [];
+      moveToPage(currentPageIndexRef.current - 1);
+      return;
+    }
+    const popped = spreadHistoryRef.current.pop();
+    const prevIndex =
+      popped !== undefined
+        ? popped
+        : computePreviousAnchorIndex(
+            currentPageIndexRef.current,
+            effectiveSpreadModeRef.current,
+            spreadPageOffsetRef.current,
+            knownDimensionsRef.current,
+          );
+    moveToPage(prevIndex);
+  }, [canNavigatePages, moveToPage]);
+
+  const handleCycleSpreadMode = useCallback(() => {
+    const prevEffective = effectiveSpreadModeRef.current;
+    const nextMode = NEXT_SPREAD_MODE[spreadModeRef.current];
+    const nextEffective = resolveEffectiveSpreadMode(
+      nextMode,
+      viewportSizeRef.current.width,
+      viewportSizeRef.current.height,
+    );
+    spreadModeRef.current = nextMode;
+    setSpreadMode(nextMode);
+    if (nextEffective !== prevEffective) {
+      effectiveSpreadModeRef.current = nextEffective;
+      if (nextEffective === "single") {
+        spreadHistoryRef.current = [];
+      }
+      resyncCurrentWindow(
+        currentPageIndexRef.current,
+        nextEffective,
+        spreadPageOffsetRef.current,
+      );
+    }
+  }, [resyncCurrentWindow]);
+
+  const handleToggleSpreadPageOffset = useCallback(() => {
+    if (
+      !canNavigatePages() ||
+      totalPagesRef.current <= 1 ||
+      effectiveSpreadModeRef.current === "single"
+    ) {
+      return;
+    }
+    const nextOffset: SpreadPageOffset =
+      spreadPageOffsetRef.current === 0 ? 1 : 0;
+    const nextAnchor = computeShiftedAnchorOnOffsetToggle(
+      currentPageIndexRef.current,
+      nextOffset,
+      totalPagesRef.current,
+    );
+    spreadHistoryRef.current = [];
+    spreadPageOffsetRef.current = nextOffset;
+    setSpreadPageOffset(nextOffset);
+    currentPageIndexRef.current = nextAnchor;
+    setCurrentPageIndex(nextAnchor);
+    resyncCurrentWindow(nextAnchor, effectiveSpreadModeRef.current, nextOffset);
+  }, [canNavigatePages, resyncCurrentWindow]);
+
+  const handleToggleReadingDirection = useCallback(() => {
+    const nextDirection: ReadingDirection =
+      readingDirectionRef.current === "rtl" ? "ltr" : "rtl";
+    readingDirectionRef.current = nextDirection;
+    setReadingDirection(nextDirection);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      const action = resolveDirectionActionForKey(
+        event.key,
+        readingDirectionRef.current,
+      );
+      if (action === "close") {
         event.preventDefault();
         handleClose();
         return;
       }
-      if (event.key === "ArrowLeft") {
+      if (action === "next") {
         event.preventDefault();
         goNextPage();
         return;
       }
-      if (event.key === "ArrowRight") {
+      if (action === "prev") {
         event.preventDefault();
         goPrevPage();
       }
@@ -640,11 +1031,15 @@ export function ReaderPage({
         return;
       }
       const ratio = resolveTapRatio(clientX, rect);
-      if (ratio < TAP_LEFT_BOUNDARY) {
+      const action = resolveDirectionActionForTapRatio(
+        ratio,
+        readingDirectionRef.current,
+      );
+      if (action === "next") {
         goNextPage();
         return;
       }
-      if (ratio > TAP_RIGHT_BOUNDARY) {
+      if (action === "prev") {
         goPrevPage();
         return;
       }
@@ -676,13 +1071,17 @@ export function ReaderPage({
       suppressNextClickRef.current = true;
       const dx = event.clientX - start.x;
       const dy = event.clientY - start.y;
-
-      if (isHorizontalSwipe(dx, dy)) {
-        if (dx > 0) {
-          goNextPage();
-        } else {
-          goPrevPage();
-        }
+      const swipeAction = resolveDirectionActionForSwipe(
+        dx,
+        dy,
+        readingDirectionRef.current,
+      );
+      if (swipeAction === "next") {
+        goNextPage();
+        return;
+      }
+      if (swipeAction === "prev") {
+        goPrevPage();
         return;
       }
 
@@ -736,12 +1135,42 @@ export function ReaderPage({
     return null;
   }
 
+  const slotLayout = computeViewportSlotLayout({
+    currentPageIndex,
+    totalPages,
+    effectiveSpreadMode,
+    readingDirection,
+    spreadPageOffset,
+    knownDimensions,
+  });
+  const renderSlots: RenderSlotFrame[] = slotLayout.slots.map((slot) => ({
+    slot,
+    frame: framesByPage[slot.pageIndex] ?? null,
+  }));
+  const pageIndicatorText = formatPageIndicator(
+    slotLayout.slots,
+    totalPages,
+    currentPageIndex,
+  );
+  const maxDisplayedPageIndex =
+    slotLayout.slots.length > 0
+      ? Math.max(...slotLayout.slots.map((slot) => slot.pageIndex))
+      : currentPageIndex;
+
   const activeFatalError = webglFatalError ?? archiveError;
+  const hasMissingSlotFrame =
+    slotLayout.slots.length === 0 ||
+    slotLayout.slots.some((slot) => framesByPage[slot.pageIndex] === undefined);
   const showLoading =
-    activeFatalError === null && (isOpening || currentFrame === null);
+    activeFatalError === null && (isOpening || hasMissingSlotFrame);
+  const pageErrors =
+    activeFatalError === null && !showLoading
+      ? buildPageErrorDescriptors(renderSlots, currentPageIndex)
+      : [];
 
   return (
     <div
+      ref={containerRef}
       data-testid="reader-page"
       className="relative h-screen w-screen overflow-hidden bg-black select-none"
     >
@@ -754,19 +1183,7 @@ export function ReaderPage({
         className="relative h-full w-full touch-none"
       >
         <ReaderCanvas
-          slots={
-            currentFrame !== null
-              ? [
-                  {
-                    slot: {
-                      pageIndex: currentFrame.pageIndex,
-                      position: "center",
-                    },
-                    frame: currentFrame,
-                  },
-                ]
-              : []
-          }
+          slots={renderSlots}
           onRendererReady={handleRendererReady}
           onFatalError={handleWebGLFatalError}
         />
@@ -784,13 +1201,18 @@ export function ReaderPage({
           </div>
         )}
 
-        {activeFatalError === null && currentFrame?.status === "error" && (
+        {pageErrors.map((err) => (
           <ReaderErrorView
+            key={err.key}
             mode="page"
-            message={getReaderErrorMessage(currentFrame.errorCode)}
-            errorCode={currentFrame.errorCode}
+            slotPosition={err.slotPosition}
+            {...(err.pageNumber !== undefined
+              ? { pageNumber: err.pageNumber }
+              : {})}
+            message={err.message}
+            errorCode={err.errorCode}
           />
-        )}
+        ))}
 
         <ReaderHudOverlay
           isOpen={activeFatalError === null && isHudOpen}
@@ -800,6 +1222,15 @@ export function ReaderPage({
           onClose={handleClose}
           onNextPage={goNextPage}
           onPrevPage={goPrevPage}
+          readingDirection={readingDirection}
+          spreadMode={spreadMode}
+          effectiveSpreadMode={effectiveSpreadMode}
+          spreadPageOffset={spreadPageOffset}
+          pageIndicatorText={pageIndicatorText}
+          maxDisplayedPageIndex={maxDisplayedPageIndex}
+          onCycleSpreadMode={handleCycleSpreadMode}
+          onToggleSpreadPageOffset={handleToggleSpreadPageOffset}
+          onToggleReadingDirection={handleToggleReadingDirection}
         />
       </div>
 

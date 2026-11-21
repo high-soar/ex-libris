@@ -828,6 +828,30 @@ describe("ReaderPage", () => {
     });
     expect(getLatestHudProps().effectiveSpreadMode).toBe("single");
     unmountNoObs();
+
+    // openArchive 待機中 (isOpening=true) の向き変化・表示モード切替は resyncCurrentWindow ガードで RPC を発火しない
+    const pendingOpen = createDeferred<OpenArchiveResult>();
+    const openingSession = createMockCoordinatorSession({
+      openArchive: vi.fn(() => pendingOpen.promise),
+    });
+    setWindowSize(1280, 800);
+    const { unmount: unmountOpening } = renderWithSession(
+      {},
+      () => openingSession.handle,
+    );
+    await waitFor(() => {
+      expect(openingSession.api.openArchive).toHaveBeenCalledTimes(1);
+    });
+    setWindowSize(375, 667);
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+      getLatestHudProps().onCycleSpreadMode?.(); // auto -> spread
+      getLatestHudProps().onCycleSpreadMode?.(); // spread -> single
+    });
+    expect(getLatestHudProps().effectiveSpreadMode).toBe("single");
+    expect(openingSession.api.cancelEpochBelow).not.toHaveBeenCalled();
+    expect(openingSession.api.requestVisiblePages).not.toHaveBeenCalled();
+    unmountOpening();
   });
 
   it("横長画像(width>height)の自動単独中央表示・後続自動再ペアリング・spreadHistory戻りと最終見開き全入力no-op境界を検証すること (AC-RD-10)", async () => {

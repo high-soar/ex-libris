@@ -1,5 +1,5 @@
 import { composeStories } from "@storybook/react";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
 import type { DecodedPageFrame } from "../engine/types";
@@ -248,11 +248,20 @@ describe("ReaderCanvas", () => {
     const deferredTile = createDeferred<ImageBitmap>();
     vi.stubGlobal(
       "createImageBitmap",
-      vi.fn(() => deferredTile.promise),
+      vi.fn((source: unknown) =>
+        source instanceof HTMLCanvasElement
+          ? Promise.resolve(createFakeBitmap(200, 100))
+          : deferredTile.promise,
+      ),
     );
     const { unmount: unmountAsync } = render(<AsyncOversizedPending />);
+    await waitFor(() => {
+      expect(screen.getByTestId("reader-canvas")).toHaveAttribute(
+        "data-webgl-status",
+        "ready",
+      );
+    });
     const asyncCanvas = screen.getByTestId("reader-canvas");
-    expect(asyncCanvas).toHaveAttribute("data-webgl-status", "ready");
     expect(asyncCanvas).toHaveAttribute("data-rendered-slots", "");
     await act(async () => {
       deferredTile.resolve(createFakeBitmap(100, 100));
