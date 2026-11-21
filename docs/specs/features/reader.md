@@ -2,7 +2,7 @@
 type: spec-feature
 title: "WebGL2 ストリーミングリーダー画面仕様書（SCR-03: Reader）"
 description: "SCR-03（/read/local）の右開き単ページ閲覧、タップ/スワイプ/キー操作、最小HUD開閉、異常系復帰、およびTR-08/TR-10リソース解放仕様の正本"
-status: "Approved"
+status: "Review (#19)"
 updated: "2026-11-20"
 tags: [feature, reader, scr-03, rtl, hud, touch, webgl2, back-button]
 related_specs:
@@ -47,6 +47,9 @@ related_tests:
      3. `WebGLRendererCore.dispose()` 実行
      4. オンメモリ `File` セッションを `null` へクリア
      5. `router.back()`（`pushState` 履歴戻り、直接遷移等では `router.replace("/")`、`popstate` 時は現在履歴を維持）
+3. **`zipIndexCache` による 0 RTT オープンと透過フォールバック**:
+   - アーカイブオープン時、`ReaderPage` は `ServiceContext.zipIndexCacheRepo.get(source.indexCacheKey)` を試行して有効な `entries` を取得できた場合は `coordinator.api.openArchive(source, cachedEntries, epoch)` へ渡して 0 RTT で開く（IndexedDB 参照エラー時やキャッシュ破損時は警告ログ記録の上で `null` にフォールバック）。
+   - `!result.fromIndexCache` で通常オープンに成功した場合は `zipIndexCacheRepo.put(source.indexCacheKey, result.entries)` を非ブロッキングで保存し、失敗しても閲覧自体は継続する。
 
 ---
 
@@ -95,7 +98,6 @@ related_tests:
 - `EMPTY_ARCHIVE`: 「表示できる画像ファイル（JPEG / PNG / WebP / AVIF）が見つかりませんでした」
 - `ENCRYPTED_ZIP`: 「パスワード保護（暗号化）された ZIP ファイルには対応していません」
 - `UNSUPPORTED_COMPRESSION`: 「未対応の圧縮方式が含まれているため開けませんでした」
-- `ZIP64_NOT_SUPPORTED`: 「4GB 超の ZIP64 形式は次期バージョン（v0.1）で対応予定です」
 - `READ_ERROR`: 「ファイルの読み込みに失敗しました（アクセス権限またはストレージ状態を確認してください）」
 - `WEBGL_UNSUPPORTED` / `WEBGL_INIT_FAILED`: 「WebGL2 描画の初期化に失敗しました」
 
@@ -114,12 +116,12 @@ related_tests:
 
 ## 5. コンポーネント構成と親子分離（1対1 Story / UT 対象）
 
-| コンポーネント     | ファイルパス                               | 責務（テスト分離方針）                                                                 |
-| :----------------- | :----------------------------------------- | :------------------------------------------------------------------------------------- |
-| `ReaderPage`       | `src/features/reader/ReaderPage.tsx`       | `TR-10` ガード、Coordinator RPC 制御、`L1PageCache` / Epoch 管理、入力判定、終了解放   |
-| `ReaderCanvas`     | `src/webgl/ReaderCanvas.tsx`               | 生 WebGL2 キャンバス、`ResizeObserver`、コンテキストロスト復帰（`webgl2-renderer.md`） |
-| `ReaderHudOverlay` | `src/features/reader/ReaderHudOverlay.tsx` | 上下オーバーレイ HUD（戻る・ファイル名・`N / Total`・次へ/前へボタン）                 |
-| `ReaderErrorView`  | `src/features/reader/ReaderErrorView.tsx`  | アーカイブ全体エラーパネルおよび個別ページデコードエラー表示                           |
+| コンポーネント     | ファイルパス                               | 責務（テスト分離方針）                                                                                                          |
+| :----------------- | :----------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------ |
+| `ReaderPage`       | `src/features/reader/ReaderPage.tsx`       | `TR-10` ガード、`ZipIndexCacheRepository` 0RTT 参照・保存、Coordinator RPC 制御、`L1PageCache` / Epoch 管理、入力判定、終了解放 |
+| `ReaderCanvas`     | `src/webgl/ReaderCanvas.tsx`               | 生 WebGL2 キャンバス、`ResizeObserver`、コンテキストロスト復帰（`webgl2-renderer.md`）                                          |
+| `ReaderHudOverlay` | `src/features/reader/ReaderHudOverlay.tsx` | 上下オーバーレイ HUD（戻る・ファイル名・`N / Total`・次へ/前へボタン）                                                          |
+| `ReaderErrorView`  | `src/features/reader/ReaderErrorView.tsx`  | アーカイブ全体エラーパネルおよび個別ページデコードエラー表示                                                                    |
 
 - `ReaderPage` の単体テストでは `ReaderCanvas`, `ReaderHudOverlay`, `ReaderErrorView` を `vi.spyOn(...).mockImplementation(() => null)` で完全分離する。
 
@@ -134,7 +136,7 @@ related_tests:
 | `AC-RD-03` | 右開き（`rtl`）ルールで左 30% タップ／左→右スワイプ／`ArrowLeft` が次ページ、右 30% タップ／右→左スワイプ／`ArrowRight` が前ページへ移動する。             |
 | `AC-RD-04` | 下部 HUD に 1 始まりの `N / Total` と「← 次へ」「前へ →」ボタンが表示され、先頭・末尾ページで適切に `disabled` になる。                                    |
 | `AC-RD-05` | 連続めくり時に `requestEpoch` が更新され、古い要求の進行中 I/O 中断および遅延到着 `ImageBitmap` の即時 `close()` が行われる。                              |
-| `AC-RD-06` | 破損・空・暗号化・未対応圧縮・ZIP64・読込失敗（`READ_ERROR`）・WebGL2 失敗時は診断ログ記録の上で理由別エラー画面と「ホームへ戻る」を表示する。             |
+| `AC-RD-06` | 破損・空・暗号化・未対応圧縮・読込失敗（`READ_ERROR`）・WebGL2 失敗時は診断ログ記録の上で理由別エラー画面と「ホームへ戻る」を表示する。                    |
 | `AC-RD-07` | 個別ページのみのデコード失敗時は当該ページのみエラー表示とし、前後ページへの移動を阻害しない。                                                             |
 | `AC-RD-08` | 戻るボタン・`Escape` キー・Android ハードウェア戻るボタンで `TR-08`（Worker 停止・L1 `bitmap.close()`・WebGL 破棄・セッションクリア）を実行し `/` へ戻る。 |
 | `AC-RD-09` | 対象 TSX/TS ファイルすべてが 1 対 1 Story/UT・親子分離・C0/C1/Functions/Lines 100%・1280px/375px VRT を PASS する。                                        |
