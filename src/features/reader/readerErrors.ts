@@ -16,8 +16,6 @@ const READER_ERROR_MESSAGES: Record<ReaderFatalErrorCode, string> = {
   ENCRYPTED_ZIP:
     "パスワード保護（暗号化）された ZIP ファイルには対応していません",
   UNSUPPORTED_COMPRESSION: "未対応の圧縮方式が含まれているため開けませんでした",
-  ZIP64_NOT_SUPPORTED:
-    "4GB 超の ZIP64 形式は次期バージョン（v0.1）で対応予定です",
   DECODE_FAILED: "ページの画像デコードに失敗しました",
   READ_ERROR:
     "ファイルの読み込みに失敗しました（アクセス権限またはストレージ状態を確認してください）",

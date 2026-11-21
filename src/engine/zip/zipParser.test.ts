@@ -576,7 +576,7 @@ describe("zipParser", () => {
         createMemoryReader(
           buildSyntheticZip({
             entries: [baseEntry],
-            overrideEocd: { diskEntries: 5, totalEntries: 5, cdSize: 100 },
+            overrideEocd: { diskEntries: 2, totalEntries: 2 },
           }),
         ),
       ),
@@ -589,9 +589,8 @@ describe("zipParser", () => {
             zip64: true,
             entries: [baseEntry],
             overrideZip64Eocd: {
-              diskEntries: 5n,
-              totalEntries: 5n,
-              cdSize: 100n,
+              diskEntries: 2n,
+              totalEntries: 2n,
             },
           }),
         ),

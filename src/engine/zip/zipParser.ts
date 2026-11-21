@@ -8,16 +8,29 @@ import { ZipArchiveError } from "./errors";
 
 const EOCD_SIGNATURE = 0x06054b50;
 const ZIP64_LOCATOR_SIGNATURE = 0x07064b50;
+const ZIP64_EOCD_SIGNATURE = 0x06064b50;
+const ZIP64_EXTRA_HEADER_ID = 0x0001;
 const CDH_SIGNATURE = 0x02014b50;
 const LFH_SIGNATURE = 0x04034b50;
 
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 const JUNK_BASENAMES = new Set([".ds_store", "thumbs.db", "desktop.ini"]);
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".avif"]);
+
+const utf8NonStrictDecoder = new TextDecoder("utf-8", { fatal: false });
+const utf8StrictDecoder = new TextDecoder("utf-8", { fatal: true });
+const sjisDecoder = new TextDecoder("shift-jis", { fatal: false });
 
 interface EocdInfo {
   readonly totalEntries: number;
   readonly cdSize: number;
   readonly cdOffset: number;
+}
+
+interface ResolvedZip64CdhFields {
+  readonly compressedSize: number;
+  readonly uncompressedSize: number;
+  readonly localHeaderOffset: number;
 }
 
 interface ParsedCandidate {
@@ -37,6 +50,28 @@ interface ParsedCentralDirectoryResult {
 
 function createDataView(bytes: Uint8Array): DataView {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
+function readSafeUint64(view: DataView, offset: number, label: string): number {
+  const value = view.getBigUint64(offset, true);
+  if (value > MAX_SAFE_BIGINT) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      `${label}がJavaScriptの安全整数範囲を超過しています`,
+    );
+  }
+  return Number(value);
+}
+
+function decodeEntryName(nameBytes: Uint8Array, flags: number): string {
+  if ((flags & 0x0800) !== 0) {
+    return utf8NonStrictDecoder.decode(nameBytes);
+  }
+  try {
+    return utf8StrictDecoder.decode(nameBytes);
+  } catch {
+    return sjisDecoder.decode(nameBytes);
+  }
 }
 
 function isJunkOrNonImageEntry(
@@ -87,22 +122,144 @@ function findEocdOffset(tailView: DataView, byteLength: number): number {
   return -1;
 }
 
-function readEocdInfo(tailBuf: Uint8Array, tailStart: number): EocdInfo {
+async function readZip64EocdInfo(
+  reader: RandomAccessReader,
+  tailBuf: Uint8Array,
+  tailStart: number,
+  tailView: DataView,
+  eocdRelOffset: number,
+  eocdAbsoluteOffset: number,
+  diskNumber: number,
+  cdDiskNumber: number,
+  diskEntries: number,
+  totalEntries: number,
+  signal?: AbortSignal,
+): Promise<EocdInfo> {
+  if (
+    (diskNumber !== 0xffff && diskNumber !== 0) ||
+    (cdDiskNumber !== 0xffff && cdDiskNumber !== 0) ||
+    diskEntries !== totalEntries
+  ) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      "マルチディスクZIP64アーカイブには対応していません",
+    );
+  }
+
+  const locatorRelOffset = eocdRelOffset - 20;
+  const locatorDiskNumber = tailView.getUint32(locatorRelOffset + 4, true);
+  const totalDisks = tailView.getUint32(locatorRelOffset + 16, true);
+  if (locatorDiskNumber !== 0 || totalDisks !== 1) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      "マルチディスクZIP64 Locatorには対応していません",
+    );
+  }
+
+  const zip64EocdOffset = readSafeUint64(
+    tailView,
+    locatorRelOffset + 8,
+    "ZIP64 EOCDオフセット",
+  );
+  const locatorAbsoluteOffset = eocdAbsoluteOffset - 20;
+  if (zip64EocdOffset > locatorAbsoluteOffset - 56) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      "ZIP64 EOCDレコード位置がLocator境界を超過しています",
+    );
+  }
+
+  let z64Buf: Uint8Array;
+  if (zip64EocdOffset >= tailStart) {
+    const z64RelOffset = zip64EocdOffset - tailStart;
+    z64Buf = tailBuf.subarray(z64RelOffset, z64RelOffset + 56);
+  } else {
+    z64Buf = await reader.readRange(zip64EocdOffset, 56, signal);
+    if (z64Buf.byteLength !== 56) {
+      throw new ZipArchiveError(
+        "CORRUPT_ZIP",
+        "ZIP64 EOCDレコードの読込サイズが不足しています",
+      );
+    }
+  }
+
+  const z64View = createDataView(z64Buf);
+  if (z64View.getUint32(0, true) !== ZIP64_EOCD_SIGNATURE) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      "不正なZIP64 EOCDシグネチャを検出しました",
+    );
+  }
+
+  const sizeOfZip64Eocd = readSafeUint64(
+    z64View,
+    4,
+    "ZIP64 EOCDレコードサイズ",
+  );
+  if (sizeOfZip64Eocd < 44) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      "ZIP64 EOCDレコードサイズが最小長(44B)未満です",
+    );
+  }
+
+  const z64DiskNumber = z64View.getUint32(16, true);
+  const z64CdDiskNumber = z64View.getUint32(20, true);
+  const z64DiskEntries = readSafeUint64(
+    z64View,
+    24,
+    "ZIP64 EOCDディスクエントリ数",
+  );
+  const z64TotalEntries = readSafeUint64(z64View, 32, "ZIP64 EOCD総エントリ数");
+  if (
+    z64DiskNumber !== 0 ||
+    z64CdDiskNumber !== 0 ||
+    z64DiskEntries !== z64TotalEntries
+  ) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      "マルチディスクZIP64 EOCDレコードには対応していません",
+    );
+  }
+
+  const cdSize = readSafeUint64(z64View, 40, "ZIP64 Central Directoryサイズ");
+  const cdOffset = readSafeUint64(
+    z64View,
+    48,
+    "ZIP64 Central Directoryオフセット",
+  );
+  if (cdSize > zip64EocdOffset - cdOffset) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      "ZIP64 Central Directoryの範囲がZIP64 EOCD境界を超過しています",
+    );
+  }
+
+  if (BigInt(z64TotalEntries) * 46n > BigInt(cdSize)) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      "ZIP64 Central Directoryのエントリ数が領域サイズと不整合です",
+    );
+  }
+
+  return {
+    totalEntries: z64TotalEntries,
+    cdSize,
+    cdOffset,
+  };
+}
+
+async function readEocdInfo(
+  reader: RandomAccessReader,
+  tailBuf: Uint8Array,
+  tailStart: number,
+  signal?: AbortSignal,
+): Promise<EocdInfo> {
   const tailView = createDataView(tailBuf);
   const eocdRelOffset = findEocdOffset(tailView, tailBuf.byteLength);
 
   if (eocdRelOffset < 0) {
     throw new ZipArchiveError("CORRUPT_ZIP", "EOCDシグネチャが見つかりません");
-  }
-
-  if (
-    eocdRelOffset >= 20 &&
-    tailView.getUint32(eocdRelOffset - 20, true) === ZIP64_LOCATOR_SIGNATURE
-  ) {
-    throw new ZipArchiveError(
-      "ZIP64_NOT_SUPPORTED",
-      "ZIP64形式は次期バージョン(v0.1)で対応予定です",
-    );
   }
 
   const diskNumber = tailView.getUint16(eocdRelOffset + 4, true);
@@ -111,26 +268,57 @@ function readEocdInfo(tailBuf: Uint8Array, tailStart: number): EocdInfo {
   const totalEntries = tailView.getUint16(eocdRelOffset + 10, true);
   const cdSize = tailView.getUint32(eocdRelOffset + 12, true);
   const cdOffset = tailView.getUint32(eocdRelOffset + 16, true);
+  const eocdAbsoluteOffset = tailStart + eocdRelOffset;
+
+  const hasLocator =
+    eocdRelOffset >= 20 &&
+    tailView.getUint32(eocdRelOffset - 20, true) === ZIP64_LOCATOR_SIGNATURE;
+
+  if (hasLocator) {
+    return readZip64EocdInfo(
+      reader,
+      tailBuf,
+      tailStart,
+      tailView,
+      eocdRelOffset,
+      eocdAbsoluteOffset,
+      diskNumber,
+      cdDiskNumber,
+      diskEntries,
+      totalEntries,
+      signal,
+    );
+  }
+
+  if (diskNumber !== 0 || cdDiskNumber !== 0 || diskEntries !== totalEntries) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      "マルチディスクZIPには対応していません",
+    );
+  }
 
   if (
-    diskNumber === 0xffff ||
-    cdDiskNumber === 0xffff ||
     diskEntries === 0xffff ||
-    totalEntries === 0xffff ||
     cdSize === 0xffffffff ||
     cdOffset === 0xffffffff
   ) {
     throw new ZipArchiveError(
-      "ZIP64_NOT_SUPPORTED",
-      "ZIP64飽和値を含むアーカイブは次期バージョン(v0.1)で対応予定です",
+      "CORRUPT_ZIP",
+      "ZIP64 EOCD Locator不在の飽和EOCD値が含まれています",
     );
   }
 
-  const eocdAbsoluteOffset = tailStart + eocdRelOffset;
-  if (cdOffset + cdSize > eocdAbsoluteOffset) {
+  if (cdSize > eocdAbsoluteOffset - cdOffset) {
     throw new ZipArchiveError(
       "CORRUPT_ZIP",
       "Central Directoryの範囲がEOCD境界を超過しています",
+    );
+  }
+
+  if (BigInt(totalEntries) * 46n > BigInt(cdSize)) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      "Central Directoryのエントリ数が領域サイズと不整合です",
     );
   }
 
@@ -159,13 +347,139 @@ async function readCentralDirectoryBuffer(
   return cdBuf;
 }
 
+function resolveZip64CdhFields(
+  cdView: DataView,
+  extraStart: number,
+  extraFieldLength: number,
+  rawCompressedSize: number,
+  rawUncompressedSize: number,
+  rawLocalHeaderOffset: number,
+  rawDiskStartNumber: number,
+  entryName: string,
+): ResolvedZip64CdhFields {
+  if (rawDiskStartNumber !== 0 && rawDiskStartNumber !== 0xffff) {
+    throw new ZipArchiveError(
+      "CORRUPT_ZIP",
+      `マルチディスクZIPエントリには対応していません: ${entryName}`,
+    );
+  }
+
+  const needsUncompressed = rawUncompressedSize === 0xffffffff;
+  const needsCompressed = rawCompressedSize === 0xffffffff;
+  const needsOffset = rawLocalHeaderOffset === 0xffffffff;
+  const needsDisk = rawDiskStartNumber === 0xffff;
+
+  if (!needsUncompressed && !needsCompressed && !needsOffset && !needsDisk) {
+    return {
+      compressedSize: rawCompressedSize,
+      uncompressedSize: rawUncompressedSize,
+      localHeaderOffset: rawLocalHeaderOffset,
+    };
+  }
+
+  let extraPtr = extraStart;
+  const extraEnd = extraStart + extraFieldLength;
+  while (extraPtr + 4 <= extraEnd) {
+    const headerId = cdView.getUint16(extraPtr, true);
+    const dataSize = cdView.getUint16(extraPtr + 2, true);
+    const dataStart = extraPtr + 4;
+    const dataEnd = dataStart + dataSize;
+    if (dataEnd > extraEnd) {
+      throw new ZipArchiveError(
+        "CORRUPT_ZIP",
+        `CDH Extra FieldのTLV長が境界を超過しています: ${entryName}`,
+      );
+    }
+
+    if (headerId === ZIP64_EXTRA_HEADER_ID) {
+      let fieldCursor = dataStart;
+      let uncompressedSize = rawUncompressedSize;
+      let compressedSize = rawCompressedSize;
+      let localHeaderOffset = rawLocalHeaderOffset;
+
+      if (needsUncompressed) {
+        if (fieldCursor + 8 > dataEnd) {
+          throw new ZipArchiveError(
+            "CORRUPT_ZIP",
+            `ZIP64 Extra Fieldの非圧縮サイズが不足しています: ${entryName}`,
+          );
+        }
+        uncompressedSize = readSafeUint64(
+          cdView,
+          fieldCursor,
+          `ZIP64非圧縮サイズ(${entryName})`,
+        );
+        fieldCursor += 8;
+      }
+
+      if (needsCompressed) {
+        if (fieldCursor + 8 > dataEnd) {
+          throw new ZipArchiveError(
+            "CORRUPT_ZIP",
+            `ZIP64 Extra Fieldの圧縮サイズが不足しています: ${entryName}`,
+          );
+        }
+        compressedSize = readSafeUint64(
+          cdView,
+          fieldCursor,
+          `ZIP64圧縮サイズ(${entryName})`,
+        );
+        fieldCursor += 8;
+      }
+
+      if (needsOffset) {
+        if (fieldCursor + 8 > dataEnd) {
+          throw new ZipArchiveError(
+            "CORRUPT_ZIP",
+            `ZIP64 Extra FieldのLFHオフセットが不足しています: ${entryName}`,
+          );
+        }
+        localHeaderOffset = readSafeUint64(
+          cdView,
+          fieldCursor,
+          `ZIP64 LFHオフセット(${entryName})`,
+        );
+        fieldCursor += 8;
+      }
+
+      if (needsDisk) {
+        if (fieldCursor + 4 > dataEnd) {
+          throw new ZipArchiveError(
+            "CORRUPT_ZIP",
+            `ZIP64 Extra Fieldの開始ディスク番号が不足しています: ${entryName}`,
+          );
+        }
+        const diskStart = cdView.getUint32(fieldCursor, true);
+        if (diskStart !== 0) {
+          throw new ZipArchiveError(
+            "CORRUPT_ZIP",
+            `マルチディスクZIP64エントリには対応していません: ${entryName}`,
+          );
+        }
+      }
+
+      return {
+        compressedSize,
+        uncompressedSize,
+        localHeaderOffset,
+      };
+    }
+
+    extraPtr = dataEnd;
+  }
+
+  throw new ZipArchiveError(
+    "CORRUPT_ZIP",
+    `ZIP64飽和値に対応する0x0001 Extra Fieldが見つかりません: ${entryName}`,
+  );
+}
+
 function parseCentralDirectory(
   cdBuf: Uint8Array,
   totalEntries: number,
   cdOffset: number,
 ): ParsedCentralDirectoryResult {
   const cdView = createDataView(cdBuf);
-  const utf8Decoder = new TextDecoder("utf-8", { fatal: false });
   const candidates: ParsedCandidate[] = [];
   const physicalOffsets: number[] = [];
   let cursor = 0;
@@ -187,13 +501,14 @@ function parseCentralDirectory(
     const flags = cdView.getUint16(cursor + 8, true);
     const compressionMethod = cdView.getUint16(cursor + 10, true);
     const crc32 = cdView.getUint32(cursor + 16, true);
-    const compressedSize = cdView.getUint32(cursor + 20, true);
-    const uncompressedSize = cdView.getUint32(cursor + 24, true);
+    const rawCompressedSize = cdView.getUint32(cursor + 20, true);
+    const rawUncompressedSize = cdView.getUint32(cursor + 24, true);
     const fileNameLength = cdView.getUint16(cursor + 28, true);
     const extraFieldLength = cdView.getUint16(cursor + 30, true);
     const fileCommentLength = cdView.getUint16(cursor + 32, true);
+    const rawDiskStartNumber = cdView.getUint16(cursor + 34, true);
     const externalAttributes = cdView.getUint32(cursor + 38, true);
-    const localHeaderOffset = cdView.getUint32(cursor + 42, true);
+    const rawLocalHeaderOffset = cdView.getUint32(cursor + 42, true);
 
     const nextCursor =
       cursor + 46 + fileNameLength + extraFieldLength + fileCommentLength;
@@ -205,7 +520,20 @@ function parseCentralDirectory(
     }
 
     const nameBytes = cdBuf.subarray(cursor + 46, cursor + 46 + fileNameLength);
-    const entryName = utf8Decoder.decode(nameBytes);
+    const entryName = decodeEntryName(nameBytes, flags);
+    const extraStart = cursor + 46 + fileNameLength;
+
+    const { compressedSize, uncompressedSize, localHeaderOffset } =
+      resolveZip64CdhFields(
+        cdView,
+        extraStart,
+        extraFieldLength,
+        rawCompressedSize,
+        rawUncompressedSize,
+        rawLocalHeaderOffset,
+        rawDiskStartNumber,
+        entryName,
+      );
     cursor = nextCursor;
 
     if (localHeaderOffset < cdOffset) {
@@ -230,18 +558,7 @@ function parseCentralDirectory(
       );
     }
 
-    if (
-      compressedSize === 0xffffffff ||
-      uncompressedSize === 0xffffffff ||
-      localHeaderOffset === 0xffffffff
-    ) {
-      throw new ZipArchiveError(
-        "ZIP64_NOT_SUPPORTED",
-        `ZIP64エントリは次期バージョン(v0.1)で対応予定です: ${entryName}`,
-      );
-    }
-
-    if (localHeaderOffset + 30 > cdOffset) {
+    if (localHeaderOffset > cdOffset - 30) {
       throw new ZipArchiveError(
         "CORRUPT_ZIP",
         `LFHオフセットがCentral Directory開始位置を超過しています: ${entryName}`,
@@ -280,6 +597,23 @@ function findNextPhysicalOffset(
   return low < sortedOffsets.length ? sortedOffsets[low] : cdOffset;
 }
 
+function compareEntryNamesBySegment(
+  a: string,
+  b: string,
+  collator: Intl.Collator,
+): number {
+  const segsA = a.split(/[\\/]/);
+  const segsB = b.split(/[\\/]/);
+  const minLength = Math.min(segsA.length, segsB.length);
+  for (let i = 0; i < minLength; i += 1) {
+    const cmp = collator.compare(segsA[i], segsB[i]);
+    if (cmp !== 0) {
+      return cmp;
+    }
+  }
+  return segsA.length - segsB.length;
+}
+
 function buildLogicalPageEntries(
   parsed: ParsedCentralDirectoryResult,
   cdOffset: number,
@@ -306,7 +640,7 @@ function buildLogicalPageEntries(
     sensitivity: "base",
   });
   const logicalSorted = [...parsed.candidates].sort((a, b) =>
-    collator.compare(a.entryName, b.entryName),
+    compareEntryNamesBySegment(a.entryName, b.entryName, collator),
   );
 
   return logicalSorted.map((item, pageIndex) => ({
@@ -344,7 +678,7 @@ export async function parseZipDirectory(
     );
   }
 
-  const eocd = readEocdInfo(tailBuf, tailStart);
+  const eocd = await readEocdInfo(reader, tailBuf, tailStart, signal);
   const cdBuf = await readCentralDirectoryBuffer(
     reader,
     eocd,
@@ -414,8 +748,24 @@ export async function readCompressedPageSlice(
     return initialBuf.subarray(dataStart, dataEnd);
   }
 
+  if (dataStart >= initialBuf.byteLength) {
+    const directSlice = await reader.readRange(
+      entry.localHeaderOffset + dataStart,
+      entry.compressedSize,
+      signal,
+    );
+    if (directSlice.byteLength !== entry.compressedSize) {
+      throw new ZipArchiveError(
+        "CORRUPT_ZIP",
+        `LFH超過分の直接読込サイズが不足しています: ${entry.entryName}`,
+      );
+    }
+    return directSlice;
+  }
+
+  const headSlice = initialBuf.subarray(dataStart);
   const remainingOffset = entry.localHeaderOffset + initialBuf.byteLength;
-  const remainingLength = dataEnd - initialBuf.byteLength;
+  const remainingLength = entry.compressedSize - headSlice.byteLength;
   const tailSlice = await reader.readRange(
     remainingOffset,
     remainingLength,
@@ -428,8 +778,8 @@ export async function readCompressedPageSlice(
     );
   }
 
-  const combined = new Uint8Array(dataEnd);
-  combined.set(initialBuf, 0);
-  combined.set(tailSlice, initialBuf.byteLength);
-  return combined.subarray(dataStart, dataEnd);
+  const combined = new Uint8Array(entry.compressedSize);
+  combined.set(headSlice, 0);
+  combined.set(tailSlice, headSlice.byteLength);
+  return combined;
 }
