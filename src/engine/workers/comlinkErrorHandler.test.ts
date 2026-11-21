@@ -80,7 +80,6 @@ describe("comlinkErrorHandler", () => {
       "EMPTY_ARCHIVE",
       "ENCRYPTED_ZIP",
       "UNSUPPORTED_COMPRESSION",
-      "ZIP64_NOT_SUPPORTED",
       "DECODE_FAILED",
       "READ_ERROR",
     ];
@@ -309,6 +308,14 @@ describe("comlinkErrorHandler", () => {
           name: "ZipArchiveError",
           message: "未知コード",
           code: "INVALID_CODE",
+        },
+      },
+      {
+        isError: true,
+        value: {
+          name: "ZipArchiveError",
+          message: "廃止コード",
+          code: "ZIP64_NOT_SUPPORTED",
         },
       },
       {

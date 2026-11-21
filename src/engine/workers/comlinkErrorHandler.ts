@@ -27,7 +27,6 @@ const ZIP_ERROR_CODE_MAP: Record<ZipErrorCode, true> = {
   EMPTY_ARCHIVE: true,
   ENCRYPTED_ZIP: true,
   UNSUPPORTED_COMPRESSION: true,
-  ZIP64_NOT_SUPPORTED: true,
   DECODE_FAILED: true,
   READ_ERROR: true,
 };

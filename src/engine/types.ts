@@ -42,7 +42,6 @@ export type ZipErrorCode =
   | "EMPTY_ARCHIVE"
   | "ENCRYPTED_ZIP"
   | "UNSUPPORTED_COMPRESSION"
-  | "ZIP64_NOT_SUPPORTED"
   | "DECODE_FAILED"
   | "READ_ERROR";
 

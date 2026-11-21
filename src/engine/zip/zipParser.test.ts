@@ -5,7 +5,9 @@ import type { RandomAccessReader, ZipPageEntry } from "../types";
 import { ZipArchiveError } from "./errors";
 import {
   buildSyntheticZip,
+  buildTlvBlock,
   createMemoryReader,
+  createVirtualOffsetReader,
 } from "./__fixtures__/zipBuilder";
 import { parseZipDirectory, readCompressedPageSlice } from "./zipParser";
 
@@ -139,33 +141,107 @@ describe("zipParser", () => {
     ]);
   });
 
-  it("非UTF-8バイト列のファイル名でも停止せずデコードし元バイト長entryNameByteLengthを保持すること (AC-ENG-04)", async () => {
-    // Shift_JIS相当の不正UTF-8バイト列: 0x82 0xA0 ("あ" in SJIS) + ".jpg"
-    const sjisName = new Uint8Array([0x82, 0xa0, 0x2e, 0x6a, 0x70, 0x67]);
+  it("GPBF Bit11判定とCP932（Shift_JIS）フォールバックで日本語・半角カナ・機種依存文字・0x5C後続バイトを正確に復元し元バイト長entryNameByteLengthを保持すること (AC-ENG-04, AC-ENG-10)", async () => {
+    // 1. GPBF Bit 11=0 + 不正UTF-8（Shift_JIS: "あ.jpg" = 0x82 0xA0 + ".jpg"）
+    const sjisAh = new Uint8Array([0x82, 0xa0, 0x2e, 0x6a, 0x70, 0x67]);
+    // 2. GPBF Bit 11=0 + Shift_JIS 半角カナ・機種依存文字（"ｱｲｳ①㈱髙.jpg"）
+    const sjisVendor = new Uint8Array([
+      0xb1, 0xb2, 0xb3, 0x87, 0x40, 0x87, 0x8a, 0xfb, 0xfc, 0x2e, 0x6a, 0x70,
+      0x67,
+    ]);
+    // 3. GPBF Bit 11=0 + Shift_JIS 0x5C('表','ソ')をディレクトリ区切りと誤認しない（"表ソ/001.jpg"）
+    const sjisTrail5c = new Uint8Array([
+      0x95, 0x5c, 0x83, 0x5c, 0x2f, 0x30, 0x30, 0x31, 0x2e, 0x6a, 0x70, 0x67,
+    ]);
+    // 4. GPBF Bit 11=0 だが実バイトが正当なUTF-8（"第1話/001.jpg"）-> UTF-8 strict成功
+    const utf8NoFlagName = "第1話/001.jpg";
+    const utf8NoFlagBytes = new TextEncoder().encode(utf8NoFlagName);
+    // 5. GPBF Bit 11=1 (0x0800) で不正UTF-8バイト列 -> Shift_JISフォールバックせずUTF-8(fatal:false)置換文字にする
+    const bit11InvalidUtf8 = new Uint8Array([
+      0x82, 0xa0, 0x2e, 0x70, 0x6e, 0x67,
+    ]);
+    // 6. 通常のBit 11=1 UTF-8日本語ファイル名
     const utf8JapaneseName = "第1話_あ.jpg";
     const utf8ByteLength = new TextEncoder().encode(
       utf8JapaneseName,
     ).byteLength;
 
+    const payloadSjis = new Uint8Array([10, 20, 30, 40]);
     const zipBytes = buildSyntheticZip({
       entries: [
-        { name: sjisName, data: new Uint8Array([1, 2, 3]) },
-        { name: utf8JapaneseName, data: new Uint8Array([4, 5, 6]) },
+        { name: sjisAh, data: payloadSjis, flags: 0 },
+        { name: sjisVendor, data: new Uint8Array([2]), flags: 0 },
+        { name: sjisTrail5c, data: new Uint8Array([3]), flags: 0 },
+        { name: utf8NoFlagBytes, data: new Uint8Array([4]), flags: 0 },
+        { name: bit11InvalidUtf8, data: new Uint8Array([5]), flags: 0x0800 },
+        { name: utf8JapaneseName, data: new Uint8Array([6]), flags: 0x0800 },
       ],
     });
     const reader = createMemoryReader(zipBytes);
 
     const entries = await parseZipDirectory(reader);
 
-    expect(entries).toHaveLength(2);
-    const sjisEntry = entries.find((e) => e.entryNameByteLength === 6);
-    expect(sjisEntry).toBeDefined();
-    expect(sjisEntry?.entryName).toContain(".jpg");
+    expect(entries).toHaveLength(6);
+
+    const ahEntry = entries.find((e) => e.entryName === "あ.jpg");
+    expect(ahEntry).toBeDefined();
+    expect(ahEntry?.entryNameByteLength).toBe(6);
+    expect(await readCompressedPageSlice(reader, ahEntry!)).toEqual(
+      payloadSjis,
+    );
+
+    const vendorEntry = entries.find((e) => e.entryName === "ｱｲｳ①㈱髙.jpg");
+    expect(vendorEntry).toBeDefined();
+    expect(vendorEntry?.entryNameByteLength).toBe(sjisVendor.byteLength);
+
+    const trail5cEntry = entries.find((e) => e.entryName === "表ソ/001.jpg");
+    expect(trail5cEntry).toBeDefined();
+    expect(trail5cEntry?.entryNameByteLength).toBe(sjisTrail5c.byteLength);
+
+    const utf8NoFlagEntry = entries.find((e) => e.entryName === utf8NoFlagName);
+    expect(utf8NoFlagEntry).toBeDefined();
+    expect(utf8NoFlagEntry?.entryNameByteLength).toBe(
+      utf8NoFlagBytes.byteLength,
+    );
+
+    const bit11InvalidEntry = entries.find((e) => e.entryName.endsWith(".png"));
+    expect(bit11InvalidEntry?.entryName).toBe("\ufffd\ufffd.png");
 
     const utf8Entry = entries.find((e) => e.entryName === utf8JapaneseName);
     expect(utf8Entry).toBeDefined();
     expect(utf8Entry?.entryNameByteLength).toBe(utf8ByteLength);
-    expect(utf8ByteLength).toBeGreaterThan(utf8JapaneseName.length);
+  });
+
+  it("パス区切り('/'と'\\')セグメント単位の日本語自然順でソートし、共通接頭辞同値時はセグメント数の少ない方を先頭にすること (AC-ENG-03)", async () => {
+    // フラット文字列比較だと "_" < "/" や "-" < "/" の影響で "第1話_おまけ/001.jpg" が "第1話/002.jpg" より先になり得る
+    const zipBytes = buildSyntheticZip({
+      entries: [
+        { name: "第1話_おまけ/001.jpg", data: new Uint8Array([1]) },
+        { name: "第10話/001.jpg", data: new Uint8Array([2]) },
+        { name: "第2話\\001.jpg", data: new Uint8Array([3]) },
+        { name: "第1話/010.jpg", data: new Uint8Array([4]) },
+        { name: "第1話/002.jpg", data: new Uint8Array([5]) },
+        { name: "album.jpg/01.png", data: new Uint8Array([6]) },
+        { name: "album.jpg", data: new Uint8Array([7]) },
+        { name: "chapterA/02.jpg", data: new Uint8Array([8]) },
+        { name: "chaptera/01.jpg", data: new Uint8Array([9]) },
+      ],
+    });
+    const reader = createMemoryReader(zipBytes);
+
+    const entries = await parseZipDirectory(reader);
+
+    expect(entries.map((e) => e.entryName)).toEqual([
+      "album.jpg",
+      "album.jpg/01.png",
+      "chaptera/01.jpg",
+      "chapterA/02.jpg",
+      "第1話/002.jpg",
+      "第1話/010.jpg",
+      "第1話_おまけ/001.jpg",
+      "第2話\\001.jpg",
+      "第10話/001.jpg",
+    ]);
   });
 
   it("論理ページ順と物理オフセット順が異なる場合でもphysicalEndを物理配置順で正しく計算すること (AC-ENG-05)", async () => {
@@ -229,31 +305,45 @@ describe("zipParser", () => {
     expect(reader.reads).toHaveLength(1);
   });
 
-  it("LFH extraFieldが1KBマージンを超過する場合は不足末尾差分のみ追加1RTT取得して結合すること (AC-ENG-05)", async () => {
-    const payload = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+  it("LFH extraFieldが1KBマージンを超過する2RTT経路でケース2a（末尾差分のみ・byteOffset===0独立バッファ）とケース2b（圧縮本体直接取得）を余剰コピーなく処理すること (AC-ENG-05, AC-ENG-10)", async () => {
+    // ケース 2a: compressedSize=2000, lfhExtra=1050 => fetchLength=30+7+2000+1024=3061, dataStart=30+7+1050=1087 < 3061, dataEnd=3087 > 3061
+    const payload2a = Uint8Array.from({ length: 2000 }, (_, i) => i & 0xff);
+    // ケース 2b: compressedSize=8, lfhExtra=5000 => fetchLength=30+7+8+1024=1069, dataStart=30+7+5000=5037 >= 1069
+    const payload2b = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    // ケース 2b 境界: compressedSize=8, lfhExtra=1032 => fetchLength=1069, dataStart=30+7+1032=1069 === initialBuf.byteLength
+    const payload2bExact = new Uint8Array([9, 10, 11, 12, 13, 14, 15, 16]);
+
     const zipBytes = buildSyntheticZip({
       entries: [
         {
           name: "001.jpg",
-          data: payload,
+          data: payload2a,
           cdhExtra: new Uint8Array(0),
-          lfhExtra: new Uint8Array(1_500).fill(0xaa),
+          lfhExtra: new Uint8Array(1_050).fill(0xaa),
         },
         {
           name: "002.jpg",
-          data: payload,
+          data: payload2b,
           cdhExtra: new Uint8Array(0),
           lfhExtra: new Uint8Array(5_000).fill(0xbb),
+        },
+        {
+          name: "003.jpg",
+          data: payload2bExact,
+          cdhExtra: new Uint8Array(0),
+          lfhExtra: new Uint8Array(1_032).fill(0xcc),
         },
       ],
     });
     const reader = createMemoryReader(zipBytes);
     const entries = await parseZipDirectory(reader);
+
+    // ケース 2a 検証
     reader.reads.length = 0;
-
-    const slice1 = await readCompressedPageSlice(reader, entries[0]);
-
-    expect(slice1).toEqual(payload);
+    const slice2a = await readCompressedPageSlice(reader, entries[0]);
+    expect(slice2a).toEqual(payload2a);
+    expect(slice2a.byteOffset).toBe(0);
+    expect(slice2a.byteLength).toBe(slice2a.buffer.byteLength);
     expect(reader.reads).toHaveLength(2);
     expect(reader.reads[0].length).toBe(
       30 +
@@ -261,9 +351,34 @@ describe("zipParser", () => {
         entries[0].compressedSize +
         ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES,
     );
+    expect(reader.reads[1]).toEqual({
+      offset: entries[0].localHeaderOffset + reader.reads[0].length,
+      length: 26,
+    });
 
-    const slice2 = await readCompressedPageSlice(reader, entries[1]);
-    expect(slice2).toEqual(payload);
+    // ケース 2b 検証（dataStart > initialBuf.byteLength）
+    reader.reads.length = 0;
+    const slice2b = await readCompressedPageSlice(reader, entries[1]);
+    expect(slice2b).toEqual(payload2b);
+    expect(slice2b.byteOffset).toBe(0);
+    expect(slice2b.byteLength).toBe(slice2b.buffer.byteLength);
+    expect(reader.reads).toHaveLength(2);
+    expect(reader.reads[1]).toEqual({
+      offset: entries[1].localHeaderOffset + 30 + 7 + 5_000,
+      length: payload2b.byteLength,
+    });
+
+    // ケース 2b 境界検証（dataStart === initialBuf.byteLength）
+    reader.reads.length = 0;
+    const slice2bExact = await readCompressedPageSlice(reader, entries[2]);
+    expect(slice2bExact).toEqual(payload2bExact);
+    expect(slice2bExact.byteOffset).toBe(0);
+    expect(slice2bExact.byteLength).toBe(slice2bExact.buffer.byteLength);
+    expect(reader.reads).toHaveLength(2);
+    expect(reader.reads[1]).toEqual({
+      offset: entries[2].localHeaderOffset + 30 + 7 + 1_032,
+      length: payload2bExact.byteLength,
+    });
 
     const aborted = new AbortController();
     aborted.abort();
@@ -275,7 +390,98 @@ describe("zipParser", () => {
     ).rejects.toMatchObject({ name: "AbortError" });
   });
 
-  it("空アーカイブ・暗号化・未対応圧縮・ZIP64に明示的ZipErrorCodeを送出すること (AC-ENG-04)", async () => {
+  it("4GB超ZIP64アーカイブ（128KB内・3RTT超過・0x0001飽和組合せ・非画像エントリ4GB超境界）を完全解析できること (AC-ENG-09)", async () => {
+    const virtualShift = 5_000_000_000;
+    const payload0 = new Uint8Array([1, 2, 3, 4]);
+    const payload1 = new Uint8Array([5, 6, 7, 8, 9]);
+    const xmlBytes = new TextEncoder().encode("<ComicInfo/>");
+
+    // 1. 仮想 5GB オフセット上の ZIP64（非画像 ComicInfo.xml を挟み、0x5455 先行 TLV + 0x0001 解決順序も検証）
+    const zip64Bytes = buildSyntheticZip({
+      virtualOffsetShift: virtualShift,
+      entries: [
+        {
+          name: "001.jpg",
+          data: payload0,
+          cdhExtraPrefix: buildTlvBlock(
+            0x5455,
+            new Uint8Array([1, 2, 3, 4, 5]),
+          ),
+        },
+        {
+          name: "ComicInfo.xml",
+          data: xmlBytes,
+        },
+        {
+          name: "002.jpg",
+          data: payload1,
+          zip64Extra: {
+            uncompressedSize: BigInt(payload1.byteLength),
+            compressedSize: BigInt(payload1.byteLength),
+            diskStartNumber: 0,
+          },
+        },
+      ],
+    });
+    const virtualReader = createVirtualOffsetReader(zip64Bytes, virtualShift);
+    const entries = await parseZipDirectory(virtualReader);
+
+    expect(virtualReader.reads).toHaveLength(1);
+    expect(entries).toHaveLength(2);
+    expect(entries[0].localHeaderOffset).toBe(virtualShift);
+    // ComicInfo.xml の 64bit localHeaderOffset が先行解決されているため physicalEnd が 5GB+ で正しく境界設定される
+    expect(entries[0].physicalEnd).toBeGreaterThan(virtualShift);
+    expect(entries[0].physicalEnd).toBeLessThan(entries[1].localHeaderOffset);
+    expect(entries[1].localHeaderOffset).toBeGreaterThan(
+      entries[0].physicalEnd,
+    );
+
+    expect(await readCompressedPageSlice(virtualReader, entries[0])).toEqual(
+      payload0,
+    );
+    expect(await readCompressedPageSlice(virtualReader, entries[1])).toEqual(
+      payload1,
+    );
+
+    // 2. ZIP64 EOCD Record が末尾128KBより前にある 3 RTT 経路 + 非飽和標準EOCD + 拡張ZIP64データ(sizeOfZip64Eocd > 44)
+    const threeRttBytes = buildSyntheticZip({
+      zip64: true,
+      saturateStandardEocd: false,
+      zip64EocdExtensibleData: new Uint8Array(12).fill(0x33),
+      betweenZip64EocdAndLocatorBytes: 140_000,
+      entries: [
+        {
+          name: "p1.jpg",
+          data: payload0,
+          zip64Extra: { compressedSize: BigInt(payload0.byteLength) },
+        },
+        {
+          name: "p2.jpg",
+          data: payload1,
+          zip64Extra: { uncompressedSize: BigInt(payload1.byteLength) },
+        },
+        {
+          name: "p3.jpg",
+          data: payload0,
+          zip64Extra: { diskStartNumber: 0 },
+        },
+      ],
+    });
+    const threeRttReader = createMemoryReader(threeRttBytes);
+    const threeRttEntries = await parseZipDirectory(threeRttReader);
+    expect(threeRttReader.reads).toHaveLength(3);
+    expect(threeRttReader.reads[1].length).toBe(56);
+    expect(threeRttEntries.map((e) => e.entryName)).toEqual([
+      "p1.jpg",
+      "p2.jpg",
+      "p3.jpg",
+    ]);
+    expect(
+      await readCompressedPageSlice(threeRttReader, threeRttEntries[0]),
+    ).toEqual(payload0);
+  });
+
+  it("空アーカイブ・暗号化・未対応圧縮・未バックアップ飽和値に明示的ZipErrorCodeを送出すること (AC-ENG-04, AC-ENG-09)", async () => {
     const emptyZip = buildSyntheticZip({ entries: [] });
     await expect(
       parseZipDirectory(createMemoryReader(emptyZip)),
@@ -308,36 +514,42 @@ describe("zipParser", () => {
       parseZipDirectory(createMemoryReader(unsupportedZip)),
     ).rejects.toMatchObject({ code: "UNSUPPORTED_COMPRESSION" });
 
-    const zip64LocatorZip = buildSyntheticZip({
+    // Locator のみ存在し ZIP64 EOCD Record 不在 -> CORRUPT_ZIP
+    const locatorOnlyZip = buildSyntheticZip({
       entries: [{ name: "001.jpg", data: new Uint8Array([1]) }],
       prependZip64Locator: true,
     });
     await expect(
-      parseZipDirectory(createMemoryReader(zip64LocatorZip)),
-    ).rejects.toMatchObject({ code: "ZIP64_NOT_SUPPORTED" });
+      parseZipDirectory(createMemoryReader(locatorOnlyZip)),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
 
-    const eocdSatCases = [
+    // Locator 不在かつ標準 EOCD 飽和値またはマルチディスク -> CORRUPT_ZIP
+    const eocdCorruptCases = [
+      { diskNumber: 1 },
+      { cdDiskNumber: 1 },
+      { diskEntries: 1, totalEntries: 2 },
       { diskNumber: 0xffff },
       { cdDiskNumber: 0xffff },
-      { diskEntries: 0xffff },
-      { totalEntries: 0xffff },
+      { diskEntries: 0xffff, totalEntries: 0xffff },
       { cdSize: 0xffffffff },
       { cdOffset: 0xffffffff },
     ];
-    for (const overrideEocd of eocdSatCases) {
+    for (const overrideEocd of eocdCorruptCases) {
       const satZip = buildSyntheticZip({
         entries: [{ name: "001.jpg", data: new Uint8Array([1]) }],
         overrideEocd,
       });
       await expect(
         parseZipDirectory(createMemoryReader(satZip)),
-      ).rejects.toMatchObject({ code: "ZIP64_NOT_SUPPORTED" });
+      ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
     }
 
+    // CDH 飽和で 0x0001 Extra Field 不在 -> CORRUPT_ZIP
     const cdhSatCases = [
       { overrideCdhCompressedSize: 0xffffffff },
       { overrideCdhUncompressedSize: 0xffffffff },
       { overrideCdhLocalHeaderOffset: 0xffffffff },
+      { overrideCdhDiskStartNumber: 0xffff },
     ];
     for (const entryOverride of cdhSatCases) {
       const satZip = buildSyntheticZip({
@@ -351,7 +563,287 @@ describe("zipParser", () => {
       });
       await expect(
         parseZipDirectory(createMemoryReader(satZip)),
-      ).rejects.toMatchObject({ code: "ZIP64_NOT_SUPPORTED" });
+      ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+    }
+  });
+
+  it("ZIP64境界異常（マルチディスク・安全整数超過・56B境界・totalEntries*46>cdSize・0x0001破損・非画像エントリ破損）でCORRUPT_ZIPを送出すること (AC-ENG-09)", async () => {
+    const baseEntry = { name: "001.jpg", data: new Uint8Array([1]) };
+
+    // 1. totalEntries * 46 > cdSize (diskEntries === totalEntries で標準EOCD・ZIP64双方)
+    await expect(
+      parseZipDirectory(
+        createMemoryReader(
+          buildSyntheticZip({
+            entries: [baseEntry],
+            overrideEocd: { diskEntries: 2, totalEntries: 2 },
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    await expect(
+      parseZipDirectory(
+        createMemoryReader(
+          buildSyntheticZip({
+            zip64: true,
+            entries: [baseEntry],
+            overrideZip64Eocd: {
+              diskEntries: 2n,
+              totalEntries: 2n,
+            },
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    // 2. Locator 存在時の標準 EOCD 非飽和ディスク異常
+    for (const overrideEocd of [
+      { diskNumber: 1 },
+      { cdDiskNumber: 1 },
+      { diskEntries: 1, totalEntries: 2 },
+    ]) {
+      await expect(
+        parseZipDirectory(
+          createMemoryReader(
+            buildSyntheticZip({
+              zip64: true,
+              entries: [baseEntry],
+              overrideEocd,
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+    }
+
+    // 3. ZIP64 Locator 自体の異常（disk/totalDisks/安全整数超過/56B事前境界違反）
+    const maxSafePlus1 = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
+    const locatorInvalidCases = [
+      { locatorDiskNumber: 1 },
+      { totalDisks: 2 },
+      { totalDisks: 0 },
+      { zip64EocdOffset: maxSafePlus1 },
+    ];
+    for (const overrideZip64Locator of locatorInvalidCases) {
+      await expect(
+        parseZipDirectory(
+          createMemoryReader(
+            buildSyntheticZip({
+              zip64: true,
+              entries: [baseEntry],
+              overrideZip64Locator,
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+    }
+
+    // 事前境界: zip64EocdOffset + 56 > eocdAbsoluteOffset - 20
+    const preBoundaryZip = buildSyntheticZip({
+      zip64: true,
+      entries: [baseEntry],
+    });
+    const preBoundaryView = new DataView(preBoundaryZip.buffer);
+    const locatorPos = preBoundaryZip.byteLength - 22 - 20;
+    preBoundaryView.setBigUint64(locatorPos + 8, BigInt(locatorPos - 55), true);
+    await expect(
+      parseZipDirectory(createMemoryReader(preBoundaryZip)),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    // 4. zip64EocdOffset < tailStart 時の 56B 追加読込が短サイズを返した場合
+    const threeRttShortZip = buildSyntheticZip({
+      zip64: true,
+      betweenZip64EocdAndLocatorBytes: 140_000,
+      entries: [baseEntry],
+    });
+    let z64ReadCall = 0;
+    const shortZ64Reader: RandomAccessReader = {
+      sourceId: "short-z64",
+      totalSize: threeRttShortZip.byteLength,
+      async readRange(offset, length) {
+        z64ReadCall += 1;
+        if (z64ReadCall === 2) {
+          return new Uint8Array(10);
+        }
+        return threeRttShortZip.slice(offset, offset + length);
+      },
+    };
+    await expect(parseZipDirectory(shortZ64Reader)).rejects.toMatchObject({
+      code: "CORRUPT_ZIP",
+    });
+
+    // 5. ZIP64 EOCD Record 内部異常
+    const z64EocdInvalidCases = [
+      { signature: 0x12345678 },
+      { sizeOfZip64Eocd: maxSafePlus1 },
+      { sizeOfZip64Eocd: 43n },
+      { diskNumber: 1 },
+      { cdDiskNumber: 1 },
+      { diskEntries: maxSafePlus1 },
+      { totalEntries: maxSafePlus1 },
+      { diskEntries: 1n, totalEntries: 2n },
+      { cdSize: maxSafePlus1 },
+      { cdOffset: maxSafePlus1 },
+      { cdSize: 9999n },
+    ];
+    for (const overrideZip64Eocd of z64EocdInvalidCases) {
+      await expect(
+        parseZipDirectory(
+          createMemoryReader(
+            buildSyntheticZip({
+              zip64: true,
+              entries: [baseEntry],
+              overrideZip64Eocd,
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+    }
+
+    // 6. CDH diskStartNumber !== 0（非飽和・飽和・非画像エントリ先行検査）
+    await expect(
+      parseZipDirectory(
+        createMemoryReader(
+          buildSyntheticZip({
+            entries: [{ ...baseEntry, overrideCdhDiskStartNumber: 1 }],
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    await expect(
+      parseZipDirectory(
+        createMemoryReader(
+          buildSyntheticZip({
+            entries: [
+              baseEntry,
+              {
+                name: "ComicInfo.xml",
+                data: new Uint8Array([1]),
+                overrideCdhDiskStartNumber: 2,
+              },
+            ],
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    await expect(
+      parseZipDirectory(
+        createMemoryReader(
+          buildSyntheticZip({
+            zip64: true,
+            entries: [
+              {
+                ...baseEntry,
+                zip64Extra: { diskStartNumber: 1 },
+              },
+            ],
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    // 非画像エントリが localHeaderOffset=0xffffffff かつ 0x0001 不在でも isJunkOrNonImageEntry 前に CORRUPT_ZIP
+    await expect(
+      parseZipDirectory(
+        createMemoryReader(
+          buildSyntheticZip({
+            entries: [
+              baseEntry,
+              {
+                name: "ComicInfo.xml",
+                data: new Uint8Array([1]),
+                overrideCdhLocalHeaderOffset: 0xffffffff,
+              },
+            ],
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    // 7. 0x0001 Extra Field TLV 異常・長不足・安全整数超過
+    const nonZip64ExtraOnly = buildTlvBlock(0x5455, new Uint8Array(8));
+    const truncatedTlv = new Uint8Array([0x55, 0x54, 0x20, 0x00, 0x01]); // declares 32 bytes but only 1 byte
+    const overflowTlvZip = buildSyntheticZip({
+      entries: [
+        {
+          ...baseEntry,
+          overrideCdhCompressedSize: 0xffffffff,
+          cdhExtra: truncatedTlv,
+        },
+      ],
+    });
+    await expect(
+      parseZipDirectory(createMemoryReader(overflowTlvZip)),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    const nonZip64OnlyZip = buildSyntheticZip({
+      entries: [
+        {
+          ...baseEntry,
+          overrideCdhCompressedSize: 0xffffffff,
+          cdhExtra: nonZip64ExtraOnly,
+        },
+      ],
+    });
+    await expect(
+      parseZipDirectory(createMemoryReader(nonZip64OnlyZip)),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    const short0001Cases = [
+      {
+        overrideCdhUncompressedSize: 0xffffffff,
+        cdhExtra: buildTlvBlock(0x0001, new Uint8Array(4)),
+      },
+      {
+        overrideCdhUncompressedSize: 0xffffffff,
+        overrideCdhCompressedSize: 0xffffffff,
+        cdhExtra: buildTlvBlock(0x0001, new Uint8Array(12)),
+      },
+      {
+        overrideCdhUncompressedSize: 0xffffffff,
+        overrideCdhCompressedSize: 0xffffffff,
+        overrideCdhLocalHeaderOffset: 0xffffffff,
+        cdhExtra: buildTlvBlock(0x0001, new Uint8Array(20)),
+      },
+      {
+        overrideCdhUncompressedSize: 0xffffffff,
+        overrideCdhCompressedSize: 0xffffffff,
+        overrideCdhLocalHeaderOffset: 0xffffffff,
+        overrideCdhDiskStartNumber: 0xffff,
+        cdhExtra: buildTlvBlock(0x0001, new Uint8Array(26)),
+      },
+    ];
+    for (const shortCase of short0001Cases) {
+      await expect(
+        parseZipDirectory(
+          createMemoryReader(
+            buildSyntheticZip({
+              zip64: true,
+              entries: [{ ...baseEntry, ...shortCase }],
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+    }
+
+    const maxSafe0001Cases = [
+      { uncompressedSize: maxSafePlus1 },
+      { compressedSize: maxSafePlus1 },
+      { localHeaderOffset: maxSafePlus1 },
+    ];
+    for (const zip64Extra of maxSafe0001Cases) {
+      await expect(
+        parseZipDirectory(
+          createMemoryReader(
+            buildSyntheticZip({
+              zip64: true,
+              entries: [{ ...baseEntry, zip64Extra }],
+            }),
+          ),
+        ),
+      ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
     }
   });
 
@@ -416,13 +908,19 @@ describe("zipParser", () => {
       parseZipDirectory(truncatedSecondReader),
     ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
 
-    // 6. totalEntriesがCD実体長を超過（CDH途中で終端）
-    const truncatedCdhCountZip = buildSyntheticZip({
-      entries: [{ name: "001.jpg", data: new Uint8Array([1]) }],
-      overrideEocd: { totalEntries: 2 },
+    // 6. totalEntries*46 <= cdSize を満たすが 2エントリ目のCDH固定ヘッダ途中で終端する破損CD
+    const paddedCdZip = buildSyntheticZip({
+      entries: [
+        {
+          name: "a".repeat(50) + ".jpg",
+          data: new Uint8Array([1]),
+          cdhComment: new Uint8Array(20),
+        },
+      ],
+      overrideEocd: { diskEntries: 2, totalEntries: 2 },
     });
     await expect(
-      parseZipDirectory(createMemoryReader(truncatedCdhCountZip)),
+      parseZipDirectory(createMemoryReader(paddedCdZip)),
     ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
 
     // 7. CDHシグネチャ不正
@@ -468,7 +966,7 @@ describe("zipParser", () => {
     ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
   });
 
-  it("readCompressedPageSliceのLFH境界異常・シグネチャ不一致・2回目読込不足でCORRUPT_ZIPを送出すること (AC-ENG-05)", async () => {
+  it("readCompressedPageSliceのLFH境界異常・シグネチャ不一致・2回目読込不足（ケース2a/2b双方）でCORRUPT_ZIPを送出すること (AC-ENG-05, AC-ENG-10)", async () => {
     const baseEntry: ZipPageEntry = {
       pageIndex: 0,
       entryName: "001.jpg",
@@ -541,7 +1039,36 @@ describe("zipParser", () => {
       readCompressedPageSlice(spanReader, spanEntries[0]),
     ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
 
-    // 6. 1KB超過LFHの2回目読込が不足
+    // 6a. ケース2a（dataStart < initialBuf.byteLength）の2回目読込が不足
+    const case2aZip = buildSyntheticZip({
+      entries: [
+        {
+          name: "001.jpg",
+          data: new Uint8Array(2_000).fill(0x2a),
+          lfhExtra: new Uint8Array(1_050).fill(0x44),
+        },
+      ],
+    });
+    const case2aEntries = await parseZipDirectory(
+      createMemoryReader(case2aZip),
+    );
+    let case2aReadCount = 0;
+    const truncated2aReader: RandomAccessReader = {
+      sourceId: "truncated-2a",
+      totalSize: case2aZip.byteLength,
+      async readRange(offset, length) {
+        case2aReadCount += 1;
+        if (case2aReadCount === 2) {
+          return new Uint8Array(1);
+        }
+        return case2aZip.slice(offset, offset + length);
+      },
+    };
+    await expect(
+      readCompressedPageSlice(truncated2aReader, case2aEntries[0]),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    // 6b. ケース2b（dataStart >= initialBuf.byteLength）の2回目直接読込が不足
     const largeExtraZip = buildSyntheticZip({
       entries: [
         {
