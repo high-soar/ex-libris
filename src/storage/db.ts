@@ -1,8 +1,14 @@
-import Dexie, { type EntityTable } from "dexie";
-import type { SyncMetaRecord } from "./types";
+import Dexie, { type EntityTable, type Table } from "dexie";
+import type {
+  ReadingProgressRecord,
+  SyncMetaRecord,
+  ZipIndexCacheRecord,
+} from "./types";
 
 export class ExLibrisDatabase extends Dexie {
   syncMeta!: EntityTable<SyncMetaRecord, "key">;
+  zipIndexCache!: Table<ZipIndexCacheRecord, string>;
+  readingProgress!: Table<ReadingProgressRecord, string>;
 
   constructor(databaseName = "ExLibrisDB") {
     super(databaseName);

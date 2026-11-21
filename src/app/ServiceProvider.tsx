@@ -4,6 +4,7 @@ import { CapacitorAppBridge } from "../bridges/app/capacitorAppBridge";
 import { MockAppBridge } from "../bridges/app/mockAppBridge";
 import type { AppBridge } from "../bridges/app/types";
 import { resetTestDb } from "../storage/db";
+import type { ZipIndexCacheRepository } from "../storage/repositories/zipIndexCacheRepository";
 import {
   createCoordinatorSession as defaultCreateCoordinatorSession,
   type CoordinatorSessionHandle,
@@ -14,7 +15,14 @@ export interface ServiceProviderProps {
   readonly children?: ReactNode;
   readonly appBridge?: AppBridge;
   readonly createCoordinatorSession?: () => CoordinatorSessionHandle;
+  readonly zipIndexCacheRepo?: ZipIndexCacheRepository;
 }
+
+const RED_STUB_ZIP_INDEX_CACHE_REPO: ZipIndexCacheRepository = {
+  get: async () => null,
+  put: async () => {},
+  delete: async () => {},
+};
 
 function createDefaultAppBridge(): AppBridge {
   return Capacitor.isNativePlatform()
@@ -26,6 +34,7 @@ export function ServiceProvider({
   children,
   appBridge,
   createCoordinatorSession,
+  zipIndexCacheRepo: _zipIndexCacheRepo,
 }: ServiceProviderProps) {
   const fallbackAppBridgeRef = useRef<AppBridge | null>(null);
 
@@ -54,6 +63,7 @@ export function ServiceProvider({
     () => ({
       appBridge: resolvedAppBridge,
       createCoordinatorSession: resolvedCreateCoordinatorSession,
+      zipIndexCacheRepo: RED_STUB_ZIP_INDEX_CACHE_REPO,
     }),
     [resolvedAppBridge, resolvedCreateCoordinatorSession],
   );
