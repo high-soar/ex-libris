@@ -3,8 +3,11 @@ import type { MockAppBridge } from "../../src/bridges/app/mockAppBridge";
 import {
   buildCorruptZipBytes,
   buildPartialCorruptArchive,
+  buildSyntheticCp932Archive,
   buildSyntheticThreePageArchive,
+  buildSyntheticZip64Archive,
   readPngCenterPixel,
+  readZipIndexCacheRecord,
   resetTestDatabase,
   trackPageErrors,
   waitForServicesReady,
@@ -440,6 +443,222 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
 
     await page.goBack();
     await expect(page).toHaveURL("about:blank");
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("ZIP64構造(Locator+EOCD64+0x0001)合成アーカイブを実WebWorkerで解析しWebGL2単ページ描画できること (AC-ENG-09)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    const zip64Bytes = buildSyntheticZip64Archive();
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "zip64-vol01.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(zip64Bytes),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    // Page 0: "001.png" (赤)
+    const page0Pixel = readPngCenterPixel(await canvas.screenshot());
+    expect(page0Pixel.r).toBeGreaterThan(200);
+    expect(page0Pixel.g).toBeLessThan(30);
+    expect(page0Pixel.b).toBeLessThan(30);
+
+    // Page 1: Deflate "002.png" (緑)
+    await page.keyboard.press("ArrowLeft");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "1");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    const page1Pixel = readPngCenterPixel(await canvas.screenshot());
+    expect(page1Pixel.g).toBeGreaterThan(200);
+    expect(page1Pixel.r).toBeLessThan(30);
+    expect(page1Pixel.b).toBeLessThan(30);
+
+    // Page 2: Store "010.png" (青)
+    await page.keyboard.press("ArrowLeft");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "2");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    const page2Pixel = readPngCenterPixel(await canvas.screenshot());
+    expect(page2Pixel.b).toBeGreaterThan(200);
+    expect(page2Pixel.r).toBeLessThan(30);
+    expect(page2Pixel.g).toBeLessThan(30);
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("CP932(Shift_JIS・Bit11未設定)日本語ファイル名アーカイブを文字化けなくセグメント自然順で描画できること (AC-ENG-03, AC-ENG-10)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    const cp932Bytes = buildSyntheticCp932Archive();
+    const expectedCacheKey = `local:cp932-comic.zip:${cp932Bytes.byteLength}`;
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "cp932-comic.zip",
+      mimeType: "application/zip",
+      buffer: Buffer.from(cp932Bytes),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    // IndexedDB上の目次キャッシュに復元済みのCP932エントリ名が自然順で保存されていることも確認
+    await expect
+      .poll(async () => {
+        const record = await readZipIndexCacheRecord(page, expectedCacheKey);
+        return record?.entryNames ?? null;
+      })
+      .toEqual([
+        "第1話/001.png",
+        "第1話/①特典.png",
+        "第2話/002.png",
+        "第10話/010.png",
+      ]);
+
+    // Page 0: "第1話/001.png" (赤)
+    const p0 = readPngCenterPixel(await canvas.screenshot());
+    expect(p0.r).toBeGreaterThan(200);
+    expect(p0.g).toBeLessThan(30);
+    expect(p0.b).toBeLessThan(30);
+
+    // Page 1: "第1話/①特典.png" (黄)
+    await page.keyboard.press("ArrowLeft");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "1");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    const p1 = readPngCenterPixel(await canvas.screenshot());
+    expect(p1.r).toBeGreaterThan(200);
+    expect(p1.g).toBeGreaterThan(200);
+    expect(p1.b).toBeLessThan(30);
+
+    // Page 2: "第2話/002.png" (緑)
+    await page.keyboard.press("ArrowLeft");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "2");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    const p2 = readPngCenterPixel(await canvas.screenshot());
+    expect(p2.g).toBeGreaterThan(200);
+    expect(p2.r).toBeLessThan(30);
+    expect(p2.b).toBeLessThan(30);
+
+    // Page 3: "第10話/010.png" (青)
+    await page.keyboard.press("ArrowLeft");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "3");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    const p3 = readPngCenterPixel(await canvas.screenshot());
+    expect(p3.b).toBeGreaterThan(200);
+    expect(p3.r).toBeLessThan(30);
+    expect(p3.g).toBeLessThan(30);
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("同一ローカルアーカイブ再オープン時にIndexedDB zipIndexCache経由で0RTTオープンされリロード後も永続化されること (AC-ENG-11)", async ({
+    context,
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    const archiveBytes = buildSyntheticThreePageArchive();
+    const cacheKey = `local:cache-0rtt.cbz:${archiveBytes.byteLength}`;
+
+    // 1回目: キャッシュミス -> Central Directory 解析 & IndexedDB 永続化
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "cache-0rtt.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(archiveBytes),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    let firstCachedAt = 0;
+    await expect
+      .poll(async () => {
+        const record = await readZipIndexCacheRecord(page, cacheKey);
+        if (record) {
+          firstCachedAt = record.cachedAt;
+        }
+        return record?.pageCount ?? 0;
+      })
+      .toBe(3);
+    expect(firstCachedAt).toBeGreaterThan(0);
+
+    // ホームに戻り、初回オープンログ(fromIndexCache=false)を確認
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId("bookshelf-empty")).toBeVisible();
+
+    await page.getByTestId("copy-diagnostics-button").click();
+    await expect
+      .poll(async () => page.evaluate(() => navigator.clipboard.readText()))
+      .toContain("fromIndexCache=false");
+
+    // ブラウザリロード後も IndexedDB に zipIndexCache が永続化されていることを確認
+    await page.reload();
+    await waitForServicesReady(page);
+    const persistedAfterReload = await readZipIndexCacheRecord(page, cacheKey);
+    expect(persistedAfterReload).not.toBeNull();
+    expect(persistedAfterReload?.pageCount).toBe(3);
+
+    // cachedAt の単調増加を保証するため少なくとも1ms経過させてから再オープン
+    await expect
+      .poll(() => Date.now(), { timeout: 2_000 })
+      .toBeGreaterThan(firstCachedAt);
+
+    // 2回目: 同一アーカイブを再オープン -> 0RTT (fromIndexCache=true) & LRU cachedAt 更新
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "cache-0rtt.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(archiveBytes),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    const reopenedPixel = readPngCenterPixel(await canvas.screenshot());
+    expect(reopenedPixel.r).toBeGreaterThan(200);
+    expect(reopenedPixel.g).toBeLessThan(30);
+    expect(reopenedPixel.b).toBeLessThan(30);
+
+    await expect
+      .poll(async () => {
+        const record = await readZipIndexCacheRecord(page, cacheKey);
+        return record?.cachedAt ?? 0;
+      })
+      .toBeGreaterThan(firstCachedAt);
+
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/$/);
+    await page.getByTestId("copy-diagnostics-button").click();
+    await expect
+      .poll(async () => page.evaluate(() => navigator.clipboard.readText()))
+      .toContain("目次キャッシュからアーカイブを開きました (0RTT)");
+    const secondReport = await page.evaluate(() =>
+      navigator.clipboard.readText(),
+    );
+    expect(secondReport).toContain(
+      `${cacheKey} (pages=3, fromIndexCache=true)`,
+    );
 
     expect(pageErrors).toEqual([]);
   });

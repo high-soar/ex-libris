@@ -2,8 +2,8 @@
 type: spec-engine
 title: "ZIPストリーミング・I/O・Worker エンジン仕様書"
 description: "LocalFileReader、標準ZIP/ZIP64/CP932対応パーサー、Coordinator/Decode Worker構成、zipIndexCache 0RTTオープン、およびrequestEpoch世代キャンセル制御の正本"
-status: "Review (#19)"
-updated: "2026-11-20"
+status: "Approved (#19)"
+updated: "2026-11-21"
 tags: [engine, zip, zip64, cp932, streaming, web-worker, comlink, cache, epoch]
 related_specs:
   - docs/index.md
