@@ -1,7 +1,7 @@
+import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
 import type { DecodedPageFrame } from "../engine/types";
 import type { ReadyPageFrame } from "./l1PageCache";
 import { FRAGMENT_SHADER_SOURCE, VERTEX_SHADER_SOURCE } from "./shaders";
-
 import type { RenderSlotFrame, ViewportSlot } from "./types";
 
 export type BitmapCropper = (
@@ -43,13 +43,38 @@ interface WebGLPipeline {
   readonly vao: WebGLVertexArrayObject;
   readonly vbo: WebGLBuffer;
   readonly scaleLoc: WebGLUniformLocation;
+  readonly offsetLoc: WebGLUniformLocation;
   readonly textureLoc: WebGLUniformLocation;
 }
 
-interface TextureEntry {
+interface TileTexture {
   readonly texture: WebGLTexture;
-  readonly bitmap: ImageBitmap;
+  readonly xFrac: number;
+  readonly yFrac: number;
+  readonly wFrac: number;
+  readonly hFrac: number;
 }
+
+interface TextureEntry {
+  readonly bitmap: ImageBitmap;
+  readonly tiles: readonly TileTexture[];
+}
+
+interface NdcRect {
+  readonly xMin: number;
+  readonly xMax: number;
+  readonly yMin: number;
+  readonly yMax: number;
+}
+
+interface SlotDrawJob {
+  readonly slot: ViewportSlot;
+  readonly frame: ReadyPageFrame;
+  readonly rect: NdcRect;
+}
+
+const DEFAULT_MAX_TEXTURE_SIZE = 4096;
+const MAX_SPLIT_TILES = 16;
 
 const QUAD_VERTICES = new Float32Array([
   -1, 1, 0, 0, -1, -1, 0, 1, 1, 1, 1, 0, 1, -1, 1, 1,
@@ -57,6 +82,61 @@ const QUAD_VERTICES = new Float32Array([
 
 function isPositiveFinite(value: number): boolean {
   return Number.isFinite(value) && value > 0;
+}
+
+function normalizeMaxTextureSize(rawValue: unknown): number {
+  if (
+    typeof rawValue === "number" &&
+    Number.isFinite(rawValue) &&
+    rawValue >= 1
+  ) {
+    return Math.floor(rawValue);
+  }
+  return DEFAULT_MAX_TEXTURE_SIZE;
+}
+
+function computeResizedDimensions(
+  width: number,
+  height: number,
+  maxTextureSize: number,
+): { readonly resizeWidth: number; readonly resizeHeight: number } {
+  const scale = Math.min(maxTextureSize / width, maxTextureSize / height);
+  return {
+    resizeWidth: Math.max(
+      1,
+      Math.min(maxTextureSize, Math.floor(width * scale)),
+    ),
+    resizeHeight: Math.max(
+      1,
+      Math.min(maxTextureSize, Math.floor(height * scale)),
+    ),
+  };
+}
+
+function isReadyFrame(frame: DecodedPageFrame | null): frame is ReadyPageFrame {
+  return frame !== null && frame.status === "ready";
+}
+
+function defaultBitmapCropper(
+  bitmap: ImageBitmap,
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number,
+): Promise<ImageBitmap> {
+  return createImageBitmap(bitmap, sx, sy, sw, sh);
+}
+
+function defaultBitmapResizer(
+  bitmap: ImageBitmap,
+  resizeWidth: number,
+  resizeHeight: number,
+): Promise<ImageBitmap> {
+  return createImageBitmap(bitmap, {
+    resizeWidth,
+    resizeHeight,
+    resizeQuality: "high",
+  });
 }
 
 export function computeAspectFitScale(
@@ -114,29 +194,240 @@ export function clampViewportDimensions(
   };
 }
 
+function computeCenteredSlotRect(
+  imageWidth: number,
+  imageHeight: number,
+  vpWidth: number,
+  vpHeight: number,
+): NdcRect {
+  const [scaleX, scaleY] = computeAspectFitScale(
+    imageWidth,
+    imageHeight,
+    vpWidth,
+    vpHeight,
+  );
+  return {
+    xMin: -scaleX,
+    xMax: scaleX,
+    yMin: -scaleY,
+    yMax: scaleY,
+  };
+}
+
+function computeHalfScreenSlotRect(
+  imageWidth: number,
+  imageHeight: number,
+  vpWidth: number,
+  vpHeight: number,
+  position: "left" | "right",
+): NdcRect {
+  const [halfScaleX, halfScaleY] = computeAspectFitScale(
+    imageWidth,
+    imageHeight,
+    vpWidth / 2,
+    vpHeight,
+  );
+  if (position === "left") {
+    return {
+      xMin: -halfScaleX,
+      xMax: 0,
+      yMin: -halfScaleY,
+      yMax: halfScaleY,
+    };
+  }
+  return {
+    xMin: 0,
+    xMax: halfScaleX,
+    yMin: -halfScaleY,
+    yMax: halfScaleY,
+  };
+}
+
+function computeCombinedSpreadRects(
+  leftFrame: ReadyPageFrame,
+  rightFrame: ReadyPageFrame,
+  vpWidth: number,
+  vpHeight: number,
+): { readonly left: NdcRect; readonly right: NdcRect } {
+  const normWidthL =
+    isPositiveFinite(leftFrame.width) && isPositiveFinite(leftFrame.height)
+      ? leftFrame.width / leftFrame.height
+      : 1;
+  const normWidthR =
+    isPositiveFinite(rightFrame.width) && isPositiveFinite(rightFrame.height)
+      ? rightFrame.width / rightFrame.height
+      : 1;
+  const combinedAspect = normWidthL + normWidthR;
+  const [totalScaleX, totalScaleY] = computeAspectFitScale(
+    combinedAspect,
+    1,
+    vpWidth,
+    vpHeight,
+  );
+  const seamX = -totalScaleX + (2 * totalScaleX * normWidthL) / combinedAspect;
+
+  return {
+    left: {
+      xMin: -totalScaleX,
+      xMax: seamX,
+      yMin: -totalScaleY,
+      yMax: totalScaleY,
+    },
+    right: {
+      xMin: seamX,
+      xMax: totalScaleX,
+      yMin: -totalScaleY,
+      yMax: totalScaleY,
+    },
+  };
+}
+
+function resolveSlotDrawJobs(
+  slots: readonly RenderSlotFrame[],
+  vpWidth: number,
+  vpHeight: number,
+): SlotDrawJob[] {
+  if (slots.length === 1) {
+    const entry = slots[0];
+    if (!isReadyFrame(entry.frame)) {
+      return [];
+    }
+    const rect =
+      entry.slot.position === "center"
+        ? computeCenteredSlotRect(
+            entry.frame.width,
+            entry.frame.height,
+            vpWidth,
+            vpHeight,
+          )
+        : computeHalfScreenSlotRect(
+            entry.frame.width,
+            entry.frame.height,
+            vpWidth,
+            vpHeight,
+            entry.slot.position,
+          );
+    return [{ slot: entry.slot, frame: entry.frame, rect }];
+  }
+
+  const leftEntry = slots.find((item) => item.slot.position === "left");
+  const rightEntry = slots.find((item) => item.slot.position === "right");
+  if (leftEntry !== undefined && rightEntry !== undefined) {
+    const leftReady = isReadyFrame(leftEntry.frame) ? leftEntry.frame : null;
+    const rightReady = isReadyFrame(rightEntry.frame) ? rightEntry.frame : null;
+
+    if (leftReady !== null && rightReady !== null) {
+      const rects = computeCombinedSpreadRects(
+        leftReady,
+        rightReady,
+        vpWidth,
+        vpHeight,
+      );
+      return slots.indexOf(leftEntry) <= slots.indexOf(rightEntry)
+        ? [
+            { slot: leftEntry.slot, frame: leftReady, rect: rects.left },
+            { slot: rightEntry.slot, frame: rightReady, rect: rects.right },
+          ]
+        : [
+            { slot: rightEntry.slot, frame: rightReady, rect: rects.right },
+            { slot: leftEntry.slot, frame: leftReady, rect: rects.left },
+          ];
+    }
+
+    if (leftReady !== null) {
+      return [
+        {
+          slot: leftEntry.slot,
+          frame: leftReady,
+          rect: computeHalfScreenSlotRect(
+            leftReady.width,
+            leftReady.height,
+            vpWidth,
+            vpHeight,
+            "left",
+          ),
+        },
+      ];
+    }
+
+    if (rightReady !== null) {
+      return [
+        {
+          slot: rightEntry.slot,
+          frame: rightReady,
+          rect: computeHalfScreenSlotRect(
+            rightReady.width,
+            rightReady.height,
+            vpWidth,
+            vpHeight,
+            "right",
+          ),
+        },
+      ];
+    }
+
+    return [];
+  }
+
+  const firstReady = slots.find((item) => isReadyFrame(item.frame));
+  if (firstReady === undefined) {
+    return [];
+  }
+  const readyFrame = firstReady.frame as ReadyPageFrame;
+  return [
+    {
+      slot: firstReady.slot,
+      frame: readyFrame,
+      rect: computeCenteredSlotRect(
+        readyFrame.width,
+        readyFrame.height,
+        vpWidth,
+        vpHeight,
+      ),
+    },
+  ];
+}
+
 export class WebGLRendererCore {
   private readonly gl: WebGL2RenderingContext;
+  private readonly onAsyncTextureReady?: (pageIndex: number) => void;
+  private readonly bitmapCropper: BitmapCropper;
+  private readonly bitmapResizer: BitmapResizer;
   private pipeline: WebGLPipeline | null = null;
   private maxViewportDims: ArrayLike<number> | null = null;
+  private maxTextureSize = DEFAULT_MAX_TEXTURE_SIZE;
   private viewportWidth = 0;
   private viewportHeight = 0;
+  private contextGeneration = 0;
   private disposed = false;
   private readonly textures = new Map<number, TextureEntry>();
+  private readonly pendingBitmaps = new Map<number, ImageBitmap>();
+  private readonly failedOversizedBitmaps = new Map<number, ImageBitmap>();
 
   constructor(
     gl: WebGL2RenderingContext,
-    _options: WebGLRendererCoreOptions = {},
+    options: WebGLRendererCoreOptions = {},
   ) {
     this.gl = gl;
+    this.onAsyncTextureReady = options.onAsyncTextureReady;
+    this.bitmapCropper = options.bitmapCropper ?? defaultBitmapCropper;
+    this.bitmapResizer = options.bitmapResizer ?? defaultBitmapResizer;
     this.initPipeline();
   }
 
   getMaxTextureSize(): number {
-    throw new Error("Not implemented");
+    return this.maxTextureSize;
   }
 
   notifyContextLost(): void {
-    throw new Error("Not implemented");
+    if (this.disposed) {
+      return;
+    }
+    this.contextGeneration += 1;
+    this.pendingBitmaps.clear();
+    this.textures.clear();
+    this.failedOversizedBitmaps.clear();
+    this.pipeline = null;
   }
 
   resize(cssWidth: number, cssHeight: number, dpr: number): boolean {
@@ -166,56 +457,96 @@ export class WebGLRendererCore {
     return true;
   }
 
-  renderSlots(_slots: readonly RenderSlotFrame[]): readonly ViewportSlot[] {
-    throw new Error("Not implemented");
-  }
-
-  renderFrame(frame: DecodedPageFrame | null): void {
-    if (this.disposed || this.pipeline === null) {
-      return;
+  renderSlots(slots: readonly RenderSlotFrame[]): readonly ViewportSlot[] {
+    if (
+      this.disposed ||
+      this.pipeline === null ||
+      (this.gl.isContextLost?.() ?? false)
+    ) {
+      return [];
     }
 
     this.gl.clearColor(0, 0, 0, 1);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
 
-    if (frame === null || frame.status !== "ready") {
-      return;
-    }
-
-    if (!this.ensurePageTexture(frame)) {
-      return;
+    if (slots.length === 0) {
+      return [];
     }
 
     const vpWidth =
       this.viewportWidth > 0 ? this.viewportWidth : this.gl.canvas.width;
     const vpHeight =
       this.viewportHeight > 0 ? this.viewportHeight : this.gl.canvas.height;
-    const [scaleX, scaleY] = computeAspectFitScale(
-      frame.width,
-      frame.height,
-      vpWidth,
-      vpHeight,
-    );
+    const drawJobs = resolveSlotDrawJobs(slots, vpWidth, vpHeight);
+    if (drawJobs.length === 0) {
+      return [];
+    }
+
+    const preparedJobs: Array<{
+      readonly slot: ViewportSlot;
+      readonly tiles: readonly TileTexture[];
+      readonly rect: NdcRect;
+    }> = [];
+
+    for (const job of drawJobs) {
+      const tiles = this.ensurePageTexture(job.frame);
+      if (tiles !== null) {
+        preparedJobs.push({
+          slot: job.slot,
+          tiles,
+          rect: job.rect,
+        });
+      }
+    }
+
+    if (preparedJobs.length === 0) {
+      return [];
+    }
 
     this.gl.useProgram(this.pipeline.program);
     this.gl.bindVertexArray(this.pipeline.vao);
-    this.gl.uniform2f(this.pipeline.scaleLoc, scaleX, scaleY);
+    this.gl.activeTexture(this.gl.TEXTURE0);
     this.gl.uniform1i(this.pipeline.textureLoc, 0);
-    this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
+
+    const renderedSlots: ViewportSlot[] = [];
+    for (const prepared of preparedJobs) {
+      this.drawTilesInRect(this.pipeline, prepared.tiles, prepared.rect);
+      renderedSlots.push(prepared.slot);
+    }
+
     this.gl.bindVertexArray(null);
+    return renderedSlots;
+  }
+
+  renderFrame(frame: DecodedPageFrame | null): void {
+    const pageIndex = frame !== null ? frame.pageIndex : 0;
+    this.renderSlots([
+      {
+        slot: { pageIndex, position: "center" },
+        frame,
+      },
+    ]);
   }
 
   deletePageTexture(pageIndex: number): void {
+    this.pendingBitmaps.delete(pageIndex);
+    this.failedOversizedBitmaps.delete(pageIndex);
     const entry = this.textures.get(pageIndex);
     if (entry !== undefined) {
       this.textures.delete(pageIndex);
-      this.gl.deleteTexture(entry.texture);
+      for (const tile of entry.tiles) {
+        this.gl.deleteTexture(tile.texture);
+      }
     }
   }
 
   clearAllTextures(): void {
+    this.pendingBitmaps.clear();
+    this.failedOversizedBitmaps.clear();
     for (const entry of this.textures.values()) {
-      this.gl.deleteTexture(entry.texture);
+      for (const tile of entry.tiles) {
+        this.gl.deleteTexture(tile.texture);
+      }
     }
     this.textures.clear();
   }
@@ -224,7 +555,10 @@ export class WebGLRendererCore {
     if (this.disposed) {
       return;
     }
+    this.contextGeneration += 1;
+    this.pendingBitmaps.clear();
     this.textures.clear();
+    this.failedOversizedBitmaps.clear();
     this.pipeline = null;
     this.initPipeline();
     if (this.viewportWidth > 0) {
@@ -237,6 +571,7 @@ export class WebGLRendererCore {
       return;
     }
     this.disposed = true;
+    this.contextGeneration += 1;
     this.clearAllTextures();
     if (this.pipeline !== null) {
       this.gl.deleteVertexArray(this.pipeline.vao);
@@ -246,27 +581,293 @@ export class WebGLRendererCore {
     }
   }
 
-  private ensurePageTexture(frame: ReadyPageFrame): boolean {
+  private drawTilesInRect(
+    pipeline: WebGLPipeline,
+    tiles: readonly TileTexture[],
+    rect: NdcRect,
+  ): void {
+    const slotWidth = rect.xMax - rect.xMin;
+    const slotHeight = rect.yMax - rect.yMin;
+
+    for (const tile of tiles) {
+      const tileXMin = rect.xMin + tile.xFrac * slotWidth;
+      const tileXMax = rect.xMin + (tile.xFrac + tile.wFrac) * slotWidth;
+      const tileYMax = rect.yMax - tile.yFrac * slotHeight;
+      const tileYMin = rect.yMax - (tile.yFrac + tile.hFrac) * slotHeight;
+
+      const scaleX = (tileXMax - tileXMin) / 2;
+      const scaleY = (tileYMax - tileYMin) / 2;
+      const offsetX = (tileXMin + tileXMax) / 2;
+      const offsetY = (tileYMin + tileYMax) / 2;
+
+      this.gl.bindTexture(this.gl.TEXTURE_2D, tile.texture);
+      this.gl.uniform2f(pipeline.scaleLoc, scaleX, scaleY);
+      this.gl.uniform2f(pipeline.offsetLoc, offsetX, offsetY);
+      this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
+    }
+  }
+
+  private isAsyncPrepValid(
+    pageIndex: number,
+    bitmap: ImageBitmap,
+    capturedGen: number,
+  ): boolean {
+    return (
+      !this.disposed &&
+      this.contextGeneration === capturedGen &&
+      this.pendingBitmaps.get(pageIndex) === bitmap &&
+      !(this.gl.isContextLost?.() ?? false)
+    );
+  }
+
+  private deleteTextureList(textures: WebGLTexture[]): void {
+    for (const texture of textures) {
+      this.gl.deleteTexture(texture);
+    }
+    textures.length = 0;
+  }
+
+  private handleOversizedFailure(
+    frame: ReadyPageFrame,
+    createdTextures: WebGLTexture[],
+    detail: string,
+  ): void {
+    this.deleteTextureList(createdTextures);
+    this.pendingBitmaps.delete(frame.pageIndex);
+    this.failedOversizedBitmaps.set(frame.pageIndex, frame.bitmap);
+    diagnosticLogger.error(
+      "webgl2",
+      "MAX_TEXTURE_SIZE 超過画像のテクスチャ準備に失敗しました",
+      `page=${frame.pageIndex}, image=${frame.bitmap.width}x${frame.bitmap.height}, maxTextureSize=${this.maxTextureSize}: ${detail}`,
+    );
+  }
+
+  private async prepareOversizedTexture(
+    frame: ReadyPageFrame,
+    capturedGen: number,
+    capturedMaxTex: number,
+  ): Promise<void> {
+    const bw = frame.bitmap.width;
+    const bh = frame.bitmap.height;
+    const cols = Math.ceil(bw / capturedMaxTex);
+    const rows = Math.ceil(bh / capturedMaxTex);
+    const tileCount = cols * rows;
+    const createdTextures: WebGLTexture[] = [];
+
+    let tiles: TileTexture[] | null = null;
+    let cancelled = false;
+
+    if (tileCount <= MAX_SPLIT_TILES) {
+      const splitTiles: TileTexture[] = [];
+      let splitFailed = false;
+
+      for (let row = 0; row < rows; row += 1) {
+        for (let col = 0; col < cols; col += 1) {
+          if (
+            !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
+          ) {
+            cancelled = true;
+            break;
+          }
+
+          const sx = col * capturedMaxTex;
+          const sy = row * capturedMaxTex;
+          const sw = Math.min(capturedMaxTex, bw - sx);
+          const sh = Math.min(capturedMaxTex, bh - sy);
+
+          let tileBitmap: ImageBitmap | null = null;
+          try {
+            tileBitmap = await this.bitmapCropper(frame.bitmap, sx, sy, sw, sh);
+            if (
+              !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
+            ) {
+              cancelled = true;
+              break;
+            }
+            const texture = this.uploadBitmapToTexture(tileBitmap);
+            if (!texture) {
+              if (
+                !this.isAsyncPrepValid(
+                  frame.pageIndex,
+                  frame.bitmap,
+                  capturedGen,
+                )
+              ) {
+                cancelled = true;
+              } else {
+                splitFailed = true;
+              }
+              break;
+            }
+            createdTextures.push(texture);
+            splitTiles.push({
+              texture,
+              xFrac: sx / bw,
+              yFrac: sy / bh,
+              wFrac: sw / bw,
+              hFrac: sh / bh,
+            });
+          } catch {
+            if (
+              !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
+            ) {
+              cancelled = true;
+            } else {
+              splitFailed = true;
+            }
+            break;
+          } finally {
+            tileBitmap?.close();
+          }
+        }
+
+        if (cancelled || splitFailed) {
+          break;
+        }
+      }
+
+      if (cancelled) {
+        this.deleteTextureList(createdTextures);
+        return;
+      }
+
+      if (splitFailed) {
+        this.deleteTextureList(createdTextures);
+      } else {
+        tiles = splitTiles;
+      }
+    }
+
+    if (tiles === null) {
+      const { resizeWidth, resizeHeight } = computeResizedDimensions(
+        bw,
+        bh,
+        capturedMaxTex,
+      );
+      let resizedBitmap: ImageBitmap | null = null;
+      try {
+        resizedBitmap = await this.bitmapResizer(
+          frame.bitmap,
+          resizeWidth,
+          resizeHeight,
+        );
+        if (
+          !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
+        ) {
+          this.deleteTextureList(createdTextures);
+          return;
+        }
+        const texture = this.uploadBitmapToTexture(resizedBitmap);
+        if (!texture) {
+          if (
+            !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
+          ) {
+            this.deleteTextureList(createdTextures);
+            return;
+          }
+          this.handleOversizedFailure(
+            frame,
+            createdTextures,
+            "createTexture returned null during resize fallback",
+          );
+          return;
+        }
+        createdTextures.push(texture);
+        tiles = [{ texture, xFrac: 0, yFrac: 0, wFrac: 1, hFrac: 1 }];
+      } catch (error) {
+        if (
+          !this.isAsyncPrepValid(frame.pageIndex, frame.bitmap, capturedGen)
+        ) {
+          this.deleteTextureList(createdTextures);
+          return;
+        }
+        const detail = error instanceof Error ? error.message : String(error);
+        this.handleOversizedFailure(frame, createdTextures, detail);
+        return;
+      } finally {
+        resizedBitmap?.close();
+      }
+    }
+
+    this.pendingBitmaps.delete(frame.pageIndex);
+    this.textures.set(frame.pageIndex, {
+      bitmap: frame.bitmap,
+      tiles,
+    });
+    this.onAsyncTextureReady?.(frame.pageIndex);
+  }
+
+  private ensurePageTexture(
+    frame: ReadyPageFrame,
+  ): readonly TileTexture[] | null {
     const existing = this.textures.get(frame.pageIndex);
     if (existing !== undefined && existing.bitmap === frame.bitmap) {
-      this.gl.activeTexture(this.gl.TEXTURE0);
-      this.gl.bindTexture(this.gl.TEXTURE_2D, existing.texture);
-      return true;
+      return existing.tiles;
     }
 
     if (existing !== undefined) {
-      this.gl.deleteTexture(existing.texture);
+      for (const tile of existing.tiles) {
+        this.gl.deleteTexture(tile.texture);
+      }
       this.textures.delete(frame.pageIndex);
     }
 
+    const pending = this.pendingBitmaps.get(frame.pageIndex);
+    if (pending === frame.bitmap) {
+      return null;
+    }
+    if (pending !== undefined) {
+      this.pendingBitmaps.delete(frame.pageIndex);
+    }
+
+    if (this.failedOversizedBitmaps.get(frame.pageIndex) === frame.bitmap) {
+      return null;
+    }
+    this.failedOversizedBitmaps.delete(frame.pageIndex);
+
+    const bw = frame.bitmap.width;
+    const bh = frame.bitmap.height;
+    if (bw > this.maxTextureSize || bh > this.maxTextureSize) {
+      const cols = Math.ceil(bw / this.maxTextureSize);
+      const rows = Math.ceil(bh / this.maxTextureSize);
+      const tileCount = cols * rows;
+      const strategy =
+        tileCount <= MAX_SPLIT_TILES
+          ? `tile-split (${cols}x${rows}=${tileCount})`
+          : `resize-fallback (tiles=${tileCount} > ${MAX_SPLIT_TILES})`;
+      diagnosticLogger.warn(
+        "webgl2",
+        "画像サイズが MAX_TEXTURE_SIZE を超過したため分割/縮小フォールバックを実行します",
+        `page=${frame.pageIndex}, image=${bw}x${bh}, maxTextureSize=${this.maxTextureSize}, strategy=${strategy}`,
+      );
+      this.pendingBitmaps.set(frame.pageIndex, frame.bitmap);
+      void this.prepareOversizedTexture(
+        frame,
+        this.contextGeneration,
+        this.maxTextureSize,
+      );
+      return null;
+    }
+
+    const texture = this.uploadBitmapToTexture(frame.bitmap);
+    if (!texture) {
+      return null;
+    }
+    const tiles: readonly TileTexture[] = [
+      { texture, xFrac: 0, yFrac: 0, wFrac: 1, hFrac: 1 },
+    ];
+    this.textures.set(frame.pageIndex, {
+      bitmap: frame.bitmap,
+      tiles,
+    });
+    return tiles;
+  }
+
+  private uploadBitmapToTexture(bitmap: ImageBitmap): WebGLTexture | null {
     const texture = this.gl.createTexture();
     if (!texture) {
-      return false;
+      return null;
     }
-    this.textures.set(frame.pageIndex, {
-      texture,
-      bitmap: frame.bitmap,
-    });
 
     this.gl.activeTexture(this.gl.TEXTURE0);
     this.gl.bindTexture(this.gl.TEXTURE_2D, texture);
@@ -277,7 +878,7 @@ export class WebGLRendererCore {
       this.gl.RGBA,
       this.gl.RGBA,
       this.gl.UNSIGNED_BYTE,
-      frame.bitmap,
+      bitmap,
     );
     this.gl.generateMipmap(this.gl.TEXTURE_2D);
     this.gl.texParameteri(
@@ -300,7 +901,7 @@ export class WebGLRendererCore {
       this.gl.TEXTURE_WRAP_T,
       this.gl.CLAMP_TO_EDGE,
     );
-    return true;
+    return texture;
   }
 
   private compileShader(type: number, source: string): WebGLShader {
@@ -399,11 +1000,13 @@ export class WebGLRendererCore {
       const positionLoc = this.gl.getAttribLocation(program, "a_position");
       const texCoordLoc = this.gl.getAttribLocation(program, "a_texCoord");
       const scaleLoc = this.gl.getUniformLocation(program, "u_scale");
+      const offsetLoc = this.gl.getUniformLocation(program, "u_offset");
       const textureLoc = this.gl.getUniformLocation(program, "u_texture");
       if (
         positionLoc < 0 ||
         texCoordLoc < 0 ||
         scaleLoc === null ||
+        offsetLoc === null ||
         textureLoc === null
       ) {
         throw new WebGLInitError(
@@ -421,11 +1024,15 @@ export class WebGLRendererCore {
         vao,
         vbo,
         scaleLoc,
+        offsetLoc,
         textureLoc,
       };
       this.maxViewportDims = this.gl.getParameter(
         this.gl.MAX_VIEWPORT_DIMS,
       ) as ArrayLike<number> | null;
+      this.maxTextureSize = normalizeMaxTextureSize(
+        this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE),
+      );
       this.gl.clearColor(0, 0, 0, 1);
     } catch (error) {
       if (program) {
