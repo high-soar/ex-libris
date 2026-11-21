@@ -10,6 +10,7 @@ import type {
   ZipPageEntry,
 } from "../types";
 import { ZipArchiveError, isAbortError } from "../zip/errors";
+import { validateZipIndexEntries } from "../zip/zipIndexValidation";
 import { parseZipDirectory, readCompressedPageSlice } from "../zip/zipParser";
 
 export type ArchiveReaderFactory = (
@@ -195,10 +196,11 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
     const controller = this.registerAbortController(epoch);
 
     try {
-      const parsedEntries =
-        cachedEntries !== null
-          ? [...cachedEntries]
-          : await parseZipDirectory(reader, controller.signal);
+      const hasValidCache =
+        cachedEntries !== null && validateZipIndexEntries(cachedEntries);
+      const parsedEntries = hasValidCache
+        ? [...cachedEntries]
+        : await parseZipDirectory(reader, controller.signal);
 
       if (controller.signal.aborted) {
         throw new DOMException("Aborted", "AbortError");
@@ -210,7 +212,7 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
       return {
         pageCount: parsedEntries.length,
         entries: parsedEntries,
-        fromIndexCache: cachedEntries !== null,
+        fromIndexCache: hasValidCache,
       };
     } finally {
       this.unregisterAbortController(epoch, controller);

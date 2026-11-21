@@ -5,6 +5,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import {
   type ReactElement,
@@ -31,9 +32,12 @@ import type {
   DecodedPageFrame,
   OpenArchiveResult,
   ZipErrorCode,
+  ZipPageEntry,
 } from "../../engine/types";
 import { ZipArchiveError } from "../../engine/zip/errors";
 import { RouterProvider } from "../../shared/router/RouterProvider";
+import { resetTestDb } from "../../storage/db";
+import type { ZipIndexCacheRepository } from "../../storage/repositories/zipIndexCacheRepository";
 import * as ReaderCanvasModule from "../../webgl/ReaderCanvas";
 import * as ReaderErrorViewModule from "./ReaderErrorView";
 import * as ReaderHudOverlayModule from "./ReaderHudOverlay";
@@ -96,6 +100,31 @@ function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, 0);
   });
+}
+
+function createSampleZipEntries(count = 2): ZipPageEntry[] {
+  return Array.from({ length: count }, (_, pageIndex) => ({
+    pageIndex,
+    entryName: `${String(pageIndex + 1).padStart(3, "0")}.jpg`,
+    entryNameByteLength: 7,
+    compressionMethod: 0,
+    compressedSize: 128,
+    uncompressedSize: 128,
+    localHeaderOffset: pageIndex * 200,
+    physicalEnd: pageIndex * 200 + 180,
+    crc32: 0x12340000 + pageIndex,
+  }));
+}
+
+function createMockZipIndexCacheRepo(
+  overrides: Partial<ZipIndexCacheRepository> = {},
+): ZipIndexCacheRepository {
+  return {
+    get: vi.fn(async () => null),
+    put: vi.fn(async () => {}),
+    delete: vi.fn(async () => {}),
+    ...overrides,
+  };
 }
 
 function dispatchPointer(
@@ -162,7 +191,8 @@ describe("ReaderPage", () => {
   let hudSpy: MockInstance<typeof ReaderHudOverlayModule.ReaderHudOverlay>;
   let errorViewSpy: MockInstance<typeof ReaderErrorViewModule.ReaderErrorView>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await resetTestDb();
     diagnosticLogger.clear();
     useLocalReaderSessionStore.setState({ session: null });
     window.history.replaceState(null, "", "/read/local");
@@ -178,11 +208,12 @@ describe("ReaderPage", () => {
       .mockImplementation(() => null);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup();
     vi.restoreAllMocks();
     useLocalReaderSessionStore.setState({ session: null });
     window.history.replaceState(null, "", originalUrl || "/");
+    await resetTestDb();
   });
 
   const getLatestCanvasProps = (): ReaderCanvasModule.ReaderCanvasProps => {
@@ -211,10 +242,14 @@ describe("ReaderPage", () => {
     file = new File(["zip-bytes"], "comic-vol01.cbz", {
       type: "application/x-cbz",
     }),
+    zipIndexCacheRepo?: ZipIndexCacheRepository,
   ) => {
     useLocalReaderSessionStore.getState().openLocalFile(file);
     return render(
-      <ServiceProvider createCoordinatorSession={sessionFactory}>
+      <ServiceProvider
+        createCoordinatorSession={sessionFactory}
+        zipIndexCacheRepo={zipIndexCacheRepo}
+      >
         <RouterProvider initialPath="/read/local">
           <ReaderPage {...props} />
         </RouterProvider>
@@ -318,8 +353,12 @@ describe("ReaderPage", () => {
       </StrictMode>,
     );
 
-    await act(async () => {
-      await flushMicrotasks();
+    await waitFor(() => {
+      expect(session2.api.openArchive).toHaveBeenCalledTimes(1);
+      expect(getLatestCanvasProps().frame).toMatchObject({
+        status: "ready",
+        pageIndex: 0,
+      });
     });
 
     // StrictMode の 1 回目アンマウントでセッション1は停止されるが、Zustand session は消えない
@@ -328,13 +367,6 @@ describe("ReaderPage", () => {
     expect(session1.dispose).toHaveBeenCalledTimes(1);
     expect(useLocalReaderSessionStore.getState().session?.file).toBe(file);
     expect(window.location.pathname).toBe("/read/local");
-
-    // 2 回目のマウントで正常にページ描画まで到達する
-    expect(session2.api.openArchive).toHaveBeenCalledTimes(1);
-    expect(getLatestCanvasProps().frame).toMatchObject({
-      status: "ready",
-      pageIndex: 0,
-    });
 
     // レンダラハンドル登録後のアンマウント時に clearAllTextures が呼ばれることも検証
     act(() => {
@@ -373,15 +405,17 @@ describe("ReaderPage", () => {
 
     // オープン中・未描画時はローディング表示
     expect(screen.getByTestId("reader-loading")).toBeVisible();
-    expect(mockSession.api.openArchive).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: "local-session",
-        rawFileName: "comic-vol01.cbz",
-        indexCacheKey: expect.stringMatching(/^local:comic-vol01\.cbz:/),
-      }),
-      null,
-      1,
-    );
+    await waitFor(() => {
+      expect(mockSession.api.openArchive).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "local-session",
+          rawFileName: "comic-vol01.cbz",
+          indexCacheKey: expect.stringMatching(/^local:comic-vol01\.cbz:/),
+        }),
+        null,
+        1,
+      );
+    });
 
     // openArchive 完了 -> まず Fast-Path [0] のみ要求される
     await act(async () => {
@@ -505,10 +539,9 @@ describe("ReaderPage", () => {
       });
     });
 
-    await act(async () => {
-      await flushMicrotasks();
+    await waitFor(() => {
+      expect(getLatestCanvasProps().frame).toBe(frame0);
     });
-    expect(getLatestCanvasProps().frame).toBe(frame0);
 
     // ページ 1 へ進めて epoch を 2 へ上げる（epoch 1 の [1], [2] はまだ未完了）
     await act(async () => {
@@ -556,8 +589,9 @@ describe("ReaderPage", () => {
     const onRegisterExit = vi.fn();
     renderWithSession({ onRegisterExit }, () => mockSession.handle);
 
-    await act(async () => {
-      await flushMicrotasks();
+    await waitFor(() => {
+      expect(getLatestHudProps().totalPages).toBe(4);
+      expect(screen.queryByTestId("reader-loading")).not.toBeInTheDocument();
     });
 
     const surface = screen.getByTestId("reader-interaction-surface");
@@ -683,8 +717,8 @@ describe("ReaderPage", () => {
         });
       });
 
-      await act(async () => {
-        await flushMicrotasks();
+      await waitFor(() => {
+        expect(mockSession.api.openArchive).toHaveBeenCalledTimes(1);
       });
 
       // Escape キーと重複 close 呼び出しで TR-08 が 1 回だけ実行されること
@@ -763,11 +797,10 @@ describe("ReaderPage", () => {
 
     renderWithSession({}, () => mockSession.handle);
 
-    await act(async () => {
-      await flushMicrotasks();
-    });
-
     // ページ 0 は error フレームとしてページエラー表示 & 診断ログ記録
+    await waitFor(() => {
+      expect(errorViewSpy).toHaveBeenCalled();
+    });
     expect(getLatestErrorViewProps()).toEqual({
       mode: "page",
       message: "ページの画像デコードに失敗しました",
@@ -818,8 +851,8 @@ describe("ReaderPage", () => {
       () => failingSession.handle,
     );
 
-    await act(async () => {
-      await flushMicrotasks();
+    await waitFor(() => {
+      expect(errorViewSpy).toHaveBeenCalled();
     });
 
     expect(getLatestErrorViewProps()).toEqual({
@@ -845,6 +878,7 @@ describe("ReaderPage", () => {
     unmountEncrypted();
 
     // 2. openArchive が pageCount=0 を返した場合も EMPTY_ARCHIVE 扱い
+    errorViewSpy.mockClear();
     const emptySession = createMockCoordinatorSession({
       openArchive: vi.fn(async () => ({
         pageCount: 0,
@@ -856,8 +890,8 @@ describe("ReaderPage", () => {
       {},
       () => emptySession.handle,
     );
-    await act(async () => {
-      await flushMicrotasks();
+    await waitFor(() => {
+      expect(errorViewSpy).toHaveBeenCalled();
     });
     expect(getLatestErrorViewProps()).toMatchObject({
       mode: "archive",
@@ -877,6 +911,9 @@ describe("ReaderPage", () => {
       {},
       () => abortSession.handle,
     );
+    await waitFor(() => {
+      expect(abortSession.api.openArchive).toHaveBeenCalledTimes(1);
+    });
     await act(async () => {
       await flushMicrotasks();
     });
@@ -890,6 +927,9 @@ describe("ReaderPage", () => {
       {},
       () => lateOpenSession.handle,
     );
+    await waitFor(() => {
+      expect(lateOpenSession.api.openArchive).toHaveBeenCalledTimes(1);
+    });
     unmountLate();
     await act(async () => {
       openDeferred.resolve({
@@ -955,8 +995,8 @@ describe("ReaderPage", () => {
     });
 
     const { unmount: unmount1 } = renderWithSession({}, () => session1.handle);
-    await act(async () => {
-      await flushMicrotasks();
+    await waitFor(() => {
+      expect(session1.api.requestVisiblePages).toHaveBeenCalledTimes(1);
     });
 
     // アンマウント後に delayedPage が解決された場合 -> bitmap.close() のみ行いクラッシュしない
@@ -984,8 +1024,8 @@ describe("ReaderPage", () => {
 
     errorViewSpy.mockClear();
     const { unmount: unmount2 } = renderWithSession({}, () => session2.handle);
-    await act(async () => {
-      await flushMicrotasks();
+    await waitFor(() => {
+      expect(session2.api.requestVisiblePages).toHaveBeenCalledTimes(2);
     });
     expect(errorViewSpy).not.toHaveBeenCalled();
 
@@ -1070,11 +1110,9 @@ describe("ReaderPage", () => {
       });
     });
 
-    await act(async () => {
-      await flushMicrotasks();
+    await waitFor(() => {
+      expect(getLatestCanvasProps().frame).toBe(frame0);
     });
-
-    expect(getLatestCanvasProps().frame).toBe(frame0);
 
     // 稼働中のコンテキスト復元失敗等で WEBGL_INIT_FAILED が発火したら即座に Worker と L1 を解放する
     act(() => {
@@ -1124,8 +1162,8 @@ describe("ReaderPage", () => {
       });
     });
 
-    await act(async () => {
-      await flushMicrotasks();
+    await waitFor(() => {
+      expect(getLatestCanvasProps().frame).toBe(frame0);
     });
 
     // 1. 同一ルート(/read/local?page=2)上の popstate ではセッションとランタイムを維持する
@@ -1158,8 +1196,8 @@ describe("ReaderPage", () => {
     const errorClearTextures = vi.fn();
     const errorFallbackSession = createMockCoordinatorSession();
     renderWithSession({}, () => errorFallbackSession.handle);
-    await act(async () => {
-      await flushMicrotasks();
+    await waitFor(() => {
+      expect(errorFallbackSession.api.requestVisiblePages).toHaveBeenCalled();
     });
     act(() => {
       getLatestCanvasProps().onFatalError?.(
@@ -1208,8 +1246,8 @@ describe("ReaderPage", () => {
       });
     });
 
-    await act(async () => {
-      await flushMicrotasks();
+    await waitFor(() => {
+      expect(mockSession.api.openArchive).toHaveBeenCalledTimes(1);
     });
 
     const historyBackSpy = vi.spyOn(window.history, "back");
@@ -1315,8 +1353,8 @@ describe("ReaderPage", () => {
       });
     });
 
-    await act(async () => {
-      await flushMicrotasks();
+    await waitFor(() => {
+      expect(getLatestCanvasProps().frame).toBe(frame0);
     });
 
     expect(useLocalReaderSessionStore.getState().session).not.toBeNull();
@@ -1338,5 +1376,288 @@ describe("ReaderPage", () => {
     expect(clearAllTextures).toHaveBeenCalled();
     expect(mockSession.dispose).toHaveBeenCalledTimes(1);
     expect(useLocalReaderSessionStore.getState().session).toBeNull();
+  });
+
+  it("zipIndexCacheヒット時はcachedEntriesをopenArchiveへ渡してputせず、ミス時はputで保存し診断ログへfromIndexCacheを記録すること (AC-ENG-11)", async () => {
+    const cachedEntries = createSampleZipEntries(2);
+    const file = new File(["zip-bytes"], "cached-vol01.cbz", {
+      type: "application/x-cbz",
+    });
+    const expectedCacheKey = `local:${file.name}:${file.size}`;
+
+    // 1. キャッシュヒット時 (0RTT): openArchive(source, cachedEntries, 1), put 未呼び出し
+    const hitRepo = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => cachedEntries),
+    });
+    const hitSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: cachedEntries.length,
+        entries: cachedEntries,
+        fromIndexCache: true,
+      })),
+    });
+
+    const { unmount: unmountHit } = renderWithSession(
+      {},
+      () => hitSession.handle,
+      file,
+      hitRepo,
+    );
+
+    await waitFor(() => {
+      expect(getLatestCanvasProps().frame).toMatchObject({
+        status: "ready",
+        pageIndex: 0,
+      });
+    });
+
+    expect(hitRepo.get).toHaveBeenCalledWith(expectedCacheKey);
+    expect(hitSession.api.openArchive).toHaveBeenCalledWith(
+      expect.objectContaining({ indexCacheKey: expectedCacheKey }),
+      cachedEntries,
+      1,
+    );
+    expect(hitRepo.put).not.toHaveBeenCalled();
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "info",
+          scope: "reader",
+          detail: expect.stringContaining("fromIndexCache=true"),
+        }),
+      ]),
+    );
+    unmountHit();
+
+    // 2. キャッシュミス時: openArchive(source, null, 1) -> put(indexCacheKey, entries) 呼び出し
+    diagnosticLogger.clear();
+    const missEntries = createSampleZipEntries(3);
+    const missRepo = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => null),
+    });
+    const missSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: missEntries.length,
+        entries: missEntries,
+        fromIndexCache: false,
+      })),
+    });
+
+    renderWithSession({}, () => missSession.handle, file, missRepo);
+
+    await waitFor(() => {
+      expect(missRepo.put).toHaveBeenCalledWith(expectedCacheKey, missEntries);
+    });
+    expect(missSession.api.openArchive).toHaveBeenCalledWith(
+      expect.objectContaining({ indexCacheKey: expectedCacheKey }),
+      null,
+      1,
+    );
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "info",
+          scope: "reader",
+          detail: expect.stringContaining("fromIndexCache=false"),
+        }),
+      ]),
+    );
+  });
+
+  it("zipIndexCacheのget例外・put例外時はwarnログのみ記録して通常オープン・ページ閲覧を透過継続すること (AC-ENG-11)", async () => {
+    const file = new File(["zip-bytes"], "cache-error.cbz", {
+      type: "application/x-cbz",
+    });
+    const entries = createSampleZipEntries(2);
+    const unhandledRejections: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const errorRepo = createMockZipIndexCacheRepo({
+        get: vi.fn(async () => {
+          throw new Error("indexeddb get failed");
+        }),
+        put: vi.fn(async () => {
+          throw "indexeddb put string failure";
+        }),
+      });
+      const mockSession = createMockCoordinatorSession({
+        openArchive: vi.fn(async () => ({
+          pageCount: entries.length,
+          entries,
+          fromIndexCache: false,
+        })),
+      });
+
+      renderWithSession({}, () => mockSession.handle, file, errorRepo);
+
+      await waitFor(() => {
+        expect(getLatestCanvasProps().frame).toMatchObject({
+          status: "ready",
+          pageIndex: 0,
+        });
+      });
+      await act(async () => {
+        await flushMicrotasks();
+      });
+
+      expect(mockSession.api.openArchive).toHaveBeenCalledWith(
+        expect.objectContaining({ rawFileName: "cache-error.cbz" }),
+        null,
+        1,
+      );
+      expect(errorViewSpy).not.toHaveBeenCalled();
+      expect(unhandledRejections).toEqual([]);
+      expect(diagnosticLogger.getEntries()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            level: "warn",
+            scope: "reader",
+            detail: expect.stringContaining("indexeddb get failed"),
+          }),
+          expect.objectContaining({
+            level: "warn",
+            scope: "reader",
+            detail: expect.stringContaining("indexeddb put string failure"),
+          }),
+        ]),
+      );
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("zipIndexCache.get待機中にTR-08終了またはアンマウントされた場合は後続のopenArchiveやwarn記録を行わないこと", async () => {
+    const file = new File(["zip-bytes"], "cache-race.cbz", {
+      type: "application/x-cbz",
+    });
+
+    // 1. get待機中にTR-08終了 -> 遅延resolveしてもopenArchive/putは呼ばれない
+    const getDeferred1 = createDeferred<readonly ZipPageEntry[] | null>();
+    const repo1 = createMockZipIndexCacheRepo({
+      get: vi.fn(() => getDeferred1.promise),
+    });
+    const session1 = createMockCoordinatorSession();
+    const registeredExit: { current: (() => void) | null } = { current: null };
+
+    const { unmount: unmountRace1 } = renderWithSession(
+      {
+        onRegisterExit: (fn) => {
+          registeredExit.current = fn;
+        },
+      },
+      () => session1.handle,
+      file,
+      repo1,
+    );
+
+    await waitFor(() => {
+      expect(repo1.get).toHaveBeenCalledTimes(1);
+    });
+    act(() => {
+      registeredExit.current?.();
+    });
+
+    await act(async () => {
+      getDeferred1.resolve(createSampleZipEntries(2));
+      await flushMicrotasks();
+    });
+
+    expect(session1.api.openArchive).not.toHaveBeenCalled();
+    expect(repo1.put).not.toHaveBeenCalled();
+    unmountRace1();
+
+    // 2. get待機中にアンマウント -> 遅延rejectしてもwarnログ・openArchive・エラー表示は呼ばれない
+    window.history.replaceState(null, "", "/read/local");
+    diagnosticLogger.clear();
+    errorViewSpy.mockClear();
+    const getDeferred2 = createDeferred<readonly ZipPageEntry[] | null>();
+    const repo2 = createMockZipIndexCacheRepo({
+      get: vi.fn(() => getDeferred2.promise),
+    });
+    const session2 = createMockCoordinatorSession();
+
+    const { unmount } = renderWithSession(
+      {},
+      () => session2.handle,
+      file,
+      repo2,
+    );
+    await waitFor(() => {
+      expect(repo2.get).toHaveBeenCalledTimes(1);
+    });
+    unmount();
+
+    await act(async () => {
+      getDeferred2.reject(new Error("late cache failure"));
+      await flushMicrotasks();
+    });
+
+    expect(session2.api.openArchive).not.toHaveBeenCalled();
+    expect(errorViewSpy).not.toHaveBeenCalled();
+    expect(diagnosticLogger.getEntries()).toEqual([]);
+  });
+
+  it("デフォルトServiceProvider(DexieZipIndexCacheRepository)経由の2回目オープンで保存済み目次がopenArchiveへ引き渡されること (AC-ENG-11)", async () => {
+    const file = new File(["dexie-roundtrip"], "dexie-0rtt.cbz", {
+      type: "application/x-cbz",
+    });
+    const entries = createSampleZipEntries(2);
+
+    const session1 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: entries.length,
+        entries,
+        fromIndexCache: false,
+      })),
+    });
+
+    const { unmount: unmount1 } = renderWithSession(
+      {},
+      () => session1.handle,
+      file,
+    );
+
+    await waitFor(() => {
+      expect(getLatestCanvasProps().frame).toMatchObject({
+        status: "ready",
+        pageIndex: 0,
+      });
+    });
+    expect(session1.api.openArchive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        indexCacheKey: `local:${file.name}:${file.size}`,
+      }),
+      null,
+      1,
+    );
+    unmount1();
+
+    const session2 = createMockCoordinatorSession({
+      openArchive: vi.fn(async (_source, cached) => ({
+        pageCount: cached?.length ?? 0,
+        entries: cached ?? [],
+        fromIndexCache: cached !== null,
+      })),
+    });
+
+    renderWithSession({}, () => session2.handle, file);
+
+    await waitFor(() => {
+      expect(getLatestCanvasProps().frame).toMatchObject({
+        status: "ready",
+        pageIndex: 0,
+      });
+    });
+    expect(session2.api.openArchive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        indexCacheKey: `local:${file.name}:${file.size}`,
+      }),
+      entries,
+      1,
+    );
   });
 });

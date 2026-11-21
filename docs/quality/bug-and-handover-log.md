@@ -3,7 +3,7 @@ type: quality-log
 title: "品質記録・バグ記録票 ＆ 申し送り管理シート（Bug & Handover Log）"
 description: "製品コードと支援成果物を分離したバグ記録（原因5分類 L/S/D/B/A）および後続タスクへの申し送り事項（HO-xx）を追跡する正本シート。"
 status: "Approved"
-updated: "2026-11-20"
+updated: "2026-11-21"
 tags: [quality, bug-log, handover, dre, kaizen]
 related_specs:
   - docs/index.md
@@ -59,6 +59,8 @@ related_tests: []
 |  9  | `#19 / PR #30` | Step 2 PR レビュー (Round 1) |               `支援成果物`               | `docs/specs/engine/zip-streaming.md`, `docs/specs/changes/issue-19-zip64-cp932-index-cache.md`                                  |            `D`             | ZIP64 EOCD Locator 判定前に標準 EOCD `diskNumber !== 0 \|\| cdDiskNumber !== 0` を拒否する記述順により `0xFFFF` 飽和標準 EOCD を持つ ZIP64 が誤拒否される問題と `zip64EocdOffset + 56 <= eocdAbsoluteOffset - 20` 境界検証欠落を指摘。PR #30 後続コミットにて Locator 有無の先行分岐と事前 56B 境界検証を両設計書へ同期是正                                                                                                         |
 | 10  | `#19 / PR #30` | Step 2 PR レビュー (Round 1) |               `支援成果物`               | `docs/specs/engine/zip-streaming.md`, `docs/specs/architecture.md`, `docs/specs/changes/issue-19-zip64-cp932-index-cache.md`    |            `D`             | `openArchive` 仕様の空配列・不正 `cachedEntries` 検証フォールバック契約に対し、MK 変更対象計画に `CoordinatorCore.ts` が含まれていない齟齬を指摘。PR #30 後続コミットにて共有検証ヘルパ・`CoordinatorCore.ts` / `CoordinatorCore.test.ts` を MK-2 スコープへ明記し全設計書を同期是正                                                                                                                                                |
 | 11  | `#19 / PR #30` | Step 2 PR レビュー (Round 1) |               `支援成果物`               | `docs/specs/engine/zip-streaming.md`, `docs/specs/features/reader.md`, `docs/specs/changes/issue-19-zip64-cp932-index-cache.md` |            `D`             | CDH 非飽和 `diskStartNumber !== 0` の拒否条件明記漏れおよび `reader.md` `related_specs` への `db-schema.md` 参照漏れを指摘。PR #30 後続コミットにて双方を設計書へ追記是正                                                                                                                                                                                                                                                           |
+| 12  |  `#32 (MK-2)`  | TDD Green (Vitest)           |               `支援成果物`               | `src/storage/repositories/zipIndexCacheRepository.test.ts`                                                                      |            `L`             | `Date.now` スパイへ副作用インクリメントを渡したため Dexie 内部参照で期待値より進み、また `maxEntries=2` テストの `now` 初期値 `0` が事前投入データの `cachedAt: 1..3` より小さく新規投入 `k4` 自身が退避されるテスト不備を検出。`mockReturnValue` 指定と `tick = 100` 開始へ修正                                                                                                                                                    |
+| 13  |  `#32 (MK-2)`  | TDD Green (Vitest)           |               `支援成果物`               | `src/features/reader/ReaderPage.test.tsx`                                                                                       |            `S`             | `zipIndexCache.get` 待機中競合テストの前半（`TR-08` 終了確認後）で React ツリーを `unmount()` しなかったため、後半の `renderWithSession` による Zustand `session` 再設定時に前段ツリーが再起動して解決済みモック経由で `openArchive` を発火するテスト間干渉を検出。前段の明示 `unmountRace1()` 追加と履歴パス再設定で是正                                                                                                           |
 
 ---
 

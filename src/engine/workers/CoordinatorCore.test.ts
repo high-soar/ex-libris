@@ -142,6 +142,58 @@ describe("CoordinatorCore", () => {
     });
   });
 
+  it("cachedEntriesが空配列または不正構造の場合はparseZipDirectoryへ透過フォールバックすること (AC-ENG-11)", async () => {
+    const zipBytes = buildSyntheticZip({
+      entries: [
+        {
+          name: "001.jpg",
+          data: new Uint8Array([1, 2, 3]),
+          compressionMethod: 0,
+        },
+      ],
+    });
+    const coordinator = new CoordinatorCore({
+      decodePool: { decodePageSlice: vi.fn() },
+    });
+
+    // 1. 空配列 [] は 0RTT スキップせず parseZipDirectory へフォールバック
+    const emptyCacheResult = await coordinator.openArchive(
+      createLocalSource(zipBytes),
+      [],
+      1,
+    );
+    expect(emptyCacheResult.fromIndexCache).toBe(false);
+    expect(emptyCacheResult.pageCount).toBe(1);
+    expect(emptyCacheResult.entries.map((e) => e.entryName)).toEqual([
+      "001.jpg",
+    ]);
+
+    // 2. 構造不正（localHeaderOffset >= physicalEnd・pageIndex不一致等）も透過フォールバック
+    const invalidCachedEntries: ZipPageEntry[] = [
+      {
+        pageIndex: 0,
+        entryName: "stale.jpg",
+        entryNameByteLength: 9,
+        compressionMethod: 0,
+        compressedSize: 10,
+        uncompressedSize: 10,
+        localHeaderOffset: 500,
+        physicalEnd: 100,
+        crc32: 0,
+      },
+    ];
+    const invalidCacheResult = await coordinator.openArchive(
+      createLocalSource(zipBytes),
+      invalidCachedEntries,
+      2,
+    );
+    expect(invalidCacheResult.fromIndexCache).toBe(false);
+    expect(invalidCacheResult.pageCount).toBe(1);
+    expect(invalidCacheResult.entries.map((e) => e.entryName)).toEqual([
+      "001.jpg",
+    ]);
+  });
+
   it("未対応のArchiveSourceDescriptor種別に対してREAD_ERRORを送出すること", async () => {
     const coordinator = new CoordinatorCore({
       decodePool: { decodePageSlice: vi.fn() },

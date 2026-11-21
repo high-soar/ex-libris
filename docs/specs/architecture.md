@@ -38,11 +38,13 @@ related_tests:
   - src/engine/workers/CoordinatorCore.test.ts
   - src/engine/workers/comlinkErrorHandler.test.ts
   - src/engine/workers/coordinatorTransfer.test.ts
+  - src/engine/zip/zipIndexValidation.test.ts
   - src/engine/zip/zipParser.test.ts
   - src/features/reader/localReaderSessionStore.test.ts
   - src/shared/constants/app.test.ts
   - src/shared/router/RouterProvider.test.tsx
   - src/storage/db.test.ts
+  - src/storage/repositories/zipIndexCacheRepository.test.ts
   - src/webgl/WebGLRendererCore.test.ts
   - src/webgl/l1PageCache.test.ts
   - scripts/android-build-config.test.ts

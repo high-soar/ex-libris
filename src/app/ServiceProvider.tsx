@@ -3,7 +3,11 @@ import { type ReactNode, useEffect, useMemo, useRef } from "react";
 import { CapacitorAppBridge } from "../bridges/app/capacitorAppBridge";
 import { MockAppBridge } from "../bridges/app/mockAppBridge";
 import type { AppBridge } from "../bridges/app/types";
-import { resetTestDb } from "../storage/db";
+import { db, resetTestDb } from "../storage/db";
+import {
+  DexieZipIndexCacheRepository,
+  type ZipIndexCacheRepository,
+} from "../storage/repositories/zipIndexCacheRepository";
 import {
   createCoordinatorSession as defaultCreateCoordinatorSession,
   type CoordinatorSessionHandle,
@@ -14,6 +18,7 @@ export interface ServiceProviderProps {
   readonly children?: ReactNode;
   readonly appBridge?: AppBridge;
   readonly createCoordinatorSession?: () => CoordinatorSessionHandle;
+  readonly zipIndexCacheRepo?: ZipIndexCacheRepository;
 }
 
 function createDefaultAppBridge(): AppBridge {
@@ -26,8 +31,12 @@ export function ServiceProvider({
   children,
   appBridge,
   createCoordinatorSession,
+  zipIndexCacheRepo,
 }: ServiceProviderProps) {
   const fallbackAppBridgeRef = useRef<AppBridge | null>(null);
+  const fallbackZipIndexCacheRepoRef = useRef<ZipIndexCacheRepository | null>(
+    null,
+  );
 
   const resolvedAppBridge = useMemo(() => {
     if (appBridge) {
@@ -38,6 +47,18 @@ export function ServiceProvider({
     }
     return fallbackAppBridgeRef.current;
   }, [appBridge]);
+
+  const resolvedZipIndexCacheRepo = useMemo(() => {
+    if (zipIndexCacheRepo) {
+      return zipIndexCacheRepo;
+    }
+    if (!fallbackZipIndexCacheRepoRef.current) {
+      fallbackZipIndexCacheRepoRef.current = new DexieZipIndexCacheRepository(
+        db,
+      );
+    }
+    return fallbackZipIndexCacheRepoRef.current;
+  }, [zipIndexCacheRepo]);
 
   const resolvedCreateCoordinatorSession =
     createCoordinatorSession ?? defaultCreateCoordinatorSession;
@@ -54,8 +75,13 @@ export function ServiceProvider({
     () => ({
       appBridge: resolvedAppBridge,
       createCoordinatorSession: resolvedCreateCoordinatorSession,
+      zipIndexCacheRepo: resolvedZipIndexCacheRepo,
     }),
-    [resolvedAppBridge, resolvedCreateCoordinatorSession],
+    [
+      resolvedAppBridge,
+      resolvedCreateCoordinatorSession,
+      resolvedZipIndexCacheRepo,
+    ],
   );
 
   return (

@@ -20,10 +20,12 @@ related_specs:
   - docs/quality/bug-and-handover-log.md
 related_tests:
   - src/engine/zip/zipParser.test.ts
+  - src/engine/zip/zipIndexValidation.test.ts
   - src/engine/zip/errors.test.ts
   - src/engine/workers/CoordinatorCore.test.ts
   - src/engine/workers/comlinkErrorHandler.test.ts
   - src/storage/db.test.ts
+  - src/storage/repositories/zipIndexCacheRepository.test.ts
   - src/app/ServiceProvider.test.tsx
   - src/features/reader/ReaderPage.test.tsx
   - src/features/reader/readerErrors.test.ts

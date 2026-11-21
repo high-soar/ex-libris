@@ -23,6 +23,11 @@ describe("serviceContext", () => {
         api: {} as CoordinatorWorkerApi,
         dispose: vi.fn(),
       }),
+      zipIndexCacheRepo: {
+        get: vi.fn(async () => null),
+        put: vi.fn(async () => {}),
+        delete: vi.fn(async () => {}),
+      },
     };
 
     const wrapper = ({ children }: { children: ReactNode }) =>
