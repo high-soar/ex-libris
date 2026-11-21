@@ -2,6 +2,28 @@ import type { DecodedPageFrame } from "../engine/types";
 import type { ReadyPageFrame } from "./l1PageCache";
 import { FRAGMENT_SHADER_SOURCE, VERTEX_SHADER_SOURCE } from "./shaders";
 
+import type { RenderSlotFrame, ViewportSlot } from "./types";
+
+export type BitmapCropper = (
+  bitmap: ImageBitmap,
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number,
+) => Promise<ImageBitmap>;
+
+export type BitmapResizer = (
+  bitmap: ImageBitmap,
+  resizeWidth: number,
+  resizeHeight: number,
+) => Promise<ImageBitmap>;
+
+export interface WebGLRendererCoreOptions {
+  readonly onAsyncTextureReady?: (pageIndex: number) => void;
+  readonly bitmapCropper?: BitmapCropper;
+  readonly bitmapResizer?: BitmapResizer;
+}
+
 export class WebGLInitError extends Error {
   readonly code = "WEBGL_INIT_FAILED" as const;
 
@@ -101,9 +123,20 @@ export class WebGLRendererCore {
   private disposed = false;
   private readonly textures = new Map<number, TextureEntry>();
 
-  constructor(gl: WebGL2RenderingContext) {
+  constructor(
+    gl: WebGL2RenderingContext,
+    _options: WebGLRendererCoreOptions = {},
+  ) {
     this.gl = gl;
     this.initPipeline();
+  }
+
+  getMaxTextureSize(): number {
+    throw new Error("Not implemented");
+  }
+
+  notifyContextLost(): void {
+    throw new Error("Not implemented");
   }
 
   resize(cssWidth: number, cssHeight: number, dpr: number): boolean {
@@ -131,6 +164,10 @@ export class WebGLRendererCore {
     }
     this.gl.viewport(0, 0, width, height);
     return true;
+  }
+
+  renderSlots(_slots: readonly RenderSlotFrame[]): readonly ViewportSlot[] {
+    throw new Error("Not implemented");
   }
 
   renderFrame(frame: DecodedPageFrame | null): void {
