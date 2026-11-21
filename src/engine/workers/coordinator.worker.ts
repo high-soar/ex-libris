@@ -39,11 +39,12 @@ const core = new CoordinatorCore({ decodePool });
 const api: CoordinatorWorkerApi = {
   openArchive: (source, cachedEntries, epoch) =>
     core.openArchive(source, cachedEntries, epoch),
-  async requestVisiblePages(pageIndices, prefetchIndices, epoch) {
+  async requestVisiblePages(pageIndices, prefetchIndices, epoch, options) {
     const frames = await core.requestVisiblePages(
       pageIndices,
       prefetchIndices,
       epoch,
+      options,
     );
     const transferables = collectFrameTransferables(frames);
     return transferables.length > 0

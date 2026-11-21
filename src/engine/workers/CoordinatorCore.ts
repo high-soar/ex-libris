@@ -1,4 +1,6 @@
+import { L2ByteCache } from "../cache/L2ByteCache";
 import { LocalFileReader } from "../io/LocalFileReader";
+import { runPrefetchBatches } from "../prefetch/AdaptivePrefetcher";
 import type {
   ArchiveSourceDescriptor,
   CoordinatorWorkerApi,
@@ -13,6 +15,7 @@ import type {
 import { ZipArchiveError, isAbortError } from "../zip/errors";
 import { validateZipIndexEntries } from "../zip/zipIndexValidation";
 import { parseZipDirectory, readCompressedPageSlice } from "../zip/zipParser";
+import { markSharedBuffer } from "./coordinatorTransfer";
 
 export type ArchiveReaderFactory = (
   source: ArchiveSourceDescriptor,
@@ -23,6 +26,16 @@ export interface CoordinatorCoreDeps {
   readonly decodePool: DecodeWorkerApi;
   readonly createReader?: ArchiveReaderFactory;
   readonly l2MaxBytes?: number;
+}
+
+interface InflightPageRead {
+  readonly epoch: number;
+  readonly signal: AbortSignal;
+  readonly promise: Promise<Uint8Array | null>;
+  readonly resolve: (slice: Uint8Array | null) => void;
+  readonly cleanupAbortListener: () => void;
+  settled: boolean;
+  consumerCount: number;
 }
 
 function defaultCreateReader(
@@ -79,6 +92,7 @@ function closeReadyFrames(frames: readonly (DecodedPageFrame | null)[]): void {
 export class CoordinatorCore implements CoordinatorWorkerApi {
   private readonly decodePool: DecodeWorkerApi;
   private readonly createReader: ArchiveReaderFactory;
+  private readonly l2Cache: L2ByteCache;
   private activeReader: RandomAccessReader | null = null;
   private entries: ZipPageEntry[] = [];
   private minActiveEpoch = 0;
@@ -87,10 +101,17 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
     number,
     Set<AbortController>
   >();
+  private readonly inflightPageReads = new Map<number, InflightPageRead>();
+  private activePrefetch: {
+    readonly epoch: number;
+    readonly controller: AbortController;
+  } | null = null;
+  private lastWarmPrefetchEpoch: number | null = null;
 
   constructor(deps: CoordinatorCoreDeps) {
     this.decodePool = deps.decodePool;
     this.createReader = deps.createReader ?? defaultCreateReader;
+    this.l2Cache = new L2ByteCache({ maxBytes: deps.l2MaxBytes });
   }
 
   private registerAbortController(epoch: number): AbortController {
@@ -118,13 +139,187 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
     }
   }
 
+  private registerInflightPageRead(
+    pageIndex: number,
+    epoch: number,
+    signal: AbortSignal,
+    initialConsumerCount: number,
+  ): InflightPageRead {
+    let resolveFn!: (slice: Uint8Array | null) => void;
+    const promise = new Promise<Uint8Array | null>((resolve) => {
+      resolveFn = resolve;
+    });
+    const onAbort = () => {
+      this.settleInflightPageRead(pageIndex, entry, null);
+    };
+    const entry: InflightPageRead = {
+      epoch,
+      signal,
+      promise,
+      resolve: resolveFn,
+      cleanupAbortListener: () => {
+        signal.removeEventListener("abort", onAbort);
+      },
+      settled: false,
+      consumerCount: initialConsumerCount,
+    };
+    this.inflightPageReads.set(pageIndex, entry);
+    signal.addEventListener("abort", onAbort, { once: true });
+    return entry;
+  }
+
+  private settleInflightPageRead(
+    pageIndex: number,
+    entry: InflightPageRead,
+    slice: Uint8Array | null,
+  ): void {
+    if (this.inflightPageReads.get(pageIndex) === entry) {
+      this.inflightPageReads.delete(pageIndex);
+    }
+    entry.cleanupAbortListener();
+    if (entry.settled) {
+      return;
+    }
+    entry.settled = true;
+    if (slice !== null && entry.consumerCount > 1) {
+      markSharedBuffer(slice.buffer);
+    }
+    entry.resolve(slice);
+  }
+
   private resetActiveArchiveState(): void {
+    for (const [pageIndex, entry] of [...this.inflightPageReads.entries()]) {
+      this.settleInflightPageRead(pageIndex, entry, null);
+    }
     for (const controllers of this.inflightAbortControllers.values()) {
       abortControllers(controllers);
     }
     this.inflightAbortControllers.clear();
+    this.activePrefetch = null;
+    this.lastWarmPrefetchEpoch = null;
+    this.l2Cache.clear();
     this.activeReader = null;
     this.entries = [];
+  }
+
+  private async fetchPageSlice(
+    reader: RandomAccessReader,
+    entry: ZipPageEntry,
+    pageIndex: number,
+    epoch: number,
+    signal: AbortSignal,
+    isVisiblePage: boolean,
+  ): Promise<Uint8Array | null> {
+    const cachedSlice = this.l2Cache.get(pageIndex);
+    if (cachedSlice !== undefined) {
+      return cachedSlice;
+    }
+
+    const inflight = this.inflightPageReads.get(pageIndex);
+    // abort リスナーが同期的（abort() 完了前）に inflightPageReads から削除するため、マップ残存エントリは常に未中断
+    if (inflight !== undefined && inflight.epoch === epoch) {
+      inflight.consumerCount += 1;
+      const sharedSlice = await inflight.promise;
+      if (signal.aborted) {
+        return null;
+      }
+      if (sharedSlice !== null) {
+        markSharedBuffer(sharedSlice.buffer);
+        return sharedSlice;
+      }
+    }
+
+    const shouldTrackInflight = entry.compressedSize <= this.l2Cache.maxBytes;
+    const ownInflight = shouldTrackInflight
+      ? this.registerInflightPageRead(pageIndex, epoch, signal, 1)
+      : null;
+
+    try {
+      const slice = await readCompressedPageSlice(reader, entry, signal);
+      if (signal.aborted) {
+        return null;
+      }
+
+      const stored = this.l2Cache.put(pageIndex, slice, {
+        allowOversized: isVisiblePage,
+      });
+      const resultSlice = stored
+        ? (this.l2Cache.peek(pageIndex) as Uint8Array)
+        : slice;
+
+      if (ownInflight !== null) {
+        this.settleInflightPageRead(pageIndex, ownInflight, resultSlice);
+      }
+      return resultSlice;
+    } finally {
+      if (ownInflight !== null) {
+        this.settleInflightPageRead(pageIndex, ownInflight, null);
+      }
+    }
+  }
+
+  private maybeStartWarmPrefetch(
+    reader: RandomAccessReader,
+    entries: readonly ZipPageEntry[],
+    prefetchIndices: readonly number[],
+    epoch: number,
+    effectiveVisible: readonly number[],
+  ): void {
+    if (
+      prefetchIndices.length === 0 ||
+      (this.lastWarmPrefetchEpoch !== null &&
+        epoch <= this.lastWarmPrefetchEpoch)
+    ) {
+      return;
+    }
+
+    this.lastWarmPrefetchEpoch = epoch;
+    const prefetchController = this.registerAbortController(epoch);
+    this.activePrefetch = { epoch, controller: prefetchController };
+
+    const excludedPageIndices = new Set<number>(effectiveVisible);
+    for (const [pageIndex, inflight] of this.inflightPageReads.entries()) {
+      if (inflight.epoch === epoch) {
+        excludedPageIndices.add(pageIndex);
+      }
+    }
+
+    const plannedInflight = new Map<number, InflightPageRead>();
+
+    void runPrefetchBatches({
+      reader,
+      entries,
+      prefetchIndices,
+      l2Cache: this.l2Cache,
+      excludedPageIndices,
+      signal: prefetchController.signal,
+      callbacks: {
+        onPlanPages: (plannedEntries) => {
+          for (const plannedEntry of plannedEntries) {
+            const inflight = this.registerInflightPageRead(
+              plannedEntry.pageIndex,
+              epoch,
+              prefetchController.signal,
+              0,
+            );
+            plannedInflight.set(plannedEntry.pageIndex, inflight);
+          }
+        },
+        onPageReady: (pageIndex, slice) => {
+          const inflight = plannedInflight.get(pageIndex) as InflightPageRead;
+          this.settleInflightPageRead(pageIndex, inflight, slice);
+        },
+        onPageSettledEmpty: (pageIndex) => {
+          const inflight = plannedInflight.get(pageIndex) as InflightPageRead;
+          this.settleInflightPageRead(pageIndex, inflight, null);
+        },
+      },
+    }).finally(() => {
+      if (this.activePrefetch?.controller === prefetchController) {
+        this.activePrefetch = null;
+      }
+      this.unregisterAbortController(epoch, prefetchController);
+    });
   }
 
   private async fetchAndDecodePage(
@@ -133,6 +328,7 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
     pageIndex: number,
     epoch: number,
     signal: AbortSignal,
+    isVisiblePage: boolean,
   ): Promise<DecodedPageFrame | null> {
     if (!entry) {
       return createPageErrorFrame(
@@ -144,12 +340,15 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
     }
 
     try {
-      const compressedSlice = await readCompressedPageSlice(
+      const compressedSlice = await this.fetchPageSlice(
         reader,
         entry,
+        pageIndex,
+        epoch,
         signal,
+        isVisiblePage,
       );
-      if (signal.aborted) {
+      if (compressedSlice === null) {
         return null;
       }
 
@@ -227,19 +426,36 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
     epoch: number,
     options?: RequestVisiblePagesOptions,
   ): Promise<DecodedPageFrame[]> {
-    void prefetchIndices;
-    void options;
-
-    if (
-      epoch < this.minActiveEpoch ||
-      this.activeReader === null ||
-      pageIndices.length === 0
-    ) {
+    if (epoch < this.minActiveEpoch || this.activeReader === null) {
       return [];
+    }
+
+    if (this.activePrefetch !== null && this.activePrefetch.epoch < epoch) {
+      this.activePrefetch.controller.abort();
+      this.unregisterAbortController(
+        this.activePrefetch.epoch,
+        this.activePrefetch.controller,
+      );
+      this.activePrefetch = null;
     }
 
     const reader = this.activeReader;
     const entries = this.entries;
+    const effectiveVisible = options?.visiblePageIndices ?? pageIndices;
+    this.l2Cache.setPinnedPages(effectiveVisible);
+
+    if (pageIndices.length === 0) {
+      this.maybeStartWarmPrefetch(
+        reader,
+        entries,
+        prefetchIndices,
+        epoch,
+        effectiveVisible,
+      );
+      return [];
+    }
+
+    const visibleSet = new Set<number>(effectiveVisible);
     const controller = this.registerAbortController(epoch);
 
     try {
@@ -251,6 +467,7 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
             pageIndex,
             epoch,
             controller.signal,
+            visibleSet.has(pageIndex),
           ),
         ),
       );
@@ -259,6 +476,14 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
         closeReadyFrames(results);
         return [];
       }
+
+      this.maybeStartWarmPrefetch(
+        reader,
+        entries,
+        prefetchIndices,
+        epoch,
+        effectiveVisible,
+      );
 
       return results.filter(
         (frame): frame is DecodedPageFrame => frame !== null,
@@ -275,6 +500,13 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
   cancelEpochBelow(minActiveEpoch: number): void {
     if (minActiveEpoch > this.minActiveEpoch) {
       this.minActiveEpoch = minActiveEpoch;
+    }
+
+    if (
+      this.activePrefetch !== null &&
+      this.activePrefetch.epoch < this.minActiveEpoch
+    ) {
+      this.activePrefetch = null;
     }
 
     for (const [

@@ -61,6 +61,8 @@ interface ReaderRuntime {
 const SWIPE_THRESHOLD_PX = 40;
 const TAP_LEFT_BOUNDARY = 0.3;
 const TAP_RIGHT_BOUNDARY = 0.7;
+const PREFETCH_FORWARD_PAGES = 20;
+const PREFETCH_BACKWARD_PAGES = 2;
 
 const PAGE_ERROR_CODE_MAP: Record<ReaderFatalErrorCode, ZipErrorCode> = {
   CORRUPT_ZIP: "CORRUPT_ZIP",
@@ -97,6 +99,23 @@ function buildNeighborTargets(pageIndex: number, totalPages: number): number[] {
   return [pageIndex + 1, pageIndex + 2, pageIndex - 1].filter(
     (candidate) => candidate >= 0 && candidate < totalPages,
   );
+}
+
+function buildPrefetchTargets(pageIndex: number, totalPages: number): number[] {
+  const targets: number[] = [];
+  for (let offset = 1; offset <= PREFETCH_FORWARD_PAGES; offset += 1) {
+    const candidate = pageIndex + offset;
+    if (candidate < totalPages) {
+      targets.push(candidate);
+    }
+  }
+  for (let offset = 1; offset <= PREFETCH_BACKWARD_PAGES; offset += 1) {
+    const candidate = pageIndex - offset;
+    if (candidate >= 0) {
+      targets.push(candidate);
+    }
+  }
+  return targets;
 }
 
 function resolveTapRatio(clientX: number, rect: DOMRect): number {
@@ -241,26 +260,29 @@ export function ReaderPage({
     };
   }, [onRegisterExit, handleClose]);
 
-  const fetchAndStoreSinglePage = useCallback(
+  const fetchAndStorePages = useCallback(
     async (
       runtime: ReaderRuntime,
-      targetPage: number,
+      targetPages: readonly number[],
+      prefetchTargets: readonly number[],
       epoch: number,
       protectedPages: readonly number[],
-    ): Promise<DecodedPageFrame | null> => {
+      visiblePageIndices: readonly number[],
+    ): Promise<DecodedPageFrame[]> => {
       try {
         const frames = await runtime.coordinator.api.requestVisiblePages(
-          [targetPage],
-          [],
+          targetPages,
+          prefetchTargets,
           epoch,
+          { visiblePageIndices },
         );
 
         if (runtimeRef.current !== runtime || epoch !== epochRef.current) {
           closeReadyFrames(frames);
-          return null;
+          return [];
         }
 
-        let acceptedFrame: DecodedPageFrame | null = null;
+        const acceptedFrames: DecodedPageFrame[] = [];
         for (const frame of frames) {
           if (!runtime.l1Cache.put(frame, protectedPages)) {
             continue;
@@ -272,36 +294,42 @@ export function ReaderPage({
               `${frame.errorCode}: page ${frame.pageIndex + 1} (${frame.message})`,
             );
           }
-          acceptedFrame = frame;
+          acceptedFrames.push(frame);
         }
 
-        return acceptedFrame;
+        return acceptedFrames;
       } catch (error) {
         if (
           isAbortError(error) ||
           runtimeRef.current !== runtime ||
           epoch !== epochRef.current
         ) {
-          return null;
+          return [];
         }
 
         const extracted = extractReaderError(error);
         const pageErrorCode = PAGE_ERROR_CODE_MAP[extracted.code];
-        diagnosticLogger.error(
-          "reader",
-          extracted.message,
-          `${pageErrorCode}: page ${targetPage + 1}`,
-        );
+        const errorFrames: DecodedPageFrame[] = [];
 
-        const errorFrame: DecodedPageFrame = {
-          status: "error",
-          pageIndex: targetPage,
-          epoch,
-          errorCode: pageErrorCode,
-          message: extracted.message,
-        };
-        runtime.l1Cache.put(errorFrame, protectedPages);
-        return errorFrame;
+        for (const targetPage of targetPages) {
+          diagnosticLogger.error(
+            "reader",
+            extracted.message,
+            `${pageErrorCode}: page ${targetPage + 1}`,
+          );
+
+          const errorFrame: DecodedPageFrame = {
+            status: "error",
+            pageIndex: targetPage,
+            epoch,
+            errorCode: pageErrorCode,
+            message: extracted.message,
+          };
+          runtime.l1Cache.put(errorFrame, protectedPages);
+          errorFrames.push(errorFrame);
+        }
+
+        return errorFrames;
       }
     },
     [],
@@ -315,39 +343,60 @@ export function ReaderPage({
       epoch: number,
     ): Promise<void> => {
       const protectedPages = buildProtectedWindow(pageIndex, pageTotal);
+      const prefetchTargets = buildPrefetchTargets(pageIndex, pageTotal);
+      const neighbors = buildNeighborTargets(pageIndex, pageTotal);
       const cached = runtime.l1Cache.get(pageIndex);
 
       if (cached !== undefined) {
         setCurrentFrame(cached);
-      } else {
-        setCurrentFrame(null);
-        const fetched = await fetchAndStoreSinglePage(
-          runtime,
-          pageIndex,
-          epoch,
-          protectedPages,
+        const missingNeighbors = neighbors.filter(
+          (neighbor) => runtime.l1Cache.peek(neighbor) === undefined,
         );
-        if (runtimeRef.current !== runtime || epoch !== epochRef.current) {
-          return;
-        }
-        if (fetched !== null) {
-          setCurrentFrame(fetched);
-        }
-      }
-
-      const neighbors = buildNeighborTargets(pageIndex, pageTotal);
-      for (const neighbor of neighbors) {
-        if (runtime.l1Cache.peek(neighbor) === undefined) {
-          void fetchAndStoreSinglePage(
+        if (missingNeighbors.length > 0 || prefetchTargets.length > 0) {
+          void fetchAndStorePages(
             runtime,
-            neighbor,
+            missingNeighbors,
+            prefetchTargets,
             epoch,
             protectedPages,
+            [pageIndex],
           );
         }
+        return;
+      }
+
+      setCurrentFrame(null);
+      const fetchedFrames = await fetchAndStorePages(
+        runtime,
+        [pageIndex],
+        prefetchTargets,
+        epoch,
+        protectedPages,
+        [pageIndex],
+      );
+      if (runtimeRef.current !== runtime || epoch !== epochRef.current) {
+        return;
+      }
+      const fetched = fetchedFrames[0] ?? null;
+      if (fetched !== null) {
+        setCurrentFrame(fetched);
+      }
+
+      const missingNeighbors = neighbors.filter(
+        (neighbor) => runtime.l1Cache.peek(neighbor) === undefined,
+      );
+      if (missingNeighbors.length > 0) {
+        void fetchAndStorePages(
+          runtime,
+          missingNeighbors,
+          [],
+          epoch,
+          protectedPages,
+          [pageIndex],
+        );
       }
     },
-    [fetchAndStoreSinglePage],
+    [fetchAndStorePages],
   );
 
   useEffect(() => {

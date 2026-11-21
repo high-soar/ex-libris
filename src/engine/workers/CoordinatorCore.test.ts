@@ -672,6 +672,7 @@ describe("CoordinatorCore", () => {
     const parsedEntries = await parseZipDirectoryForTest(baseReader);
 
     let hangEpoch1Prefetch = true;
+    let hangEpoch2Prefetch = false;
     let resolveHangingPrefetchRead!: (buf: Uint8Array) => void;
     let prefetchReadStarted!: () => void;
     const prefetchReadStartedPromise = new Promise<void>((resolve) => {
@@ -692,6 +693,16 @@ describe("CoordinatorCore", () => {
           hangEpoch1Prefetch = false;
           prefetchReadStarted();
           // AbortSignal を無視して arrayBuffer() が完了しない LocalFileReader を模擬
+          return new Promise<Uint8Array>((resolve) => {
+            resolveHangingPrefetchRead = resolve;
+          });
+        }
+        if (
+          hangEpoch2Prefetch &&
+          offset === parsedEntries[2].localHeaderOffset
+        ) {
+          hangEpoch2Prefetch = false;
+          prefetchReadStarted();
           return new Promise<Uint8Array>((resolve) => {
             resolveHangingPrefetchRead = resolve;
           });
@@ -727,7 +738,8 @@ describe("CoordinatorCore", () => {
     });
     await prefetchReadStartedPromise;
 
-    // epoch=1 の近傍 [1] が In-Flight に相乗り待機中に cancelEpochBelow(2) を発火
+    // 同一世代 cancelEpochBelow(1) では activePrefetch は維持され、cancelEpochBelow(2) で即時解放される
+    coordinator.cancelEpochBelow(1);
     const abortedNeighborPromise = coordinator.requestVisiblePages([1], [], 1, {
       visiblePageIndices: [0],
     });
@@ -755,7 +767,7 @@ describe("CoordinatorCore", () => {
     await Promise.resolve();
 
     // 2. cancelEpochBelow を呼ばずに新世代 epoch=3 が来た場合も、古い activePrefetch (epoch<3) を自動中断すること
-    hangEpoch1Prefetch = true;
+    hangEpoch2Prefetch = true;
     const secondHangPromise = new Promise<void>((resolve) => {
       prefetchReadStarted = resolve;
     });
@@ -764,20 +776,21 @@ describe("CoordinatorCore", () => {
     });
     await secondHangPromise;
 
-    // epoch=3 を cancelEpochBelow なしで呼ぶと epoch=2 の activePrefetch が自動 abort され page 1 を即単独取得する
-    const preemptedFrames = await coordinator.requestVisiblePages([1], [], 3, {
-      visiblePageIndices: [1],
+    // epoch=3 を cancelEpochBelow なしで呼ぶと epoch=2 の activePrefetch が自動 abort され page 2 を即単独取得する
+    const preemptedFrames = await coordinator.requestVisiblePages([2], [], 3, {
+      visiblePageIndices: [2],
     });
     expect(preemptedFrames).toHaveLength(1);
     expect(preemptedFrames[0]).toMatchObject({
       status: "ready",
-      pageIndex: 1,
+      pageIndex: 2,
       epoch: 3,
     });
     resolveHangingPrefetchRead(new Uint8Array(0));
 
     // 3. 既存 inflightPageReads に異世代 Fast-Path (epoch=3) が残っている状態で epoch=4 が同じ page 0 を要求した場合は
     //    旧世代の完了を待たず単独取得すること（settle 時も新世代エントリを誤削除しない）
+    await coordinator.openArchive(createLocalSource(zipBytes), null, 3);
     hangFastPathPage0 = true;
     const oldEpochFast = coordinator.requestVisiblePages([0], [], 3);
     await vi.waitFor(() => expect(resolveHangingFastPath).toBeDefined());
@@ -888,7 +901,9 @@ describe("CoordinatorCore", () => {
       entries: [
         { name: "000.jpg", data: new Uint8Array([1, 2, 3]) },
         { name: "001.jpg", data: new Uint8Array([4, 5, 6]) },
+        { name: "gap1.bin", data: new Uint8Array(70_000) },
         { name: "002.jpg", data: new Uint8Array([7, 8, 9]) },
+        { name: "gap2.bin", data: new Uint8Array(70_000) },
         { name: "003.jpg", data: new Uint8Array([10, 11, 12]) },
       ],
     });
@@ -946,8 +961,9 @@ describe("CoordinatorCore", () => {
     await Promise.resolve();
     expect(baseReader.reads).toHaveLength(1);
 
-    // 2. 旧世代(epoch=1) In-Flight [1] と 同世代(epoch=2) In-Flight [2] が混在中に
-    //    空 pageIndices で epoch=2 Warm Prefetch [1, 2, 3] を起動すると、同世代 [2] のみ除外され [1, 3] が先読みされる
+    // 2. アーカイブを再オープンして L2 をリセットした上で、旧世代(epoch=1) In-Flight [1] と 同世代(epoch=2) In-Flight [2] を起動し、
+    //    空 pageIndices で epoch=2 Warm Prefetch [1, 2, 3] を起動すると同世代 [2] のみ除外され [1, 3] が先読みされる
+    await coordinator.openArchive(createLocalSource(zipBytes), null, 1);
     holdPage1 = true;
     holdPage2 = true;
     const oldInflight = coordinator.requestVisiblePages([1], [], 1);
@@ -961,10 +977,11 @@ describe("CoordinatorCore", () => {
     await coordinator.requestVisiblePages([], [1, 2, 3], 2, {
       visiblePageIndices: [0],
     });
-    await vi.waitFor(() =>
-      expect(baseReader.reads.length).toBeGreaterThanOrEqual(1),
-    );
-    // Warm Prefetch が発行され、かつ同世代 [2] が計画に含まれないこと（[1] と [3] は各単独範囲または別バッチ）
+    await vi.waitFor(() => expect(baseReader.reads).toHaveLength(2));
+    expect(baseReader.reads.map((r) => r.offset)).toEqual([
+      parsedEntries[1].localHeaderOffset,
+      parsedEntries[3].localHeaderOffset,
+    ]);
     releasePage1();
     releasePage2();
     await Promise.all([oldInflight, sameInflight]);
@@ -982,6 +999,7 @@ describe("CoordinatorCore", () => {
       ],
     });
     const baseReader = createMemoryReader(zipBytes);
+    const parsedEntries = await parseZipDirectoryForTest(baseReader);
 
     const coordinator = new CoordinatorCore({
       decodePool: {
@@ -1026,19 +1044,16 @@ describe("CoordinatorCore", () => {
     await coordinator.requestVisiblePages([1], [2], 3, {
       visiblePageIndices: [1],
     });
-    const readsBeforeRevisit0 = baseReader.reads.length;
+    await vi.waitFor(() => expect(baseReader.reads).toHaveLength(3));
     await coordinator.requestVisiblePages([0], [], 4, {
       visiblePageIndices: [0],
     });
-    expect(baseReader.reads.length).toBe(readsBeforeRevisit0 + 1);
+    expect(baseReader.reads).toHaveLength(4);
 
-    // 4. closeArchive および openArchive 開始時に L2 キャッシュ・Warm Prefetch 世代が全破棄されること
+    // 4. closeArchive 時に L2 キャッシュ・Warm Prefetch 世代が全破棄されること
     await coordinator.requestVisiblePages([1], [2], 5, {
       visiblePageIndices: [1],
     });
-    await vi.waitFor(() =>
-      expect(baseReader.reads.length).toBeGreaterThan(readsBeforeRevisit0 + 1),
-    );
     await coordinator.closeArchive();
 
     // close 後の再 open で同じ epoch=1 でも L2 キャッシュが空＆Warm Prefetch も再実行可能
@@ -1047,15 +1062,17 @@ describe("CoordinatorCore", () => {
     await coordinator.requestVisiblePages([1], [2], 1, {
       visiblePageIndices: [1],
     });
-    await vi.waitFor(() => expect(baseReader.reads.length).toBe(2));
+    await vi.waitFor(() => expect(baseReader.reads).toHaveLength(2));
 
-    // close せずに別アーカイブへ openArchive した際も既存 L2 と待機中 In-Flight が全破棄されること
+    // 5. closeArchive / openArchive で待機中 In-Flight が同期 null 解決され L2 も全破棄されること
+    let blockPage0 = false;
     let blockInflight!: () => void;
     const blockingReader: RandomAccessReader = {
       sourceId: baseReader.sourceId,
       totalSize: baseReader.totalSize,
       async readRange(offset, length, signal) {
-        if (offset === 0) {
+        if (blockPage0 && offset === parsedEntries[0].localHeaderOffset) {
+          blockPage0 = false;
           return new Promise<Uint8Array>((resolve) => {
             blockInflight = () =>
               resolve(baseReader.readRange(offset, length, signal));
@@ -1075,11 +1092,28 @@ describe("CoordinatorCore", () => {
       createReader: () => blockingReader,
     });
     await resetCoordinator.openArchive(createLocalSource(zipBytes), null, 1);
+    blockPage0 = true;
     const waitingRequest = resetCoordinator.requestVisiblePages([0], [], 1);
     await vi.waitFor(() => expect(blockInflight).toBeDefined());
+    const sameEpochWaiter = resetCoordinator.requestVisiblePages([0], [], 1);
     await resetCoordinator.closeArchive();
-    expect(await waitingRequest).toEqual([]);
+    expect(await sameEpochWaiter).toEqual([]);
     blockInflight();
+    expect(await waitingRequest).toEqual([]);
+
+    // openArchive の直接再呼び出しでも L2・In-Flight・Warm Prefetch 世代が全破棄されること
+    await resetCoordinator.openArchive(createLocalSource(zipBytes), null, 1);
+    baseReader.reads.length = 0;
+    await resetCoordinator.requestVisiblePages([1], [2], 1, {
+      visiblePageIndices: [1],
+    });
+    await vi.waitFor(() => expect(baseReader.reads).toHaveLength(2));
+    await resetCoordinator.openArchive(createLocalSource(zipBytes), null, 1);
+    baseReader.reads.length = 0;
+    await resetCoordinator.requestVisiblePages([1], [2], 1, {
+      visiblePageIndices: [1],
+    });
+    await vi.waitFor(() => expect(baseReader.reads).toHaveLength(2));
   });
 });
 
