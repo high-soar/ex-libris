@@ -8,7 +8,7 @@ import {
 } from "./readerErrors";
 
 describe("readerErrors", () => {
-  it("getReaderErrorMessageがDECODE_FAILEDを含む全9種のエラーコードに対し仕様通りの日本語文言を返すこと (AC-RD-06, AC-RD-07)", () => {
+  it("getReaderErrorMessageがDECODE_FAILEDを含む全8種のエラーコードに対し仕様通りの日本語文言を返すこと (AC-RD-06, AC-RD-07)", () => {
     const expectedEntries: Array<readonly [ReaderFatalErrorCode, string]> = [
       ["CORRUPT_ZIP", "ZIP ファイルが破損しているため開けませんでした"],
       [
@@ -24,10 +24,6 @@ describe("readerErrors", () => {
         "未対応の圧縮方式が含まれているため開けませんでした",
       ],
       [
-        "ZIP64_NOT_SUPPORTED",
-        "4GB 超の ZIP64 形式は次期バージョン（v0.1）で対応予定です",
-      ],
-      [
         "READ_ERROR",
         "ファイルの読み込みに失敗しました（アクセス権限またはストレージ状態を確認してください）",
       ],
@@ -36,7 +32,7 @@ describe("readerErrors", () => {
       ["DECODE_FAILED", "ページの画像デコードに失敗しました"],
     ];
 
-    expect(expectedEntries).toHaveLength(9);
+    expect(expectedEntries).toHaveLength(8);
     for (const [code, expectedMessage] of expectedEntries) {
       expect(getReaderErrorMessage(code)).toBe(expectedMessage);
     }
@@ -59,12 +55,12 @@ describe("readerErrors", () => {
     expect(
       extractReaderError({
         name: "ZipArchiveError",
-        code: "ZIP64_NOT_SUPPORTED",
-        message: "zip64 not supported",
+        code: "CORRUPT_ZIP",
+        message: "corrupt zip",
       }),
     ).toEqual({
-      code: "ZIP64_NOT_SUPPORTED",
-      message: "4GB 超の ZIP64 形式は次期バージョン（v0.1）で対応予定です",
+      code: "CORRUPT_ZIP",
+      message: "ZIP ファイルが破損しているため開けませんでした",
     });
 
     expect(extractReaderError({ code: "WEBGL_UNSUPPORTED" })).toEqual({
@@ -89,6 +85,9 @@ describe("readerErrors", () => {
       expectedFallback,
     );
     expect(extractReaderError({ code: "UNKNOWN_CODE" })).toEqual(
+      expectedFallback,
+    );
+    expect(extractReaderError({ code: "ZIP64_NOT_SUPPORTED" })).toEqual(
       expectedFallback,
     );
     expect(extractReaderError({ code: 404 })).toEqual(expectedFallback);
