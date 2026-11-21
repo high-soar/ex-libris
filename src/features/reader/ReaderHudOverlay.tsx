@@ -25,6 +25,17 @@ export interface ReaderHudOverlayProps {
   readonly onToggleReadingDirection?: () => void;
 }
 
+const DEFAULT_BUTTON_COLOR_CLASS =
+  "border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700";
+
+const ACTIVE_OFFSET_BUTTON_COLOR_CLASS =
+  "border-indigo-400 bg-indigo-500/30 text-indigo-100 hover:bg-indigo-500/40";
+
+const NAV_BUTTON_CLASS = `shrink-0 whitespace-nowrap touch-manipulation rounded-lg border ${DEFAULT_BUTTON_COLOR_CLASS} px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:px-3.5 sm:text-sm`;
+
+const CONTROL_BUTTON_BASE_CLASS =
+  "shrink-0 whitespace-nowrap touch-manipulation rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:px-3 sm:text-sm";
+
 function stopEventPropagation(event: SyntheticEvent<HTMLElement>): void {
   event.stopPropagation();
 }
@@ -71,7 +82,8 @@ export function ReaderHudOverlay({
     totalPages <= 1 || effectiveSpreadMode === "single";
   const isOffsetActive = spreadPageOffset === 1;
   const spreadModeLabel = getSpreadModeLabel(spreadMode, effectiveSpreadMode);
-  const directionLabel = readingDirection === "rtl" ? "右開き" : "左開き";
+  const isRtl = readingDirection === "rtl";
+  const directionLabel = isRtl ? "右開き" : "左開き";
 
   const nextButton = (
     <button
@@ -80,9 +92,9 @@ export function ReaderHudOverlay({
       data-testid="reader-next-button"
       disabled={isNextDisabled}
       onClick={onNextPage}
-      className="shrink-0 whitespace-nowrap touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-100 hover:bg-slate-700 transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:px-3.5 sm:text-sm"
+      className={NAV_BUTTON_CLASS}
     >
-      {readingDirection === "rtl" ? "← 次へ" : "次へ →"}
+      {isRtl ? "← 次へ" : "次へ →"}
     </button>
   );
 
@@ -93,9 +105,9 @@ export function ReaderHudOverlay({
       data-testid="reader-prev-button"
       disabled={isPrevDisabled}
       onClick={onPrevPage}
-      className="shrink-0 whitespace-nowrap touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-100 hover:bg-slate-700 transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:px-3.5 sm:text-sm"
+      className={NAV_BUTTON_CLASS}
     >
-      {readingDirection === "rtl" ? "前へ →" : "← 前へ"}
+      {isRtl ? "前へ →" : "← 前へ"}
     </button>
   );
 
@@ -123,7 +135,7 @@ export function ReaderHudOverlay({
           type="button"
           data-testid="reader-back-button"
           onClick={onClose}
-          className="shrink-0 whitespace-nowrap touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-100 hover:bg-slate-700 transition-colors"
+          className={`shrink-0 whitespace-nowrap touch-manipulation rounded-lg border ${DEFAULT_BUTTON_COLOR_CLASS} px-3 py-1.5 text-sm font-medium transition-colors`}
         >
           戻る
         </button>
@@ -150,9 +162,9 @@ export function ReaderHudOverlay({
           data-testid="reader-hud-nav-row"
           className="flex w-full items-center justify-between gap-2 sm:gap-3"
         >
-          {readingDirection === "rtl" ? nextButton : prevButton}
+          {isRtl ? nextButton : prevButton}
           {pageIndicator}
-          {readingDirection === "rtl" ? prevButton : nextButton}
+          {isRtl ? prevButton : nextButton}
         </div>
 
         <div
@@ -165,7 +177,7 @@ export function ReaderHudOverlay({
             data-spread-mode={spreadMode}
             data-effective-spread-mode={effectiveSpreadMode}
             onClick={onCycleSpreadMode}
-            className="shrink-0 whitespace-nowrap touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-100 hover:bg-slate-700 transition-colors sm:px-3 sm:text-sm"
+            className={`${CONTROL_BUTTON_BASE_CLASS} ${DEFAULT_BUTTON_COLOR_CLASS}`}
           >
             {spreadModeLabel}
           </button>
@@ -175,10 +187,10 @@ export function ReaderHudOverlay({
             aria-pressed={isOffsetActive}
             disabled={isOffsetToggleDisabled}
             onClick={onToggleSpreadPageOffset}
-            className={`shrink-0 whitespace-nowrap touch-manipulation rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:px-3 sm:text-sm ${
+            className={`${CONTROL_BUTTON_BASE_CLASS} ${
               isOffsetActive
-                ? "border-indigo-400 bg-indigo-500/30 text-indigo-100 hover:bg-indigo-500/40"
-                : "border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700"
+                ? ACTIVE_OFFSET_BUTTON_COLOR_CLASS
+                : DEFAULT_BUTTON_COLOR_CLASS
             }`}
           >
             1ページずらし
@@ -188,7 +200,7 @@ export function ReaderHudOverlay({
             data-testid="reader-direction-button"
             data-reading-direction={readingDirection}
             onClick={onToggleReadingDirection}
-            className="shrink-0 whitespace-nowrap touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-100 hover:bg-slate-700 transition-colors sm:px-3 sm:text-sm"
+            className={`${CONTROL_BUTTON_BASE_CLASS} ${DEFAULT_BUTTON_COLOR_CLASS}`}
           >
             {directionLabel}
           </button>
