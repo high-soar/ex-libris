@@ -54,7 +54,7 @@ related_tests:
    - `!result.fromIndexCache` で通常オープンに成功した場合は `zipIndexCacheRepo.put(source.indexCacheKey, result.entries)` を非ブロッキングで保存し、失敗しても閲覧自体は継続する。
 4. **Fast-Path・L1 近傍バッチ・10MB Warm Prefetch 連携**:
    - 各ページ遷移・初回表示（`loadPageWindow`）において、閲覧優先順の先読み候補 `prefetchTargets`（進行方向 `[N+1 .. N+20]` ＋ 逆方向 `[N-1, N-2]`、`0 <= idx < totalPages`）を算出する。
-   - **現在ページ `N` が L1 未ヒット時**: 先に Fast-Path として `requestVisiblePages([N], prefetchTargets, epoch)` を待機して `N` を最速描画（同時に Worker 側で 10MB 結合 Warm Prefetch が非同期開始）し、その直後に L1 未保持の近傍ページ群 `missingNeighbors`（`[N+1, N+2, N-1]` のうち `l1Cache.peek` 未存在分）があれば `requestVisiblePages(missingNeighbors, [], epoch, { visiblePageIndices: [N] })` を 1 バッチで非同期要求する。
+   - **現在ページ `N` が L1 未ヒット時**: 先に Fast-Path として `requestVisiblePages([N], prefetchTargets, epoch, { visiblePageIndices: [N] })` を待機して `N` を最速描画（同時に Worker 側で 10MB 結合 Warm Prefetch が非同期開始）し、その直後に L1 未保持の近傍ページ群 `missingNeighbors`（`[N+1, N+2, N-1]` のうち `l1Cache.peek` 未存在分）があれば `requestVisiblePages(missingNeighbors, [], epoch, { visiblePageIndices: [N] })` を 1 バッチで非同期要求する。
    - **現在ページ `N` が L1 ヒット時**: 即座に L1 から描画した上で、`missingNeighbors` または `prefetchTargets` が非空であれば `requestVisiblePages(missingNeighbors, prefetchTargets, epoch, { visiblePageIndices: [N] })` を 1 回非同期要求し、L2 キャッシュからの L1 近傍補充・表示ピン更新・L2 先読み補充を一括実行する。
 
 ---

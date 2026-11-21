@@ -66,7 +66,7 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 | `src/engine/workers/comlinkErrorHandler.ts` | Layer 2  | Worker 側・UI クライアント側双方の Comlink `throw` ハンドラを拡張し、`ZipArchiveError.code` および `DOMException`（`AbortError` 等）を RPC 越しに保持・復元する純関数シリアライザ                                                                            |
 | `src/engine/workers/coordinatorTransfer.ts` | Layer 2  | `WeakSet<ArrayBuffer>` 共有バッファ保護（`markSharedBuffer` / `isSharedBuffer` / `HO-03` 対応）を含む Decode Worker 送信ペイロード構築（`prepareDecodeTransfer`）および `ready` フレームの `ImageBitmap` 抽出（`collectFrameTransferables`）純関数モジュール |
 | `src/engine/workers/decode.worker.ts`       | Layer 2  | `registerZipArchiveErrorTransferHandler()` 登録、`DecodeWorkerCore` 初期化、`Comlink.transfer` 返却および `Comlink.expose` のみの薄いブートストラップ（数行のみ、条件分岐禁止）                                                                              |
-| `src/engine/workers/coordinator.worker.ts`  | Layer 2  | `registerZipArchiveErrorTransferHandler()` 登録、`DecodeWorkerPool`・`CoordinatorCore`・`coordinatorTransfer` の結線と `Comlink.expose` のみの薄いブートストラップ（数行のみ、条件分岐禁止）                                                                 |
+| `src/engine/workers/coordinator.worker.ts`  | Layer 2  | `registerZipArchiveErrorTransferHandler()` 登録、`DecodeWorkerPool`・`CoordinatorCore`・`coordinatorTransfer` の結線（`requestVisiblePages` 第 4 引数 `options` の透過中継含む）と `Comlink.expose` のみの薄いブートストラップ（数行のみ、条件分岐禁止）     |
 
 ---
 
@@ -170,8 +170,9 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 3. **LRU 退避と単一 80MB 超例外ページの表示中一時保持（`NFR-02`）**:
    - `setPinnedPages(pageIndices)`: 現在表示中のページ集合 `pinnedPages` を更新し、保持中に `entry.byteLength > maxBytes` の 80MB 超例外エントリがあって新 `pinnedPages` から外れた場合は即座に退避して `totalBytes <= maxBytes` へ復帰させる。
    - `put(pageIndex, data, options?: { allowOversized?: boolean })`:
-     - **単一 80MB 超（`data.byteLength > maxBytes`）**: `allowOversized === true`（現在表示ページの Fast-Path）の場合のみ既存エントリを全退避して当該 1 件の一時保持を許容する。`allowOversized !== true`（Warm Prefetch・L1 近傍）では既存キャッシュを退避せず格納をスキップ（`false` 返却）する。
-     - **通常サイズ（`data.byteLength <= maxBytes`）**: `pinnedPages` 内に 80MB 超例外エントリが保持されている間、背景格納（`allowOversized !== true`）は当該ピン中エントリを保護するため格納をスキップ（`false` 返却）する。通常時は `totalBytes + data.byteLength <= maxBytes` になるまで非ピン最古エントリから優先して LRU 退避（全候補がピン中通常ページの場合のみ最古エントリを退避して `maxBytes` を厳守）し、MRU として格納する。
+     - 同一 `pageIndex` の既存エントリがある場合は先に削除して `totalBytes` から減算する。
+     - **単一 80MB 超（`data.byteLength > maxBytes`）**: `allowOversized === true` かつ `hasOversizedPinnedEntry() === false`（別ページの 80MB 超ピン中エントリが未保持）の場合のみ、既存エントリを全退避して当該 1 件の一時保持を許容する。それ以外（`allowOversized !== true` または別ページの 80MB 超ピン中エントリ保持中）は既存キャッシュを退避せず格納をスキップ（`false` 返却）する。
+     - **通常サイズ（`data.byteLength <= maxBytes`）**: 同一 `pageIndex` 既存分削除後に `hasOversizedPinnedEntry() === true`（別ページの 80MB 超ピン中エントリが保持中）の間は、**`allowOversized` の真偽を問わず** 当該ピン中エントリを保護し退避不能ループや追い出し競合を防ぐため格納をスキップ（`false` 返却）する。通常時は `totalBytes + data.byteLength <= maxBytes` になるまで非ピン最古エントリから優先して LRU 退避（全候補がピン中通常ページの場合のみ最古エントリを退避して `maxBytes` を厳守）し、MRU として格納する。
    - `hasOversizedPinnedEntry()` を提供し、80MB 超ページ表示中の不要な Warm Prefetch 起動を抑止する。
 
 ### 4.2 `AdaptivePrefetcher`（10MB 予算・64KB ギャップ結合先読み / `src/engine/prefetch/AdaptivePrefetcher.ts`）
@@ -179,15 +180,16 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 1. **2 段階バッチ計画（`planPrefetchBatches`）**:
    - `l2Cache.hasOversizedPinnedEntry() === true` の場合は空配列 `[]` を返す。
    - **Step 1（閲覧優先順 10MB 予算選抜）**:
-     - `prefetchIndices` の優先順で非整数・範囲外・重複・除外集合（表示中・`l2Cache.has`・In-Flight 取得中）・構造不正（`localHeaderOffset < 0 || physicalEnd - localHeaderOffset < 30`）・単一 `compressedSize > l2Cache.maxBytes`（80MB 超）を除外する。
+     - `prefetchIndices` の優先順で非整数・範囲外・重複・除外集合（表示中・`l2Cache.has`・同世代 In-Flight 取得中）・構造不正（`localHeaderOffset < 0 || physicalEnd - localHeaderOffset < 30`）・単一 `compressedSize > l2Cache.maxBytes`（80MB 超）を除外する。
      - 各候補の `span = computeEntryFetchSpan(entry)` を積算し、先頭 1 件目が単独で `span > WARM_PREFETCH_BUDGET_BYTES`（10MB 超〜80MB 以下）の場合はその 1 件のみを選抜して打ち切る。通常時は `accumulatedBytes + span <= WARM_PREFETCH_BUDGET_BYTES`（`10_485_760` = 10MB）を満たす連続候補のみを選抜し、最初の予算超過で打ち切る。
    - **Step 2（物理オフセット昇順ソート ＆ 結合判定）**:
      - 選抜されたエントリ群を `localHeaderOffset` 昇順へ並べ替え、隣接する `prev` と `next` が以下 2 条件を同時に満たす限り単一の `PrefetchBatch`（`{ entries, rangeOffset, rangeLength }`）へ結合する（満たさない境界で次バッチへ分割）：
        1. 物理ギャップ `gap = next.localHeaderOffset - prev.physicalEnd` が `0 <= gap <= ENGINE_BUDGETS.MAX_COALESCE_GAP_BYTES`（`65_536` = 64KB）
        2. ブロック実 Range 長 `(next.localHeaderOffset + computeEntryFetchSpan(next)) - currentBatch.rangeOffset <= ENGINE_BUDGETS.WARM_PREFETCH_BUDGET_BYTES`（`10_485_760` = 10MB）
-2. **非同期実行と異常系部分救済**:
-   - バッチごとに `reader.readRange(batch.rangeOffset, batch.rangeLength, signal)` を 1 RTT 実行し、各エントリ範囲 `[entry.localHeaderOffset - batch.rangeOffset, Math.min(buf.byteLength, entry.physicalEnd - batch.rangeOffset))` から `extractCompressedSliceFromBuffer` で圧縮スライスを抽出して `l2Cache.put(entry.pageIndex, slice, { allowOversized: false })` に格納する（末尾エントリで LFH `extraField` が 1KB を超えた場合はケース 2a/2b で不足分のみ補完読込する）。
-   - 投機的先読みのため、結合バッファ内の一部エントリで LFH 破損（`CORRUPT_ZIP`）が発生しても正常な他エントリの L2 格納は継続し、通信失敗（`READ_ERROR`）や `AbortError` 時も未処理例外を送出せず安全に停止する（実表示到達時の Fast-Path で既存のページ単位エラーとして確定させる）。
+2. **全バッチ先行 In-Flight 登録・非同期実行と異常系部分救済**:
+   - Warm Prefetch 起動直後・**最初の `await` に入る前** に、全計画バッチの対象ページ（`batches.flatMap(b => b.entries)` のうち `l2Cache` 未保持かつ同世代 `inflightPageReads` 未登録分）を一括で In-Flight 待機マップへ先行登録し、複数バッチ分割時に後続バッチ分へ到着する L1 近傍要求も二重 `readRange` なしで合流できるようにする。
+   - バッチごとに `signal.aborted` を確認し、バッチ内全ページが既に `l2Cache.has` 済みなら `readRange` をスキップする。未取得分がある場合は `reader.readRange(batch.rangeOffset, batch.rangeLength, signal)` を 1 RTT 実行し、未格納の各エントリ（`!l2Cache.has(entry.pageIndex)`）について `[entry.localHeaderOffset - batch.rangeOffset, Math.min(buf.byteLength, entry.physicalEnd - batch.rangeOffset))` から `extractCompressedSliceFromBuffer` で圧縮スライスを抽出して `l2Cache.put(entry.pageIndex, slice, { allowOversized: false })` に格納する（末尾エントリで LFH `extraField` が 1KB を超えた場合はケース 2a/2b で不足分のみ補完読込する）。
+   - 投機的先読みのため、結合バッファ内の一部エントリで LFH 破損（`CORRUPT_ZIP`）が発生しても正常な他エントリの L2 格納は継続し、通信失敗（`READ_ERROR`）や `AbortError` 時も未処理例外を送出せず、未解決の全 In-Flight 待機者に `null` を解決通知して安全に停止する（実表示到達時の Fast-Path で既存のページ単位エラーとして確定させる）。
 
 ### 4.3 `DecodeWorkerCore`（2 Worker プール）
 
@@ -205,28 +207,28 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
    - `l2Cache: L2ByteCache`（アーカイブ単位、80MB 上限）
    - `minActiveEpoch: number`
    - `inflightAbortControllers: Map<number, Set<AbortController>>`（epoch 単位の Fast-Path および Warm Prefetch 進行中 I/O 中断管理）
-   - `inflightPageReads: Map<number, InflightPageRead>`（ページ単位の進行中スライス取得共有マップ）
+   - `inflightPageReads: Map<number, InflightPageRead>`（`{ epoch, signal, promise, consumerCount }` を保持するページ単位の進行中スライス取得共有マップ。`AbortController.abort()` 発火時に `abort` リスナーで同期的にエントリ削除＆`null` 解決を行い、`LocalFileReader` の旧世代読込完了を待たずに新世代要求を解放する）
 2. **`openArchive(source, cachedEntries, epoch)`**:
    - `epoch < minActiveEpoch` の場合は即キャンセルエラー。
-   - 既存アーカイブがあれば `closeArchive()` 相当のクリーンアップ（進行中全 I/O 中断＋`l2Cache.clear()`）を実施。
+   - 既存アーカイブがあれば `closeArchive()` 相当のクリーンアップ（進行中全 I/O 中断・`inflightPageReads` 全クリア・`l2Cache.clear()`）を実施。
    - `source.kind === "local-session"` に対し `LocalFileReader(source.file)` を生成する。`cachedEntries` に非空配列かつ基本構造検証（`validateZipIndexEntries`：必須フィールド型・非負有限数値・`localHeaderOffset < physicalEnd` 等）を通過した配列が渡された場合のみ `parseZipDirectory` をスキップして 0 RTT（`fromIndexCache: true`）で即座に完了し、`null`・空配列・不整合配列の場合は自動的に `parseZipDirectory` へフォールバックする（`fromIndexCache: false`）。
    - UI スレッド（`ReaderPage` + `ZipIndexCacheRepository`）が `source.indexCacheKey`（`local:${rawFileName}:${fileSize}`）で Dexie `zipIndexCache`（最大 500 件 LRU）を参照し、不整合キャッシュ検知時は自動削除して `cachedEntries = null` へ透過フォールバックし、通常オープン成功時に `entries` を非ブロッキング保存する。
 3. **`requestVisiblePages(pageIndices, prefetchIndices, epoch, options?)`**:
    - `epoch < minActiveEpoch` または `activeReader === null` の場合は `[]` を返却する。
-   - 進行中の古い世代（`activePrefetchEpoch < epoch`）の Warm Prefetch が存在する場合は即座に `abort()` して Fast-Path 帯域を保護し、`effectiveVisible = options?.visiblePageIndices ?? pageIndices` で `l2Cache.setPinnedPages(effectiveVisible)` を更新する。
+   - 進行中の古い世代（`activePrefetchEpoch < epoch`）の Warm Prefetch が存在する場合は即座に `abort()` して Fast-Path 帯域と旧 `inflightPageReads` を解放し、`effectiveVisible = options?.visiblePageIndices ?? pageIndices` で `l2Cache.setPinnedPages(effectiveVisible)` を更新する。
    - `pageIndices` の各ページを以下の優先順で取得し、`DecodeWorkerPool`（2 Worker）でデコードして `DecodedPageFrame[]` を返却する：
      1. **`L2ByteCache` ヒット**: `l2Cache.get(pageIndex)` で MRU 昇格しつつ `readRange` 0 回で即座に Decode Worker へ投入する。
-     2. **In-Flight 共有ヒット**: 同世代 Warm Prefetch または並行リクエストが当該 `pageIndex` を取得中の場合はその完了を待機して二重 `readRange` を防ぐ（複数待機者で共有されるバッファには `markSharedBuffer` を適用し、Warm Prefetch 側が失敗/中断して `null` 解決かつ自身の `signal` が未中断の場合のみ直接 `readCompressedPageSlice` へフォールバックする）。
-     3. **Fast-Path 直接取得**: `readCompressedPageSlice` を実行し、`l2Cache.put(pageIndex, slice, { allowOversized: isVisiblePage })` でキャッシュ格納を試行した上で Decode Worker へ投入する。
+     2. **In-Flight 共有ヒット**: `inflightPageReads` に **同一世代かつ未中断（`inflight.epoch === epoch && !inflight.signal.aborted`）** の進行中取得がある場合はその完了を待機して二重 `readRange` を防ぐ（複数待機者で共有されるバッファには `markSharedBuffer` を適用し、`null` 解決かつ自身の `signal` が未中断の場合のみ直接 `readCompressedPageSlice` へフォールバックする）。
+     3. **Fast-Path 直接取得**: （`compressedSize <= l2Cache.maxBytes` なら同世代 `inflightPageReads` へ登録しつつ）`readCompressedPageSlice` を実行し、`l2Cache.put(pageIndex, slice, { allowOversized: isVisiblePage })` でキャッシュ格納を試行した上で Decode Worker へ投入する。
      - 成功時: `{ status: "ready", pageIndex, epoch, width, height, bitmap }`
      - 個別ページ失敗時（`DECODE_FAILED` / `CORRUPT_ZIP` / `READ_ERROR` 等、`AbortError` 除く）: 同一バッチ内の他ページを巻き込まず `{ status: "error", pageIndex, epoch, errorCode, message }` を返却する。
    - **バックグラウンド Warm Prefetch 起動（1 `epoch` 最大 1 サイクル）**:
-     - `pageIndices` の処理完了後（`pageIndices.length === 0` の L2 補充呼び出し時を含む）、未中断かつ `prefetchIndices.length > 0` かつ当該 `epoch` で Warm Prefetch 未起動であれば、`epoch` に紐づく専用 `AbortController` を登録して `AdaptivePrefetcher` をバックグラウンド非同期起動し、RPC 自体は待たずに `DecodedPageFrame[]` を返却する。
+     - `pageIndices` の処理完了後（`pageIndices.length === 0` の L2 補充呼び出し時を含む）、未中断かつ `prefetchIndices.length > 0` かつ当該 `epoch` で Warm Prefetch 未起動であれば、`epoch` に紐づく専用 `AbortController` を登録し、全計画バッチの `inflightPageReads` 先行登録を同期実行した上で `AdaptivePrefetcher` をバックグラウンド非同期起動し、RPC 自体は待たずに `DecodedPageFrame[]` を返却する。
    - **世代チェックと即時破棄**: `DecodeWorker` から `ImageBitmap` が戻った時点で中断済み（`epoch < minActiveEpoch`）になっていた場合、**UI スレッドへ返却せず Coordinator 側で即座に `bitmap.close()` を実行して破棄する**。
-   - **Zero-Copy 転送**: `coordinator.worker.ts` ラッパーは `collectFrameTransferables(frames)` により `frame.status === "ready"` の `frame.bitmap` のみを抽出し、`transferables.length > 0` の場合のみ `Comlink.transfer(frames, transferables)` で UI スレッドへ転送する。
+   - **Worker ブートストラップ中継と Zero-Copy 転送**: `coordinator.worker.ts` ラッパーは `core.requestVisiblePages(pageIndices, prefetchIndices, epoch, options)` へ第 4 引数 `options` まで透過中継し、`collectFrameTransferables(frames)` により `frame.status === "ready"` の `frame.bitmap` のみを抽出して `transferables.length > 0` の場合のみ `Comlink.transfer(frames, transferables)` で UI スレッドへ転送する。
 4. **`cancelEpochBelow(minActiveEpoch)` / `closeArchive()`**:
-   - `cancelEpochBelow`: `minActiveEpoch` 未満の Fast-Path および進行中 Warm Prefetch の `AbortController.abort()` をすべて即時発火する。
-   - `closeArchive()`: 進行中全ジョブを中断し、`l2Cache.clear()` で L2 保持メモリを全破棄した上で `activeReader` および `entries` を解放する。
+   - `cancelEpochBelow`: `minActiveEpoch` 未満の Fast-Path および進行中 Warm Prefetch の `AbortController.abort()` をすべて即時発火する（連動して該当世代の `inflightPageReads` も同期的に削除・`null` 解決される）。
+   - `closeArchive()`: 進行中全ジョブを中断し、`inflightPageReads` クリアおよび `l2Cache.clear()` で L2 保持メモリを全破棄した上で `activeReader` および `entries` を解放する。
 
 ### 4.5 Worker 間 Zero-Copy 転送所有権規約（`HO-03`）と Comlink エラーシリアライズ契約
 
