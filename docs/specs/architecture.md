@@ -2,7 +2,7 @@
 type: spec-architecture
 title: "4層＋マルチスレッドアーキテクチャと共通インターフェース契約"
 description: "Streaming & Provider・Engine Worker・Storage・Viewer & Bridge の4層責務境界、Zero-Copy 転送、メモリ予算定数、および TypeScript コア契約の正本"
-status: "Approved (#19)"
+status: "Review (#20)"
 updated: "2026-11-21"
 tags:
   [
@@ -226,6 +226,15 @@ export interface OpenArchiveResult {
   readonly fromIndexCache: boolean;
 }
 
+export interface RequestVisiblePagesOptions {
+  /**
+   * L1 近傍プリデコードまたは L2 補充呼び出し（`pageIndices` が空配列の場合を含む）において、
+   * 現在画面に表示中の論理ページ番号群を明示指定する（省略時は `pageIndices` を表示中とみなす）。
+   * L2ByteCache の 80MB 超例外ページの一時保持ピン管理および `allowOversized` 判定に使用する。
+   */
+  readonly visiblePageIndices?: readonly number[];
+}
+
 export interface CoordinatorWorkerApi {
   /**
    * アーカイブを開き論理ページ配列を確定する。
@@ -243,14 +252,17 @@ export interface CoordinatorWorkerApi {
   /**
    * `pageIndices` に指定されたページの `DecodedPageFrame[]`（成功時は `ready`＋Transferable `ImageBitmap`、
    * 個別ページ失敗時は `error`）を最優先で返却する。
-   * Phase 3 では UI スレッド側が Fast-Path として `requestVisiblePages([N], [], epoch)` を先に呼び出し、
-   * 完了後に L1 窓用の近傍ページ単位 `[N+1]`, `[N+2]`, `[N-1]` をバックグラウンド呼び出しする。
-   * v0.1 以降は `prefetchIndices` に基づく 10MB 予算 Warm Prefetch（Worker L2 格納）も非同期スケジュールする。
+   * - `L2ByteCache`（80MB LRU）ヒット時は `readRange` 0 回で即座に Decode Worker へ投入し、
+   *   同世代の進行中 Warm Prefetch がある場合はページ単位 In-Flight 共有により重複 `readRange` を防止する。
+   * - `pageIndices` の処理完了後（`pageIndices` が空配列の L2 補充呼び出し時を含む）、未中断かつ
+   *   `prefetchIndices` が非空で当該 `epoch` 未実行の場合、閲覧優先順 10MB 予算・64KB ギャップ結合の
+   *   Warm Prefetch（`AdaptivePrefetcher` → `L2ByteCache` 格納）をバックグラウンド非同期起動する。
    */
   requestVisiblePages(
     pageIndices: readonly number[],
     prefetchIndices: readonly number[],
     epoch: number,
+    options?: RequestVisiblePagesOptions,
   ): Promise<DecodedPageFrame[]>;
 
   updateAccessToken(accessToken: string | null): void;
