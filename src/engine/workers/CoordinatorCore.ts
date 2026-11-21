@@ -420,6 +420,17 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
     }
   }
 
+  private abortStaleWarmPrefetch(minEpoch: number): void {
+    if (this.activePrefetch !== null && this.activePrefetch.epoch < minEpoch) {
+      this.activePrefetch.controller.abort();
+      this.unregisterAbortController(
+        this.activePrefetch.epoch,
+        this.activePrefetch.controller,
+      );
+      this.activePrefetch = null;
+    }
+  }
+
   async requestVisiblePages(
     pageIndices: readonly number[],
     prefetchIndices: readonly number[],
@@ -430,14 +441,7 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
       return [];
     }
 
-    if (this.activePrefetch !== null && this.activePrefetch.epoch < epoch) {
-      this.activePrefetch.controller.abort();
-      this.unregisterAbortController(
-        this.activePrefetch.epoch,
-        this.activePrefetch.controller,
-      );
-      this.activePrefetch = null;
-    }
+    this.abortStaleWarmPrefetch(epoch);
 
     const reader = this.activeReader;
     const entries = this.entries;
@@ -502,12 +506,7 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
       this.minActiveEpoch = minActiveEpoch;
     }
 
-    if (
-      this.activePrefetch !== null &&
-      this.activePrefetch.epoch < this.minActiveEpoch
-    ) {
-      this.activePrefetch = null;
-    }
+    this.abortStaleWarmPrefetch(this.minActiveEpoch);
 
     for (const [
       epoch,

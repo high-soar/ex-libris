@@ -118,6 +118,13 @@ function buildPrefetchTargets(pageIndex: number, totalPages: number): number[] {
   return targets;
 }
 
+function collectMissingNeighbors(
+  l1Cache: L1PageCache,
+  neighbors: readonly number[],
+): number[] {
+  return neighbors.filter((neighbor) => l1Cache.peek(neighbor) === undefined);
+}
+
 function resolveTapRatio(clientX: number, rect: DOMRect): number {
   if (rect.width <= 0) {
     return 0.5;
@@ -345,12 +352,14 @@ export function ReaderPage({
       const protectedPages = buildProtectedWindow(pageIndex, pageTotal);
       const prefetchTargets = buildPrefetchTargets(pageIndex, pageTotal);
       const neighbors = buildNeighborTargets(pageIndex, pageTotal);
+      const visiblePageIndices = [pageIndex];
       const cached = runtime.l1Cache.get(pageIndex);
 
       if (cached !== undefined) {
         setCurrentFrame(cached);
-        const missingNeighbors = neighbors.filter(
-          (neighbor) => runtime.l1Cache.peek(neighbor) === undefined,
+        const missingNeighbors = collectMissingNeighbors(
+          runtime.l1Cache,
+          neighbors,
         );
         if (missingNeighbors.length > 0 || prefetchTargets.length > 0) {
           void fetchAndStorePages(
@@ -359,7 +368,7 @@ export function ReaderPage({
             prefetchTargets,
             epoch,
             protectedPages,
-            [pageIndex],
+            visiblePageIndices,
           );
         }
         return;
@@ -368,11 +377,11 @@ export function ReaderPage({
       setCurrentFrame(null);
       const fetchedFrames = await fetchAndStorePages(
         runtime,
-        [pageIndex],
+        visiblePageIndices,
         prefetchTargets,
         epoch,
         protectedPages,
-        [pageIndex],
+        visiblePageIndices,
       );
       if (runtimeRef.current !== runtime || epoch !== epochRef.current) {
         return;
@@ -382,8 +391,9 @@ export function ReaderPage({
         setCurrentFrame(fetched);
       }
 
-      const missingNeighbors = neighbors.filter(
-        (neighbor) => runtime.l1Cache.peek(neighbor) === undefined,
+      const missingNeighbors = collectMissingNeighbors(
+        runtime.l1Cache,
+        neighbors,
       );
       if (missingNeighbors.length > 0) {
         void fetchAndStorePages(
@@ -392,7 +402,7 @@ export function ReaderPage({
           [],
           epoch,
           protectedPages,
-          [pageIndex],
+          visiblePageIndices,
         );
       }
     },
