@@ -12,6 +12,10 @@ on:
           - debug
           - release
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-apk:
     name: Build Android APK
@@ -26,6 +30,59 @@ jobs:
         with:
           node-version: 24
           cache: npm
+
+      - name: Validate Android Signing Secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          node -e '
+            const required = [
+              "ANDROID_KEYSTORE_BASE64",
+              "ANDROID_KEYSTORE_PASSWORD",
+              "ANDROID_KEY_ALIAS",
+              "ANDROID_KEY_PASSWORD",
+            ];
+            for (const name of required) {
+              if (String(process.env[name] || "").trim().length === 0) {
+                console.error(`Missing or empty required signing secret: ${name}`);
+                process.exit(1);
+              }
+            }
+            const cleanedBase64 = String(process.env.ANDROID_KEYSTORE_BASE64 || "").replace(/\s+/g, "");
+            if (!/^[A-Za-z0-9+/]+={0,2}$/.test(cleanedBase64) || cleanedBase64.length % 4 !== 0) {
+              console.error("ANDROID_KEYSTORE_BASE64 is not a valid Base64 string.");
+              process.exit(1);
+            }
+            const decoded = Buffer.from(cleanedBase64, "base64");
+            if (decoded.length === 0 || decoded.toString("base64") !== cleanedBase64) {
+              console.error("ANDROID_KEYSTORE_BASE64 failed strict Base64 validation or decoded to 0 bytes.");
+              process.exit(1);
+            }
+            console.log("All 4 Android signing secrets validated.");
+          '
+
+      - name: Compute Monotonic versionCode & Read versionName
+        id: version
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            const versionName = String(pkg.version || "").trim();
+            if (!versionName) {
+              console.error("package.json version is empty.");
+              process.exit(1);
+            }
+            const versionCode = Math.floor(Date.now() / 1000) - 1_700_000_000;
+            if (!Number.isInteger(versionCode) || versionCode < 1 || versionCode > 2_100_000_000) {
+              console.error(`Computed versionCode out of bounds [1, 2_100_000_000]: ${versionCode}`);
+              process.exit(1);
+            }
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `version_code=${versionCode}\nversion_name=${versionName}\n`);
+            console.log(`Computed versionName=${versionName}, versionCode=${versionCode}`);
+          '
 
       - name: Setup Java
         uses: actions/setup-java@v5
@@ -52,7 +109,8 @@ jobs:
         if: inputs.build_type != 'release'
         working-directory: android
         env:
-          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_NUMBER: ${{ steps.version.outputs.version_code }}
+          REQUIRE_FIXED_SIGNING: "true"
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -65,7 +123,8 @@ jobs:
         if: inputs.build_type == 'release'
         working-directory: android
         env:
-          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_NUMBER: ${{ steps.version.outputs.version_code }}
+          REQUIRE_FIXED_SIGNING: "true"
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -73,6 +132,83 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease
+
+      - name: Verify APK Signature & Write Step Summary
+        env:
+          BUILD_TYPE: ${{ inputs.build_type || 'debug' }}
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+        run: |
+          if [ "${BUILD_TYPE}" = "release" ]; then
+            APK_PATH="android/app/build/outputs/apk/release/app-release.apk"
+          else
+            APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
+          fi
+          if [ ! -f "${APK_PATH}" ]; then
+            echo "::error::Expected APK not found at ${APK_PATH}"
+            exit 1
+          fi
+
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          APKSIGNER_BIN=""
+          if [ -n "${SDK_ROOT}" ] && [ -d "${SDK_ROOT}/build-tools" ]; then
+            for ver in $(ls -1 "${SDK_ROOT}/build-tools" | sort -Vr); do
+              if [ -x "${SDK_ROOT}/build-tools/${ver}/apksigner" ]; then
+                APKSIGNER_BIN="${SDK_ROOT}/build-tools/${ver}/apksigner"
+                break
+              fi
+            done
+          fi
+
+          if [ -n "${APKSIGNER_BIN}" ]; then
+            echo "Verifying APK signature with apksigner: ${APKSIGNER_BIN}"
+            if ! CERT_OUTPUT="$("${APKSIGNER_BIN}" verify --print-certs "${APK_PATH}")"; then
+              echo "::error::apksigner verify --print-certs failed for ${APK_PATH}"
+              exit 1
+            fi
+            VERIFY_TOOL="apksigner"
+          else
+            echo "apksigner binary not found under build-tools; falling back to keytool -printcert -jarfile"
+            if ! CERT_OUTPUT="$(keytool -printcert -jarfile "${APK_PATH}")"; then
+              echo "::error::keytool -printcert -jarfile failed for ${APK_PATH}"
+              exit 1
+            fi
+            VERIFY_TOOL="keytool"
+          fi
+
+          CERT_OUTPUT="${CERT_OUTPUT}" VERIFY_TOOL="${VERIFY_TOOL}" node -e '
+            const fs = require("node:fs");
+            const output = String(process.env.CERT_OUTPUT || "");
+            const normalizeHex = (raw, expectedLen) => {
+              const hex = String(raw || "").replace(/[^0-9a-fA-F]/g, "").toUpperCase();
+              if (hex.length !== expectedLen) return "";
+              return hex.match(/.{2}/g).join(":");
+            };
+            const sha1Match = output.match(/SHA-?1(?:\s+digest)?:\s*([0-9a-fA-F:]+)/i);
+            const sha256Match = output.match(/SHA-?256(?:\s+digest)?:\s*([0-9a-fA-F:]+)/i);
+            const sha1 = normalizeHex(sha1Match ? sha1Match[1] : "", 40);
+            const sha256 = normalizeHex(sha256Match ? sha256Match[1] : "", 64);
+            if (!sha1 || !sha256) {
+              console.error("Failed to extract non-empty SHA-1 or SHA-256 fingerprint from certificate output.");
+              process.exit(1);
+            }
+            const summary = [
+              "### Android APK Build & Signing Summary",
+              "",
+              "| 項目 | 値 |",
+              "| :--- | :--- |",
+              "| `applicationId` | `com.highsoar.exlibris` |",
+              `| \`buildType\` | \`${process.env.BUILD_TYPE}\` |`,
+              `| \`versionName\` | \`${process.env.VERSION_NAME}\` |`,
+              `| \`versionCode\` | \`${process.env.VERSION_CODE}\` |`,
+              "| 署名方式 | `Fixed Keystore (GitHub Secrets)` |",
+              `| 検証ツール | \`${process.env.VERIFY_TOOL}\` |`,
+              `| \`SHA-1\` | \`${sha1}\` |`,
+              `| \`SHA-256\` | \`${sha256}\` |`,
+              "",
+            ].join("\n");
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+          '
 
       - name: Upload Verification APK
         uses: actions/upload-artifact@v4

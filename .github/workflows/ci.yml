@@ -145,6 +145,87 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug
 
+      - name: Verify Gradle Negative & Boundary Signing Guards
+        working-directory: android
+        run: |
+          assert_gradle_fails() {
+            local desc="$1"
+            shift
+            echo "Testing negative case: ${desc}"
+            local output
+            if output="$(env -u ANDROID_KEYSTORE_BASE64 \
+                             -u ANDROID_KEYSTORE_PASSWORD \
+                             -u ANDROID_KEY_ALIAS \
+                             -u ANDROID_KEY_PASSWORD \
+                             -u BUILD_NUMBER \
+                             -u REQUIRE_FIXED_SIGNING \
+                             "$@" 2>&1)"; then
+              echo "::error::Expected Gradle failure for '${desc}', but command succeeded!"
+              exit 1
+            fi
+            if ! printf '%s\n' "${output}" | grep -qE "FAILURE:|GradleException|Execution failed|Could not"; then
+              echo "::error::Command failed for '${desc}' without expected Gradle error output:"
+              printf '%s\n' "${output}"
+              exit 1
+            fi
+            echo "  PASS (failed as expected): ${desc}"
+          }
+
+          assert_gradle_fails "partial signing env (only ANDROID_KEYSTORE_BASE64)" \
+            ANDROID_KEYSTORE_BASE64="AQID" ./gradlew help
+
+          assert_gradle_fails "partial signing env (missing ANDROID_KEY_PASSWORD)" \
+            ANDROID_KEYSTORE_BASE64="AQID" \
+            ANDROID_KEYSTORE_PASSWORD="pw" \
+            ANDROID_KEY_ALIAS="alias" \
+            ./gradlew help
+
+          assert_gradle_fails "invalid Base64 in ANDROID_KEYSTORE_BASE64" \
+            ANDROID_KEYSTORE_BASE64="not-valid-base64!!!" \
+            ANDROID_KEYSTORE_PASSWORD="pw" \
+            ANDROID_KEY_ALIAS="alias" \
+            ANDROID_KEY_PASSWORD="pw" \
+            ./gradlew help
+
+          assert_gradle_fails "whitespace-only ANDROID_KEYSTORE_BASE64" \
+            ANDROID_KEYSTORE_BASE64=$'   \n  ' \
+            ANDROID_KEYSTORE_PASSWORD="pw" \
+            ANDROID_KEY_ALIAS="alias" \
+            ANDROID_KEY_PASSWORD="pw" \
+            ./gradlew help
+
+          assert_gradle_fails "BUILD_NUMBER=0" \
+            BUILD_NUMBER=0 ./gradlew help
+
+          assert_gradle_fails "BUILD_NUMBER=2100000001" \
+            BUILD_NUMBER=2100000001 ./gradlew help
+
+          assert_gradle_fails "BUILD_NUMBER=abc" \
+            BUILD_NUMBER=abc ./gradlew help
+
+          assert_gradle_fails "REQUIRE_FIXED_SIGNING=true without signing env vars" \
+            REQUIRE_FIXED_SIGNING=true ./gradlew help
+
+          assert_gradle_fails "unsigned ./gradlew assembleRelease" \
+            ./gradlew assembleRelease
+
+          assert_gradle_fails "unsigned ./gradlew signReleaseBundle" \
+            ./gradlew signReleaseBundle
+
+          echo "Verifying ./gradlew help with dummy Base64 does not write ci-signing.keystore during Configuration Phase"
+          rm -f app/build/ci-signing.keystore
+          env -u BUILD_NUMBER -u REQUIRE_FIXED_SIGNING \
+            ANDROID_KEYSTORE_BASE64="AQID" \
+            ANDROID_KEYSTORE_PASSWORD="pw" \
+            ANDROID_KEY_ALIAS="alias" \
+            ANDROID_KEY_PASSWORD="pw" \
+            ./gradlew help >/dev/null
+          if [ -e app/build/ci-signing.keystore ]; then
+            echo "::error::ci-signing.keystore must not be created during Configuration Phase (./gradlew help)!"
+            exit 1
+          fi
+          echo "  PASS: ci-signing.keystore was not written during Configuration Phase"
+
   quality-gate:
     name: Lint, Test & Quality Gates
     needs: [lint-and-unit, vrt-and-e2e, android-compile]
