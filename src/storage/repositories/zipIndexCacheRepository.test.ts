@@ -135,6 +135,13 @@ describe("DexieZipIndexCacheRepository", () => {
       expect(await customDb.zipIndexCache.get("k2")).toBeUndefined();
       expect(await repo.get("k3")).not.toBeNull();
       expect(await repo.get("k4")).not.toBeNull();
+
+      // 既存キー k3 を上書き保存しても上限2件以内なら k4 が退避されないこと
+      const updatedK3 = createSampleEntries("k3-updated", 2);
+      await repo.put("k3", updatedK3);
+      expect(await customDb.zipIndexCache.count()).toBe(2);
+      expect(await repo.get("k3")).toEqual(updatedK3);
+      expect(await repo.get("k4")).not.toBeNull();
     } finally {
       await customDb.delete();
     }

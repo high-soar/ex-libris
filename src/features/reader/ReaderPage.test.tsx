@@ -1600,4 +1600,64 @@ describe("ReaderPage", () => {
     expect(errorViewSpy).not.toHaveBeenCalled();
     expect(diagnosticLogger.getEntries()).toEqual([]);
   });
+
+  it("デフォルトServiceProvider(DexieZipIndexCacheRepository)経由の2回目オープンで保存済み目次がopenArchiveへ引き渡されること (AC-ENG-11)", async () => {
+    const file = new File(["dexie-roundtrip"], "dexie-0rtt.cbz", {
+      type: "application/x-cbz",
+    });
+    const entries = createSampleZipEntries(2);
+
+    const session1 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: entries.length,
+        entries,
+        fromIndexCache: false,
+      })),
+    });
+
+    const { unmount: unmount1 } = renderWithSession(
+      {},
+      () => session1.handle,
+      file,
+    );
+
+    await waitFor(() => {
+      expect(getLatestCanvasProps().frame).toMatchObject({
+        status: "ready",
+        pageIndex: 0,
+      });
+    });
+    expect(session1.api.openArchive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        indexCacheKey: `local:${file.name}:${file.size}`,
+      }),
+      null,
+      1,
+    );
+    unmount1();
+
+    const session2 = createMockCoordinatorSession({
+      openArchive: vi.fn(async (_source, cached) => ({
+        pageCount: cached?.length ?? 0,
+        entries: cached ?? [],
+        fromIndexCache: cached !== null,
+      })),
+    });
+
+    renderWithSession({}, () => session2.handle, file);
+
+    await waitFor(() => {
+      expect(getLatestCanvasProps().frame).toMatchObject({
+        status: "ready",
+        pageIndex: 0,
+      });
+    });
+    expect(session2.api.openArchive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        indexCacheKey: `local:${file.name}:${file.size}`,
+      }),
+      entries,
+      1,
+    );
+  });
 });

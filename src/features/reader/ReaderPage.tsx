@@ -19,6 +19,7 @@ import type {
 import { ZipArchiveError, isAbortError } from "../../engine/zip/errors";
 import { matchRoute } from "../../shared/router/routeMatcher";
 import { useRouter } from "../../shared/router/routerContext";
+import type { ZipIndexCacheRepository } from "../../storage/repositories/zipIndexCacheRepository";
 import {
   ReaderCanvas,
   type ReaderCanvasHandle,
@@ -120,6 +121,25 @@ function closeReadyFrames(frames: readonly DecodedPageFrame[]): void {
 
 function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function readZipIndexCacheSafely(
+  repo: ZipIndexCacheRepository,
+  cacheKey: string,
+  isCurrentAttempt: () => boolean,
+): Promise<readonly ZipPageEntry[] | null> {
+  try {
+    return await repo.get(cacheKey);
+  } catch (cacheError) {
+    if (isCurrentAttempt()) {
+      diagnosticLogger.warn(
+        "reader",
+        "目次キャッシュの取得に失敗しました",
+        `${cacheKey}: ${formatErrorMessage(cacheError)}`,
+      );
+    }
+    return null;
+  }
 }
 
 export function ReaderPage({
@@ -374,27 +394,17 @@ export function ReaderPage({
     setTotalPages(0);
 
     const source = buildLocalArchiveSource(session);
+    const isCurrentAttempt = () =>
+      runtimeRef.current === runtime && epochRef.current === openEpoch;
 
     void (async () => {
       try {
-        let cachedEntries: readonly ZipPageEntry[] | null = null;
-        try {
-          cachedEntries = await zipIndexCacheRepo.get(source.indexCacheKey);
-        } catch (cacheError) {
-          if (
-            runtimeRef.current === runtime &&
-            epochRef.current === openEpoch
-          ) {
-            diagnosticLogger.warn(
-              "reader",
-              "目次キャッシュの取得に失敗しました",
-              `${source.indexCacheKey}: ${formatErrorMessage(cacheError)}`,
-            );
-          }
-          cachedEntries = null;
-        }
-
-        if (runtimeRef.current !== runtime || epochRef.current !== openEpoch) {
+        const cachedEntries = await readZipIndexCacheSafely(
+          zipIndexCacheRepo,
+          source.indexCacheKey,
+          isCurrentAttempt,
+        );
+        if (!isCurrentAttempt()) {
           return;
         }
 
@@ -403,7 +413,7 @@ export function ReaderPage({
           cachedEntries,
           openEpoch,
         );
-        if (runtimeRef.current !== runtime || epochRef.current !== openEpoch) {
+        if (!isCurrentAttempt()) {
           return;
         }
         if (result.pageCount <= 0) {
@@ -439,11 +449,7 @@ export function ReaderPage({
         setIsOpening(false);
         await loadPageWindow(runtime, 0, result.pageCount, openEpoch);
       } catch (error) {
-        if (
-          isAbortError(error) ||
-          runtimeRef.current !== runtime ||
-          epochRef.current !== openEpoch
-        ) {
+        if (isAbortError(error) || !isCurrentAttempt()) {
           return;
         }
         const extracted = extractReaderError(error);
