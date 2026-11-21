@@ -19,6 +19,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     page,
   }) => {
     const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
     await waitForServicesReady(page);
     await resetTestDatabase(page);
@@ -452,6 +453,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     page,
   }) => {
     const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
     await waitForServicesReady(page);
     await resetTestDatabase(page);
@@ -500,6 +502,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     page,
   }) => {
     const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
     await waitForServicesReady(page);
     await resetTestDatabase(page);
@@ -668,6 +671,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     page,
   }) => {
     const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
     await waitForServicesReady(page);
     await resetTestDatabase(page);
@@ -753,6 +757,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
   }) => {
     const pageErrors = trackPageErrors(page);
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
     await waitForServicesReady(page);
     await resetTestDatabase(page);
