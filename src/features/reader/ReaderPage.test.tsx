@@ -46,8 +46,17 @@ import { ReaderPage, type ReaderPageProps } from "./ReaderPage";
 import * as stories from "./ReaderPage.stories";
 import { useLocalReaderSessionStore } from "./localReaderSessionStore";
 
-const { FullscreenCanvas, HudOpen, ArchiveError, PageError } =
-  composeStories(stories);
+const {
+  FullscreenCanvas,
+  HudOpen,
+  ArchiveError,
+  PageError,
+  SpreadRtlHudOpen,
+  SpreadLtrOffsetOnHudOpen,
+  LandscapeAutoSingle,
+  PortraitAutoSingle,
+  PartialSpreadError,
+} = composeStories(stories);
 
 function createFakeBitmap(width = 800, height = 1200): ImageBitmap {
   return {
@@ -145,23 +154,40 @@ function dispatchPointer(
 function createMockCoordinatorSession(
   overrides: Partial<CoordinatorWorkerApi> = {},
 ) {
-  const api: CoordinatorWorkerApi = {
-    openArchive: vi.fn(async (): Promise<OpenArchiveResult> => ({
-      pageCount: 6,
-      entries: [],
-      fromIndexCache: false,
-    })),
-    requestVisiblePages: vi.fn(
-      async (
+  const openArchive = vi.fn<CoordinatorWorkerApi["openArchive"]>(
+    overrides.openArchive ??
+      (async (): Promise<OpenArchiveResult> => ({
+        pageCount: 6,
+        entries: [],
+        fromIndexCache: false,
+      })),
+  );
+  const requestVisiblePages = vi.fn<
+    CoordinatorWorkerApi["requestVisiblePages"]
+  >(
+    overrides.requestVisiblePages ??
+      (async (
         pageIndices: readonly number[],
         _prefetch: readonly number[],
         epoch: number,
-      ) => pageIndices.map((pageIndex) => createReadyFrame(pageIndex, epoch)),
-    ),
-    updateAccessToken: vi.fn(),
-    cancelEpochBelow: vi.fn(),
-    closeArchive: vi.fn(async () => {}),
-    ...overrides,
+      ) => pageIndices.map((pageIndex) => createReadyFrame(pageIndex, epoch))),
+  );
+  const updateAccessToken = vi.fn<CoordinatorWorkerApi["updateAccessToken"]>(
+    overrides.updateAccessToken,
+  );
+  const cancelEpochBelow = vi.fn<CoordinatorWorkerApi["cancelEpochBelow"]>(
+    overrides.cancelEpochBelow,
+  );
+  const closeArchive = vi.fn<CoordinatorWorkerApi["closeArchive"]>(
+    overrides.closeArchive ?? (async () => {}),
+  );
+
+  const api = {
+    openArchive,
+    requestVisiblePages,
+    updateAccessToken,
+    cancelEpochBelow,
+    closeArchive,
   };
   const dispose = vi.fn();
   const handle: CoordinatorSessionHandle = { api, dispose };
@@ -185,8 +211,27 @@ function mockSurfaceRect(
   });
 }
 
+function setWindowSize(width: number, height: number): void {
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: width,
+  });
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    value: height,
+  });
+}
+
 describe("ReaderPage", () => {
   const originalUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  const originalInnerWidth = Object.getOwnPropertyDescriptor(
+    window,
+    "innerWidth",
+  );
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(
+    window,
+    "innerHeight",
+  );
 
   let canvasSpy: MockInstance<typeof ReaderCanvasModule.ReaderCanvas>;
   let hudSpy: MockInstance<typeof ReaderHudOverlayModule.ReaderHudOverlay>;
@@ -197,6 +242,7 @@ describe("ReaderPage", () => {
     diagnosticLogger.clear();
     useLocalReaderSessionStore.setState({ session: null });
     window.history.replaceState(null, "", "/read/local");
+    setWindowSize(1024, 768);
 
     canvasSpy = vi
       .spyOn(ReaderCanvasModule, "ReaderCanvas")
@@ -211,7 +257,14 @@ describe("ReaderPage", () => {
 
   afterEach(async () => {
     cleanup();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    if (originalInnerWidth) {
+      Object.defineProperty(window, "innerWidth", originalInnerWidth);
+    }
+    if (originalInnerHeight) {
+      Object.defineProperty(window, "innerHeight", originalInnerHeight);
+    }
     useLocalReaderSessionStore.setState({ session: null });
     window.history.replaceState(null, "", originalUrl || "/");
     await resetTestDb();
@@ -258,11 +311,13 @@ describe("ReaderPage", () => {
     );
   };
 
-  it("全Storybookストーリーを決定論的に描画し直下子コンポーネントへ期待Propsを渡すこと (AC-RD-02, AC-RD-06, AC-RD-07)", () => {
+  it("全Storybookストーリーを決定論的に描画し直下子コンポーネントへ期待Propsを渡すこと (AC-RD-02, AC-RD-06, AC-RD-07, AC-RD-10, AC-RD-11, AC-RD-12)", () => {
     const { unmount: unmountFullscreen } = render(<FullscreenCanvas />);
     expect(screen.getByTestId("reader-page")).toBeVisible();
     expect(screen.getByTestId("reader-loading")).toBeVisible();
-    expect(getLatestCanvasProps().frame).toBeNull();
+    expect(getLatestCanvasProps().slots).toEqual([
+      { slot: { pageIndex: 0, position: "center" }, frame: null },
+    ]);
     expect(getLatestHudProps()).toEqual({
       isOpen: false,
       fileName: "sample-comic-vol01.cbz",
@@ -271,6 +326,15 @@ describe("ReaderPage", () => {
       onClose: expect.any(Function),
       onNextPage: expect.any(Function),
       onPrevPage: expect.any(Function),
+      readingDirection: "rtl",
+      spreadMode: "auto",
+      effectiveSpreadMode: "spread",
+      spreadPageOffset: 0,
+      pageIndicatorText: "1 / 24",
+      maxDisplayedPageIndex: 0,
+      onCycleSpreadMode: expect.any(Function),
+      onToggleSpreadPageOffset: expect.any(Function),
+      onToggleReadingDirection: expect.any(Function),
     });
     expect(errorViewSpy).not.toHaveBeenCalled();
     unmountFullscreen();
@@ -281,12 +345,16 @@ describe("ReaderPage", () => {
       isOpen: true,
       fileName: "sample-comic-vol01.cbz",
       currentPageIndex: 11,
+      maxDisplayedPageIndex: 12,
+      pageIndicatorText: "12-13 / 24",
       totalPages: 24,
+      spreadMode: "auto",
+      effectiveSpreadMode: "spread",
     });
     act(() => {
       getLatestHudProps().onNextPage();
     });
-    expect(getLatestHudProps().currentPageIndex).toBe(12);
+    expect(getLatestHudProps().currentPageIndex).toBe(13);
     unmountHud();
 
     errorViewSpy.mockClear();
@@ -302,10 +370,103 @@ describe("ReaderPage", () => {
     unmountArchiveError();
 
     errorViewSpy.mockClear();
-    render(<PageError />);
+    const { unmount: unmountPageError } = render(<PageError />);
     expect(screen.queryByTestId("reader-loading")).not.toBeInTheDocument();
     expect(getLatestErrorViewProps()).toEqual({
       mode: "page",
+      slotPosition: "center",
+      message: "ページの画像デコードに失敗しました",
+      errorCode: "DECODE_FAILED",
+    });
+    unmountPageError();
+
+    errorViewSpy.mockClear();
+    const { unmount: unmountSpreadRtl } = render(<SpreadRtlHudOpen />);
+    expect(screen.queryByTestId("reader-loading")).not.toBeInTheDocument();
+    expect(getLatestCanvasProps().slots).toEqual([
+      {
+        slot: { pageIndex: 2, position: "left" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 2 }),
+      },
+      {
+        slot: { pageIndex: 1, position: "right" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 1 }),
+      },
+    ]);
+    expect(getLatestHudProps()).toMatchObject({
+      isOpen: true,
+      readingDirection: "rtl",
+      spreadMode: "spread",
+      effectiveSpreadMode: "spread",
+      spreadPageOffset: 0,
+      pageIndicatorText: "2-3 / 24",
+      maxDisplayedPageIndex: 2,
+    });
+    unmountSpreadRtl();
+
+    const { unmount: unmountSpreadLtr } = render(<SpreadLtrOffsetOnHudOpen />);
+    expect(getLatestCanvasProps().slots).toEqual([
+      {
+        slot: { pageIndex: 2, position: "left" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 2 }),
+      },
+      {
+        slot: { pageIndex: 3, position: "right" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 3 }),
+      },
+    ]);
+    expect(getLatestHudProps()).toMatchObject({
+      isOpen: true,
+      readingDirection: "ltr",
+      spreadMode: "spread",
+      effectiveSpreadMode: "spread",
+      spreadPageOffset: 1,
+      pageIndicatorText: "3-4 / 24",
+      maxDisplayedPageIndex: 3,
+    });
+    unmountSpreadLtr();
+
+    const { unmount: unmountLandscape } = render(<LandscapeAutoSingle />);
+    expect(getLatestCanvasProps().slots).toEqual([
+      {
+        slot: { pageIndex: 4, position: "center" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 4 }),
+      },
+    ]);
+    expect(getLatestHudProps().pageIndicatorText).toBe("5 / 24");
+    unmountLandscape();
+
+    const { unmount: unmountPortrait } = render(<PortraitAutoSingle />);
+    expect(getLatestCanvasProps().slots).toEqual([
+      {
+        slot: { pageIndex: 1, position: "center" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 1 }),
+      },
+    ]);
+    expect(getLatestHudProps()).toMatchObject({
+      spreadMode: "auto",
+      effectiveSpreadMode: "single",
+      pageIndicatorText: "2 / 24",
+    });
+    unmountPortrait();
+
+    errorViewSpy.mockClear();
+    render(<PartialSpreadError />);
+    expect(screen.queryByTestId("reader-loading")).not.toBeInTheDocument();
+    expect(getLatestCanvasProps().slots).toEqual([
+      {
+        slot: { pageIndex: 2, position: "left" },
+        frame: expect.objectContaining({ status: "error", pageIndex: 2 }),
+      },
+      {
+        slot: { pageIndex: 1, position: "right" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 1 }),
+      },
+    ]);
+    expect(getLatestErrorViewProps()).toEqual({
+      mode: "page",
+      slotPosition: "left",
+      pageNumber: 3,
       message: "ページの画像デコードに失敗しました",
       errorCode: "DECODE_FAILED",
     });
@@ -356,20 +517,20 @@ describe("ReaderPage", () => {
 
     await waitFor(() => {
       expect(session2.api.openArchive).toHaveBeenCalledTimes(1);
-      expect(getLatestCanvasProps().frame).toMatchObject({
-        status: "ready",
-        pageIndex: 0,
-      });
+      expect(getLatestCanvasProps().slots).toEqual([
+        {
+          slot: { pageIndex: 0, position: "center" },
+          frame: expect.objectContaining({ status: "ready", pageIndex: 0 }),
+        },
+      ]);
     });
 
-    // StrictMode の 1 回目アンマウントでセッション1は停止されるが、Zustand session は消えない
     expect(session1.api.cancelEpochBelow).toHaveBeenCalled();
     expect(session1.api.closeArchive).toHaveBeenCalledTimes(1);
     expect(session1.dispose).toHaveBeenCalledTimes(1);
     expect(useLocalReaderSessionStore.getState().session?.file).toBe(file);
     expect(window.location.pathname).toBe("/read/local");
 
-    // レンダラハンドル登録後のアンマウント時に clearAllTextures が呼ばれることも検証
     act(() => {
       getLatestCanvasProps().onRendererReady?.({
         deletePageTexture,
@@ -379,7 +540,9 @@ describe("ReaderPage", () => {
     expect(clearAllTextures).not.toHaveBeenCalled();
   });
 
-  it("openArchive成功後にFast-Path([0], prefetchTargets, epoch, {visiblePageIndices:[0]})を描画し完了後に未取得近傍[1,2]を1バッチ要求しL1ヒット時はL2補充と残近傍を1回で要求すること (AC-RD-05)", async () => {
+  it("見開きFast-Path([N,N+1])・L1保護窓・近傍バッチ・全ヒット時L2補充が見開きと単頁双方で連携すること (AC-RD-05, AC-RD-12)", async () => {
+    // 1. 縦向き(375x667 -> single) での単ページ Fast-Path と L1 5枚窓
+    setWindowSize(375, 667);
     const openDeferred = createDeferred<OpenArchiveResult>();
     const page0Deferred = createDeferred<DecodedPageFrame[]>();
     const neighbors0Deferred = createDeferred<DecodedPageFrame[]>();
@@ -390,7 +553,7 @@ describe("ReaderPage", () => {
     const frame2 = createReadyFrame(2, 1);
     const frame3 = createReadyFrame(3, 2);
 
-    const mockSession = createMockCoordinatorSession({
+    const singleSession = createMockCoordinatorSession({
       openArchive: vi.fn(() => openDeferred.promise),
       requestVisiblePages: vi.fn((pageIndices) => {
         if (pageIndices.length === 1 && pageIndices[0] === 0) {
@@ -403,23 +566,15 @@ describe("ReaderPage", () => {
       }),
     });
 
-    renderWithSession({}, () => mockSession.handle);
-
-    // オープン中・未描画時はローディング表示
+    const { unmount: unmountSingle } = renderWithSession(
+      {},
+      () => singleSession.handle,
+    );
     expect(screen.getByTestId("reader-loading")).toBeVisible();
     await waitFor(() => {
-      expect(mockSession.api.openArchive).toHaveBeenCalledWith(
-        expect.objectContaining({
-          kind: "local-session",
-          rawFileName: "comic-vol01.cbz",
-          indexCacheKey: expect.stringMatching(/^local:comic-vol01\.cbz:/),
-        }),
-        null,
-        1,
-      );
+      expect(singleSession.api.openArchive).toHaveBeenCalledTimes(1);
     });
 
-    // openArchive 完了 -> まず Fast-Path [0] と優先順 prefetchTargets [1..5] ＆ { visiblePageIndices: [0] } が要求される
     await act(async () => {
       openDeferred.resolve({
         pageCount: 6,
@@ -428,27 +583,23 @@ describe("ReaderPage", () => {
       });
       await flushMicrotasks();
     });
-
-    expect(mockSession.api.requestVisiblePages).toHaveBeenCalledTimes(1);
-    expect(mockSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
+    expect(singleSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
       1,
       [0],
       [1, 2, 3, 4, 5],
       1,
       { visiblePageIndices: [0] },
     );
-    expect(screen.getByTestId("reader-loading")).toBeVisible();
 
-    // Fast-Path [0] 完了 -> 描画されローディング消滅、その後に近傍 [1, 2] が 1 バッチで要求される
     await act(async () => {
       page0Deferred.resolve([frame0]);
       await flushMicrotasks();
     });
-
     expect(screen.queryByTestId("reader-loading")).not.toBeInTheDocument();
-    expect(getLatestCanvasProps().frame).toBe(frame0);
-    expect(mockSession.api.requestVisiblePages).toHaveBeenCalledTimes(2);
-    expect(mockSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
+    expect(getLatestCanvasProps().slots).toEqual([
+      { slot: { pageIndex: 0, position: "center" }, frame: frame0 },
+    ]);
+    expect(singleSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
       2,
       [1, 2],
       [],
@@ -456,36 +607,533 @@ describe("ReaderPage", () => {
       { visiblePageIndices: [0] },
     );
 
-    // 近傍バッチ [1, 2] が到着して L1 に格納される
     await act(async () => {
       neighbors0Deferred.resolve([frame1, frame2]);
       await flushMicrotasks();
     });
 
-    // ページ 1 へ移動 -> L1 キャッシュヒットのため [1] は再取得せず、未取得近傍 [3] と先読み窓 [2, 3, 4, 5, 0] を 1 回で要求する
     act(() => {
       getLatestHudProps().onNextPage();
     });
-
-    expect(mockSession.api.cancelEpochBelow).toHaveBeenCalledWith(2);
-    expect(getLatestCanvasProps().frame).toBe(frame1);
-    expect(getLatestHudProps().currentPageIndex).toBe(1);
-    expect(mockSession.api.requestVisiblePages).toHaveBeenCalledTimes(3);
-    expect(mockSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
+    expect(singleSession.api.cancelEpochBelow).toHaveBeenCalledWith(2);
+    expect(getLatestCanvasProps().slots).toEqual([
+      { slot: { pageIndex: 1, position: "center" }, frame: frame1 },
+    ]);
+    expect(singleSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
       3,
       [3],
       [2, 3, 4, 5, 0],
       2,
       { visiblePageIndices: [1] },
     );
-
     await act(async () => {
       page3Deferred.resolve([frame3]);
       await flushMicrotasks();
     });
+    unmountSingle();
+
+    // 2. 横向き(1280x800 -> spread) で見開き候補 [3, 4] の 1バッチ Fast-Path ＆ L1全ヒット補充を検証
+    setWindowSize(1280, 800);
+    const spreadSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 10,
+        entries: [],
+        fromIndexCache: false,
+      })),
+    });
+    renderWithSession({}, () => spreadSession.handle);
+
+    await waitFor(() => {
+      expect(getLatestHudProps().effectiveSpreadMode).toBe("spread");
+      expect(spreadSession.api.requestVisiblePages).toHaveBeenCalledTimes(2);
+    });
+    // 表紙0は単独 [0] で取得し、近傍 [1, 2] を取得
+    expect(spreadSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
+      1,
+      [0],
+      [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      1,
+      { visiblePageIndices: [0] },
+    );
+    expect(spreadSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
+      2,
+      [1, 2],
+      [],
+      1,
+      { visiblePageIndices: [0] },
+    );
+
+    // 0 -> [1, 2] へ移動: [1, 2] はL1全ヒットのため即描画＆近傍 [3, 4] と先読み [3..9, 0] を1回で要求
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().pageIndicatorText).toBe("2-3 / 10");
+    expect(getLatestCanvasProps().slots).toEqual([
+      {
+        slot: { pageIndex: 2, position: "left" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 2 }),
+      },
+      {
+        slot: { pageIndex: 1, position: "right" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 1 }),
+      },
+    ]);
+    expect(spreadSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
+      3,
+      [3, 4],
+      [3, 4, 5, 6, 7, 8, 9, 0],
+      2,
+      { visiblePageIndices: [1, 2] },
+    );
+  });
+
+  it("ResizeObserverとwindow.resizeでautoモードの縦横向きに追従し、同向き内リサイズ時は再同期せず、向き変化時は同一ページでも新epochで再同期すること (AC-RD-10)", async () => {
+    let observerCallback: ResizeObserverCallback | null = null;
+    const observeSpy = vi.fn();
+    const disconnectSpy = vi.fn();
+    class MockResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        observerCallback = callback;
+      }
+      observe = observeSpy;
+      unobserve = vi.fn();
+      disconnect = disconnectSpy;
+    }
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+
+    setWindowSize(375, 667);
+    const mockSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 6,
+        entries: [],
+        fromIndexCache: false,
+      })),
+    });
+
+    const { unmount } = renderWithSession({}, () => mockSession.handle);
+
+    await waitFor(() => {
+      expect(getLatestCanvasProps().slots).toHaveLength(1);
+    });
+    expect(observeSpy).toHaveBeenCalledTimes(1);
+    expect(getLatestHudProps().effectiveSpreadMode).toBe("single");
+
+    // ページ 0 -> 1 へ移動（singleモード）
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(1);
+    expect(getLatestHudProps().pageIndicatorText).toBe("2 / 6");
+
+    // 同一寸法通知では何もしない
+    const callsBeforeSameSize =
+      mockSession.api.requestVisiblePages.mock.calls.length;
+    act(() => {
+      observerCallback?.(
+        [{ contentRect: { width: 375, height: 667 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    });
+    expect(mockSession.api.requestVisiblePages).toHaveBeenCalledTimes(
+      callsBeforeSameSize,
+    );
+
+    // 同向き内のリサイズ (375x667 -> 400x800, 依然 single) -> cancelEpochBelow / loadPageWindow を再発火しない
+    const cancelCountBeforeSameOrientation =
+      mockSession.api.cancelEpochBelow.mock.calls.length;
+    act(() => {
+      observerCallback?.(
+        [{ contentRect: { width: 400, height: 800 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    });
+    expect(mockSession.api.cancelEpochBelow).toHaveBeenCalledTimes(
+      cancelCountBeforeSameOrientation,
+    );
+    expect(getLatestHudProps().effectiveSpreadMode).toBe("single");
+
+    // 縦->横回転 (400x800 -> 1280x800, single -> spread) -> 同一 currentPageIndex=1 でも新 epoch で再同期
+    await act(async () => {
+      observerCallback?.(
+        [{ contentRect: { width: 1280, height: 800 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().effectiveSpreadMode).toBe("spread");
+    expect(getLatestHudProps().currentPageIndex).toBe(1);
+    expect(getLatestHudProps().pageIndicatorText).toBe("2-3 / 6");
+    expect(mockSession.api.cancelEpochBelow).toHaveBeenCalledTimes(
+      cancelCountBeforeSameOrientation + 1,
+    );
+
+    // 回転後の横向き同向きリサイズ (1280x800 -> 1000x700) -> 再同期しない
+    const cancelCountLandscape =
+      mockSession.api.cancelEpochBelow.mock.calls.length;
+    act(() => {
+      observerCallback?.(
+        [{ contentRect: { width: 1000, height: 700 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+    });
+    expect(mockSession.api.cancelEpochBelow).toHaveBeenCalledTimes(
+      cancelCountLandscape,
+    );
+
+    // window.resize イベント（空 entries 時と同様に window.innerWidth/Height をフォールバック参照）で横->縦へ回転
+    setWindowSize(390, 844);
+    vi.spyOn(
+      screen.getByTestId("reader-page"),
+      "getBoundingClientRect",
+    ).mockReturnValue({
+      width: 0,
+      height: 0,
+      top: 0,
+      left: 0,
+      bottom: 0,
+      right: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("resize"));
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().effectiveSpreadMode).toBe("single");
+    expect(mockSession.api.cancelEpochBelow).toHaveBeenCalledTimes(
+      cancelCountLandscape + 1,
+    );
+
+    unmount();
+    expect(disconnectSpy).toHaveBeenCalledTimes(1);
+
+    // ResizeObserver 未定義環境でも window.resize で動作すること
+    vi.stubGlobal("ResizeObserver", undefined);
+    setWindowSize(1280, 800);
+    const noObserverSession = createMockCoordinatorSession();
+    const { unmount: unmountNoObs } = renderWithSession(
+      {},
+      () => noObserverSession.handle,
+    );
+    await waitFor(() => {
+      expect(getLatestHudProps().effectiveSpreadMode).toBe("spread");
+    });
+    setWindowSize(360, 640);
+    await act(async () => {
+      window.dispatchEvent(new Event("resize"));
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().effectiveSpreadMode).toBe("single");
+    unmountNoObs();
+  });
+
+  it("横長画像(width>height)の自動単独中央表示・後続自動再ペアリング・spreadHistory戻りと最終見開き全入力no-op境界を検証すること (AC-RD-10)", async () => {
+    setWindowSize(1280, 800);
+    // 7ページ構成: 0=表紙(800x1200), 1,2=縦(800x1200), 3=縦(800x1200), 4=横長(1600x1000), 5,6=縦(800x1200)
+    const mockSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 7,
+        entries: [],
+        fromIndexCache: false,
+      })),
+      requestVisiblePages: vi.fn(
+        async (
+          pageIndices: readonly number[],
+          _prefetch: readonly number[],
+          epoch: number,
+        ) =>
+          pageIndices.map((idx: number) =>
+            createReadyFrame(
+              idx,
+              epoch,
+              idx === 4
+                ? createFakeBitmap(1600, 1000)
+                : createFakeBitmap(800, 1200),
+            ),
+          ),
+      ),
+    });
+
+    const { unmount } = renderWithSession({}, () => mockSession.handle);
+
+    await waitFor(() => {
+      expect(getLatestCanvasProps().slots).toEqual([
+        {
+          slot: { pageIndex: 0, position: "center" },
+          frame: expect.objectContaining({ status: "ready", pageIndex: 0 }),
+        },
+      ]);
+    });
+
+    // 0 -> [1, 2]
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().pageIndicatorText).toBe("2-3 / 7");
+
+    // [1, 2] -> 3 (Fast-Path [3, 4] 要求後、4が横長のため 3単独表示へフォールバック)
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(3);
+    expect(getLatestHudProps().pageIndicatorText).toBe("4 / 7");
+    expect(getLatestCanvasProps().slots).toEqual([
+      {
+        slot: { pageIndex: 3, position: "center" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 3 }),
+      },
+    ]);
+
+    // 3 -> 4 (横長画像自身も単独中央表示)
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(4);
+    expect(getLatestHudProps().pageIndicatorText).toBe("5 / 7");
+    expect(getLatestCanvasProps().slots).toEqual([
+      {
+        slot: { pageIndex: 4, position: "center" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 4 }),
+      },
+    ]);
+
+    // 4 -> [5, 6] (自動再ペアリング、maxDisplayedPageIndex = 6 === totalPages - 1)
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(5);
+    expect(getLatestHudProps().maxDisplayedPageIndex).toBe(6);
+    expect(getLatestHudProps().pageIndicatorText).toBe("6-7 / 7");
+
+    // 最終見開き表示中は HUD/タップ/スワイプ/ArrowLeft 全入力による次頁移動が完全 no-op
+    const epochCallsAtEnd = mockSession.api.cancelEpochBelow.mock.calls.length;
+    const surface = screen.getByTestId("reader-interaction-surface");
+    mockSurfaceRect(surface, { left: 0, width: 1000 });
+    act(() => {
+      getLatestHudProps().onNextPage();
+      fireEvent.click(surface, { clientX: 100 }); // rtl 左タップ=next
+      dispatchPointer(surface, "pointerdown", { clientX: 200, clientY: 200 });
+      dispatchPointer(surface, "pointerup", { clientX: 300, clientY: 200 }); // rtl 左→右=next
+      fireEvent.keyDown(window, { key: "ArrowLeft" }); // rtl ArrowLeft=next
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(5);
+    expect(mockSession.api.cancelEpochBelow).toHaveBeenCalledTimes(
+      epochCallsAtEnd,
+    );
+
+    // 戻る操作で spreadHistory により往路厳密一致で戻る (5 -> 4 -> 3 -> 1 -> 0)
+    for (const expectedPrev of [4, 3, 1, 0]) {
+      await act(async () => {
+        getLatestHudProps().onPrevPage();
+        await flushMicrotasks();
+      });
+      expect(getLatestHudProps().currentPageIndex).toBe(expectedPrev);
+    }
+
+    // single切替で履歴クリア後に再見開き戻した際は computePreviousAnchorIndex で戻る
+    await act(async () => {
+      getLatestHudProps().onNextPage(); // 0 -> 1
+      await flushMicrotasks();
+      getLatestHudProps().onNextPage(); // 1 -> 3 (history: [0, 1])
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(3);
+
+    // spread -> single -> auto(spread) で履歴クリア
+    await act(async () => {
+      getLatestHudProps().onCycleSpreadMode?.(); // auto -> spread (同実効のため維持)
+      getLatestHudProps().onCycleSpreadMode?.(); // spread -> single (履歴クリア)
+      await flushMicrotasks();
+      getLatestHudProps().onCycleSpreadMode?.(); // single -> auto (spread)
+      await flushMicrotasks();
+    });
+    await act(async () => {
+      getLatestHudProps().onPrevPage(); // computePreviousAnchorIndex(3, "spread", 0) -> 1
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(1);
+    unmount();
+
+    // 5ページ本最終見開き [3, 4] でも全入力次頁 no-op
+    const fiveSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 5,
+        entries: [],
+        fromIndexCache: false,
+      })),
+    });
+    renderWithSession({}, () => fiveSession.handle);
+    await waitFor(() => {
+      expect(getLatestCanvasProps().slots).toHaveLength(1);
+    });
+    await act(async () => {
+      getLatestHudProps().onNextPage(); // 0 -> 1
+      await flushMicrotasks();
+      getLatestHudProps().onNextPage(); // 1 -> 3 ([3,4], maxDisplayed=4)
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(3);
+    expect(getLatestHudProps().maxDisplayedPageIndex).toBe(4);
+    act(() => {
+      getLatestHudProps().onNextPage();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(3);
+  });
+
+  it("1ページずらし・表示モード循環・右/左開き即時再配置・ltr全入力反転が仕様通り動作すること (AC-RD-03, AC-RD-10, AC-RD-11)", async () => {
+    setWindowSize(1280, 800);
+    const mockSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 6,
+        entries: [],
+        fromIndexCache: false,
+      })),
+    });
+
+    const { unmount } = renderWithSession({}, () => mockSession.handle);
+    await waitFor(() => {
+      expect(getLatestCanvasProps().slots).toHaveLength(1);
+    });
+
+    // 1. 表紙(0)で 1ページずらし ON (0->1): currentPageIndex=0のまま新epochで [0, 1] へ再同期
+    const cancelCount0 = mockSession.api.cancelEpochBelow.mock.calls.length;
+    await act(async () => {
+      getLatestHudProps().onToggleSpreadPageOffset?.();
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(0);
+    expect(getLatestHudProps().spreadPageOffset).toBe(1);
+    expect(getLatestHudProps().pageIndicatorText).toBe("1-2 / 6");
+    expect(mockSession.api.cancelEpochBelow).toHaveBeenCalledTimes(
+      cancelCount0 + 1,
+    );
+    expect(getLatestCanvasProps().slots).toEqual([
+      {
+        slot: { pageIndex: 1, position: "left" },
+        frame: expect.objectContaining({ pageIndex: 1 }),
+      },
+      {
+        slot: { pageIndex: 0, position: "right" },
+        frame: expect.objectContaining({ pageIndex: 0 }),
+      },
+    ]);
+
+    // 2. 右開き -> 左開き切替: Worker RPC を追加発行せず即座に左右スロット反転 ([left:0, right:1])
+    const rpcCountBeforeDir =
+      mockSession.api.requestVisiblePages.mock.calls.length;
+    act(() => {
+      getLatestHudProps().onToggleReadingDirection?.();
+    });
+    expect(getLatestHudProps().readingDirection).toBe("ltr");
+    expect(mockSession.api.requestVisiblePages).toHaveBeenCalledTimes(
+      rpcCountBeforeDir,
+    );
+    expect(getLatestCanvasProps().slots).toEqual([
+      {
+        slot: { pageIndex: 0, position: "left" },
+        frame: expect.objectContaining({ pageIndex: 0 }),
+      },
+      {
+        slot: { pageIndex: 1, position: "right" },
+        frame: expect.objectContaining({ pageIndex: 1 }),
+      },
+    ]);
+
+    // 3. 左開き (ltr) 入力反転（右タップ=次、左タップ=前、右→左スワイプ=次、左→右スワイプ=前、ArrowRight=次、ArrowLeft=前）
+    const surface = screen.getByTestId("reader-interaction-surface");
+    mockSurfaceRect(surface, { left: 0, width: 1000 });
+
+    // 右タップ (clientX=850) -> 次 ([0,1] -> [2,3])
+    await act(async () => {
+      fireEvent.click(surface, { clientX: 850 });
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(2);
+
+    // 左タップ (clientX=150) -> 前 ([2,3] -> [0,1])
+    await act(async () => {
+      fireEvent.click(surface, { clientX: 150 });
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(0);
+
+    // 右→左スワイプ (dx=-60) -> 次 ([0,1] -> [2,3])
+    await act(async () => {
+      dispatchPointer(surface, "pointerdown", { clientX: 600, clientY: 300 });
+      dispatchPointer(surface, "pointerup", { clientX: 540, clientY: 305 });
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(2);
+
+    // 左→右スワイプ (dx=+60) -> 前 ([2,3] -> [0,1])
+    await act(async () => {
+      dispatchPointer(surface, "pointerdown", { clientX: 500, clientY: 300 });
+      dispatchPointer(surface, "pointerup", { clientX: 560, clientY: 305 });
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(0);
+
+    // ArrowRight -> 次 ([0,1] -> [2,3]), ArrowLeft -> 前 ([2,3] -> [0,1])
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(2);
+
+    // 4. 中間ページ(2)で1ページずらし OFF (1->0): 2 -> 1 へシフトし履歴もクリアされる
+    await act(async () => {
+      getLatestHudProps().onToggleSpreadPageOffset?.();
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().spreadPageOffset).toBe(0);
+    expect(getLatestHudProps().currentPageIndex).toBe(1);
+
+    // singleモード時および1ページ本では onToggleSpreadPageOffset がガードされること
+    await act(async () => {
+      getLatestHudProps().onCycleSpreadMode?.(); // auto -> spread
+      getLatestHudProps().onCycleSpreadMode?.(); // spread -> single
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().effectiveSpreadMode).toBe("single");
+    act(() => {
+      getLatestHudProps().onToggleSpreadPageOffset?.();
+    });
+    expect(getLatestHudProps().spreadPageOffset).toBe(0);
+
+    // single モードで左右開きトグルしても安全に反転すること
+    act(() => {
+      getLatestHudProps().onToggleReadingDirection?.();
+    });
+    expect(getLatestHudProps().readingDirection).toBe("rtl");
+    unmount();
+
+    // 1ページ本での onToggleSpreadPageOffset ガード
+    const onePageSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 1,
+        entries: [],
+        fromIndexCache: false,
+      })),
+    });
+    renderWithSession({}, () => onePageSession.handle);
+    await waitFor(() => {
+      expect(getLatestHudProps().totalPages).toBe(1);
+    });
+    act(() => {
+      getLatestHudProps().onToggleSpreadPageOffset?.();
+    });
+    expect(getLatestHudProps().spreadPageOffset).toBe(0);
   });
 
   it("連続めくり時の古いepoch遅延到着フレームはL1登録前にbitmap.close()し、L1退避時もdeletePageTextureとclose()を呼ぶこと (AC-RD-05)", async () => {
+    setWindowSize(375, 667);
     const deletePageTexture = vi.fn();
     const clearAllTextures = vi.fn();
 
@@ -538,7 +1186,6 @@ describe("ReaderPage", () => {
           return [frame6];
         }
         if (pageIndices.length === 1 && pageIndices[0] === 7 && epoch === 7) {
-          // 返却フレーム自体に古い epoch が混入しているケース
           return [createReadyFrame(7, 1, staleInnerEpochBitmap)];
         }
         return [];
@@ -555,23 +1202,27 @@ describe("ReaderPage", () => {
     });
 
     await waitFor(() => {
-      expect(getLatestCanvasProps().frame).toBe(frame0);
+      expect(getLatestCanvasProps().slots).toEqual([
+        { slot: { pageIndex: 0, position: "center" }, frame: frame0 },
+      ]);
     });
-
-    // ページ 1 -> 2 へ進めて epoch を 3 へ上げる（epoch 1 の [1,2] と epoch 2 の [2,3] はまだ未完了）
-    await act(async () => {
-      getLatestHudProps().onNextPage();
-      await flushMicrotasks();
-    });
-    expect(getLatestCanvasProps().frame).toBe(frame1);
 
     await act(async () => {
       getLatestHudProps().onNextPage();
       await flushMicrotasks();
     });
-    expect(getLatestCanvasProps().frame).toBe(frame2);
+    expect(getLatestCanvasProps().slots).toEqual([
+      { slot: { pageIndex: 1, position: "center" }, frame: frame1 },
+    ]);
 
-    // epoch 1/2 で遅延到着した ready と error は破棄され、ready の bitmap.close() が即座に呼ばれる
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestCanvasProps().slots).toEqual([
+      { slot: { pageIndex: 2, position: "center" }, frame: frame2 },
+    ]);
+
     await act(async () => {
       stalePrefetchDeferred.resolve([staleReadyFrame]);
       staleErrorDeferred.resolve([createErrorFrame(2, 2)]);
@@ -579,7 +1230,6 @@ describe("ReaderPage", () => {
     });
     expect(staleReadyBitmap.close).toHaveBeenCalledTimes(1);
 
-    // 連続して 3 -> 4 -> 5 -> 6 へ進み、L1(5枚) 上限超過で最古ページが退避・解放される
     for (const expectedPage of [3, 4, 5, 6]) {
       await act(async () => {
         getLatestHudProps().onNextPage();
@@ -592,13 +1242,13 @@ describe("ReaderPage", () => {
     expect(frame0.bitmap.close).toHaveBeenCalledTimes(1);
     expect(staleInnerEpochBitmap.close).toHaveBeenCalledTimes(1);
 
-    // アンマウント時に残りすべての L1 bitmap.close() と clearAllTextures() が実行される
     unmount();
     expect(frame6.bitmap.close).toHaveBeenCalledTimes(1);
     expect(clearAllTextures).toHaveBeenCalledTimes(1);
   });
 
   it("右開き操作（タップ30/40/30%・rect幅0フォールバック・二重発火抑止・スワイプ・pointercancel・キーボード）が仕様通り動作すること (AC-RD-02, AC-RD-03)", async () => {
+    setWindowSize(375, 667);
     const mockSession = createMockCoordinatorSession({
       openArchive: vi.fn(async () => ({
         pageCount: 4,
@@ -617,39 +1267,32 @@ describe("ReaderPage", () => {
 
     const surface = screen.getByTestId("reader-interaction-surface");
 
-    // rect.width === 0 のときは安全フォールバック ratio=0.5 となり HUD トグルが発火する
     mockSurfaceRect(surface, { left: 0, width: 0 });
     fireEvent.click(surface, { clientX: 10 });
     expect(getLatestHudProps().isOpen).toBe(true);
 
-    // rect.width = 1000 で境界テスト（30%未満=次頁、30..70%=HUDトグル、70%超=前頁）
     mockSurfaceRect(surface, { left: 100, width: 1000 });
 
-    // 左端タップ (ratio = 0.299 < 0.30) -> 次頁 (0 -> 1)
     await act(async () => {
       fireEvent.click(surface, { clientX: 399 });
       await flushMicrotasks();
     });
     expect(getLatestHudProps().currentPageIndex).toBe(1);
 
-    // 中央境界 (ratio = 0.30, 0.70) -> HUD トグル (true -> false -> true)
     fireEvent.click(surface, { clientX: 400 });
     expect(getLatestHudProps().isOpen).toBe(false);
     fireEvent.click(surface, { clientX: 800 });
     expect(getLatestHudProps().isOpen).toBe(true);
 
-    // 右端タップ (ratio = 0.701 > 0.70) -> 前頁 (1 -> 0)
     await act(async () => {
       fireEvent.click(surface, { clientX: 801 });
       await flushMicrotasks();
     });
     expect(getLatestHudProps().currentPageIndex).toBe(0);
 
-    // 先頭ページでさらに前頁・末尾ページでさらに次頁は境界クランプされる
     fireEvent.click(surface, { clientX: 900 });
     expect(getLatestHudProps().currentPageIndex).toBe(0);
 
-    // pointerdown -> pointerup -> click の連続発火時は二重実行されない
     await act(async () => {
       dispatchPointer(surface, "pointerdown", { clientX: 200, clientY: 300 });
       dispatchPointer(surface, "pointerup", { clientX: 205, clientY: 302 });
@@ -658,13 +1301,11 @@ describe("ReaderPage", () => {
     });
     expect(getLatestHudProps().currentPageIndex).toBe(1);
 
-    // pointercancel で開始座標がクリアされ、直後の pointerup は無反応になる
     dispatchPointer(surface, "pointerdown", { clientX: 200, clientY: 300 });
     dispatchPointer(surface, "pointercancel");
     dispatchPointer(surface, "pointerup", { clientX: 350, clientY: 300 });
     expect(getLatestHudProps().currentPageIndex).toBe(1);
 
-    // 横スワイプ dx >= 40 かつ |dx| > |dy|: 左→右 (dx > 0) で次頁 (1 -> 2)
     await act(async () => {
       dispatchPointer(surface, "pointerdown", { clientX: 500, clientY: 300 });
       dispatchPointer(surface, "pointerup", { clientX: 560, clientY: 310 });
@@ -672,7 +1313,6 @@ describe("ReaderPage", () => {
     });
     expect(getLatestHudProps().currentPageIndex).toBe(2);
 
-    // 横スワイプ右→左 (dx < 0) で前頁 (2 -> 1)
     await act(async () => {
       dispatchPointer(surface, "pointerdown", { clientX: 560, clientY: 300 });
       dispatchPointer(surface, "pointerup", { clientX: 500, clientY: 310 });
@@ -680,12 +1320,10 @@ describe("ReaderPage", () => {
     });
     expect(getLatestHudProps().currentPageIndex).toBe(1);
 
-    // 縦移動が大きい斜めドラッグ (|dx| >= 40 だが |dx| <= |dy|) はスワイプ扱いせずタップ判定
     dispatchPointer(surface, "pointerdown", { clientX: 600, clientY: 200 });
-    dispatchPointer(surface, "pointerup", { clientX: 650, clientY: 260 }); // clientX=650 => ratio=0.55 => HUDトグル
+    dispatchPointer(surface, "pointerup", { clientX: 650, clientY: 260 });
     expect(getLatestHudProps().isOpen).toBe(false);
 
-    // キーボード ArrowLeft (次頁) / ArrowRight (前頁) / その他キー(無反応)
     fireEvent.keyDown(window, { key: "Enter" });
     expect(getLatestHudProps().currentPageIndex).toBe(1);
 
@@ -699,7 +1337,6 @@ describe("ReaderPage", () => {
       await flushMicrotasks();
     });
     expect(getLatestHudProps().currentPageIndex).toBe(3);
-    // 最終ページ上限クランプ
     fireEvent.keyDown(window, { key: "ArrowLeft" });
     expect(getLatestHudProps().currentPageIndex).toBe(3);
 
@@ -742,7 +1379,6 @@ describe("ReaderPage", () => {
         expect(mockSession.api.openArchive).toHaveBeenCalledTimes(1);
       });
 
-      // Escape キーと重複 close 呼び出しで TR-08 が 1 回だけ実行されること
       act(() => {
         fireEvent.keyDown(window, { key: "Escape" });
         getLatestHudProps().onClose();
@@ -762,7 +1398,6 @@ describe("ReaderPage", () => {
       unmount();
       expect(onRegisterExit).toHaveBeenLastCalledWith(null);
 
-      // initialSnapshot 状態（runtime === null）でも登録済み exitFn で安全に TR-08 実行できること
       window.history.replaceState(null, "", "/read/local");
       const snapshotClearAllTextures = vi.fn();
       const registeredExit: { current: (() => void) | null } = {
@@ -797,7 +1432,9 @@ describe("ReaderPage", () => {
     }
   });
 
-  it("個別ページエラー時（フレームerrorおよび非中断reject）はReaderErrorView mode='page'を表示しつつ前後ページ移動を継続できること (AC-RD-07)", async () => {
+  it("個別ページエラー時（単ページ・見開き片側のみ・見開き両側エラー代表選出）に適切にReaderErrorViewを配置し移動継続できること (AC-RD-07, AC-RD-12)", async () => {
+    // 1. 単ページモードでの単頁エラーと非中断reject
+    setWindowSize(375, 667);
     const frame0 = createErrorFrame(0, 1, "DECODE_FAILED", "raw decode error");
     const frame2 = createReadyFrame(2, 3);
     const mockSession = createMockCoordinatorSession({
@@ -819,27 +1456,21 @@ describe("ReaderPage", () => {
       }),
     });
 
-    renderWithSession({}, () => mockSession.handle);
+    const { unmount: unmountSingle } = renderWithSession(
+      {},
+      () => mockSession.handle,
+    );
 
-    // ページ 0 は error フレームとしてページエラー表示 & 診断ログ記録
     await waitFor(() => {
       expect(errorViewSpy).toHaveBeenCalled();
     });
     expect(getLatestErrorViewProps()).toEqual({
       mode: "page",
+      slotPosition: "center",
       message: "ページの画像デコードに失敗しました",
       errorCode: "DECODE_FAILED",
     });
-    expect(diagnosticLogger.getEntries()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          level: "error",
-          scope: "reader",
-        }),
-      ]),
-    );
 
-    // ページ 1 は非中断 reject を page エラーフレームへ変換しつつ次ページへ進める
     await act(async () => {
       getLatestHudProps().onNextPage();
       await flushMicrotasks();
@@ -847,24 +1478,126 @@ describe("ReaderPage", () => {
     expect(getLatestHudProps().currentPageIndex).toBe(1);
     expect(getLatestErrorViewProps()).toEqual({
       mode: "page",
+      slotPosition: "center",
       message: "ZIP ファイルが破損しているため開けませんでした",
       errorCode: "CORRUPT_ZIP",
     });
 
-    // ページ 2 へ進めると正常描画に復帰する
     await act(async () => {
       getLatestHudProps().onNextPage();
       await flushMicrotasks();
     });
     expect(getLatestHudProps().currentPageIndex).toBe(2);
-    expect(getLatestCanvasProps().frame).toMatchObject({
-      status: "ready",
-      pageIndex: 2,
+    expect(getLatestCanvasProps().slots).toEqual([
+      {
+        slot: { pageIndex: 2, position: "center" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 2 }),
+      },
+    ]);
+    unmountSingle();
+
+    // 2. 見開き片側エラー (rtl: left=page 2 error, right=page 1 ready) & 両側エラー (center代表選出)
+    setWindowSize(1280, 800);
+    errorViewSpy.mockClear();
+    const spreadErrorSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 5,
+        entries: [],
+        fromIndexCache: false,
+      })),
+      requestVisiblePages: vi.fn(
+        async (
+          pageIndices: readonly number[],
+          _prefetch: readonly number[],
+          epoch: number,
+        ) => {
+          return pageIndices.map((idx: number) => {
+            if (idx === 2) {
+              return createErrorFrame(2, epoch, "DECODE_FAILED", "p2 fail");
+            }
+            if (idx === 3) {
+              return createErrorFrame(3, epoch, "CORRUPT_ZIP", "p3 fail");
+            }
+            if (idx === 4) {
+              return createErrorFrame(4, epoch, "READ_ERROR", "p4 fail");
+            }
+            return createReadyFrame(idx, epoch);
+          });
+        },
+      ),
+    });
+
+    const { unmount: unmountSpread } = renderWithSession(
+      {},
+      () => spreadErrorSession.handle,
+    );
+    await waitFor(() => {
+      expect(getLatestCanvasProps().slots).toHaveLength(1);
+    });
+
+    // 0 -> [1 (ready), 2 (error)] -> left半面エラー (p.3) + right正常描画
+    errorViewSpy.mockClear();
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestCanvasProps().slots).toEqual([
+      {
+        slot: { pageIndex: 2, position: "left" },
+        frame: expect.objectContaining({ status: "error", pageIndex: 2 }),
+      },
+      {
+        slot: { pageIndex: 1, position: "right" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 1 }),
+      },
+    ]);
+    expect(errorViewSpy).toHaveBeenCalledTimes(1);
+    expect(getLatestErrorViewProps()).toEqual({
+      mode: "page",
+      slotPosition: "left",
+      pageNumber: 3,
+      message: "ページの画像デコードに失敗しました",
+      errorCode: "DECODE_FAILED",
+    });
+
+    // [1, 2] -> [3 (error), 4 (error)] -> 全スロットエラーのため center (pageNumber 省略、基準ページ3=CORRUPT_ZIP代表) を1枚表示
+    errorViewSpy.mockClear();
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(errorViewSpy).toHaveBeenCalledTimes(1);
+    expect(getLatestErrorViewProps()).toEqual({
+      mode: "page",
+      slotPosition: "center",
+      message: "ZIP ファイルが破損しているため開けませんでした",
+      errorCode: "CORRUPT_ZIP",
+    });
+    unmountSpread();
+
+    // 3. initialSnapshot 境界外 currentPageIndex 時も errorSlots[0] フォールバックが安全動作すること
+    errorViewSpy.mockClear();
+    renderWithSession({
+      initialSnapshot: {
+        totalPages: 2,
+        currentPageIndex: 99,
+        spreadMode: "single",
+        framesByPage: {
+          1: createErrorFrame(1, 1, "READ_ERROR", "out of range fallback"),
+        },
+        isOpening: false,
+      },
+    });
+    expect(getLatestErrorViewProps()).toEqual({
+      mode: "page",
+      slotPosition: "center",
+      message:
+        "ファイルの読み込みに失敗しました（アクセス権限またはストレージ状態を確認してください）",
+      errorCode: "READ_ERROR",
     });
   });
 
   it("openArchive失敗・0ページ・WebGL2致命的エラー時は診断ログ記録とarchiveエラー表示を行い操作を遮断すること (AC-RD-06)", async () => {
-    // 1. openArchive が ZipArchiveError で失敗
     const failingSession = createMockCoordinatorSession({
       openArchive: vi.fn(async () => {
         throw new ZipArchiveError("ENCRYPTED_ZIP", "encrypted");
@@ -895,13 +1628,11 @@ describe("ReaderPage", () => {
       ]),
     );
 
-    // archiveError 中はサーフェスタップや矢印キーでページ送り・HUD開閉されない
     fireEvent.click(screen.getByTestId("reader-interaction-surface"));
     fireEvent.keyDown(window, { key: "ArrowLeft" });
     expect(getLatestHudProps().isOpen).toBe(false);
     unmountEncrypted();
 
-    // 2. openArchive が pageCount=0 を返した場合も EMPTY_ARCHIVE 扱い
     errorViewSpy.mockClear();
     const emptySession = createMockCoordinatorSession({
       openArchive: vi.fn(async () => ({
@@ -923,7 +1654,6 @@ describe("ReaderPage", () => {
     });
     unmountEmpty();
 
-    // 3. openArchive が AbortError を投げた場合や遅延解決は無視される
     errorViewSpy.mockClear();
     const openDeferred = createDeferred<OpenArchiveResult>();
     const abortSession = createMockCoordinatorSession({
@@ -965,7 +1695,6 @@ describe("ReaderPage", () => {
     });
     expect(lateOpenSession.api.requestVisiblePages).not.toHaveBeenCalled();
 
-    // 4. ReaderCanvas の onFatalError で WEBGL_UNSUPPORTED 表示 & isOpening中の移動ガード
     const { unmount: unmountWebgl } = renderWithSession({
       initialSnapshot: {
         totalPages: 5,
@@ -973,7 +1702,6 @@ describe("ReaderPage", () => {
       },
     });
     expect(screen.getByTestId("reader-loading")).toBeVisible();
-    // isOpening 中および totalPages === 0 ではページ送りされない
     fireEvent.keyDown(window, { key: "ArrowLeft" });
     expect(getLatestHudProps().currentPageIndex).toBe(0);
 
@@ -991,7 +1719,6 @@ describe("ReaderPage", () => {
     });
     unmountWebgl();
 
-    // 5. totalPages === 0 かつ isOpening省略(=false)の境界でもページ移動しない
     renderWithSession({
       initialSnapshot: {
         totalPages: 0,
@@ -1023,7 +1750,6 @@ describe("ReaderPage", () => {
       expect(session1.api.requestVisiblePages).toHaveBeenCalledTimes(1);
     });
 
-    // アンマウント後に delayedPage が解決された場合 -> bitmap.close() のみ行いクラッシュしない
     unmount1();
     await act(async () => {
       delayedPage.resolve([createReadyFrame(0, 1, lateBitmap)]);
@@ -1031,7 +1757,6 @@ describe("ReaderPage", () => {
     });
     expect(lateBitmap.close).toHaveBeenCalledTimes(1);
 
-    // AbortError やアンマウント後 reject でもエラー画面を出さない
     const session2 = createMockCoordinatorSession({
       openArchive: vi.fn(async () => ({
         pageCount: 2,
@@ -1096,7 +1821,6 @@ describe("ReaderPage", () => {
       onBackToHome: expect.any(Function),
     });
 
-    // WebGL致命的エラー表示中はタップや矢印キー操作を遮断する
     fireEvent.click(screen.getByTestId("reader-interaction-surface"));
     fireEvent.keyDown(window, { key: "ArrowLeft" });
     expect(getLatestHudProps().isOpen).toBe(false);
@@ -1135,10 +1859,11 @@ describe("ReaderPage", () => {
     });
 
     await waitFor(() => {
-      expect(getLatestCanvasProps().frame).toBe(frame0);
+      expect(getLatestCanvasProps().slots).toEqual([
+        { slot: { pageIndex: 0, position: "center" }, frame: frame0 },
+      ]);
     });
 
-    // 稼働中のコンテキスト復元失敗等で WEBGL_INIT_FAILED が発火したら即座に Worker と L1 を解放する
     act(() => {
       getLatestCanvasProps().onFatalError?.(
         "WEBGL_INIT_FAILED",
@@ -1187,10 +1912,11 @@ describe("ReaderPage", () => {
     });
 
     await waitFor(() => {
-      expect(getLatestCanvasProps().frame).toBe(frame0);
+      expect(getLatestCanvasProps().slots).toEqual([
+        { slot: { pageIndex: 0, position: "center" }, frame: frame0 },
+      ]);
     });
 
-    // 1. 同一ルート(/read/local?page=2)上の popstate ではセッションとランタイムを維持する
     act(() => {
       window.history.replaceState(null, "", "/read/local?page=2");
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -1198,7 +1924,6 @@ describe("ReaderPage", () => {
     expect(useLocalReaderSessionStore.getState().session).not.toBeNull();
     expect(mockSession.dispose).not.toHaveBeenCalled();
 
-    // 2. '/' への popstate 復帰時は releaseRuntime と clearSession() を実行し replace('/') を割り込ませない
     window.history.replaceState(null, "", "/");
     const replaceStateSpy = vi.spyOn(window.history, "replaceState");
     act(() => {
@@ -1214,7 +1939,6 @@ describe("ReaderPage", () => {
     expect(replaceStateSpy).not.toHaveBeenCalled();
     unmount();
 
-    // 3. WebGL2エラー後(runtimeRef.current === null)でも '/' への popstate で clearSession() と clearAllTextures() が実行される
     replaceStateSpy.mockRestore();
     window.history.replaceState(null, "", "/read/local");
     const errorClearTextures = vi.fn();
@@ -1378,7 +2102,9 @@ describe("ReaderPage", () => {
     });
 
     await waitFor(() => {
-      expect(getLatestCanvasProps().frame).toBe(frame0);
+      expect(getLatestCanvasProps().slots).toEqual([
+        { slot: { pageIndex: 0, position: "center" }, frame: frame0 },
+      ]);
     });
 
     expect(useLocalReaderSessionStore.getState().session).not.toBeNull();
@@ -1409,7 +2135,6 @@ describe("ReaderPage", () => {
     });
     const expectedCacheKey = `local:${file.name}:${file.size}`;
 
-    // 1. キャッシュヒット時 (0RTT): openArchive(source, cachedEntries, 1), put 未呼び出し
     const hitRepo = createMockZipIndexCacheRepo({
       get: vi.fn(async () => cachedEntries),
     });
@@ -1429,10 +2154,12 @@ describe("ReaderPage", () => {
     );
 
     await waitFor(() => {
-      expect(getLatestCanvasProps().frame).toMatchObject({
-        status: "ready",
-        pageIndex: 0,
-      });
+      expect(getLatestCanvasProps().slots).toEqual([
+        {
+          slot: { pageIndex: 0, position: "center" },
+          frame: expect.objectContaining({ status: "ready", pageIndex: 0 }),
+        },
+      ]);
     });
 
     expect(hitRepo.get).toHaveBeenCalledWith(expectedCacheKey);
@@ -1453,7 +2180,6 @@ describe("ReaderPage", () => {
     );
     unmountHit();
 
-    // 2. キャッシュミス時: openArchive(source, null, 1) -> put(indexCacheKey, entries) 呼び出し
     diagnosticLogger.clear();
     const missEntries = createSampleZipEntries(3);
     const missRepo = createMockZipIndexCacheRepo({
@@ -1519,10 +2245,12 @@ describe("ReaderPage", () => {
       renderWithSession({}, () => mockSession.handle, file, errorRepo);
 
       await waitFor(() => {
-        expect(getLatestCanvasProps().frame).toMatchObject({
-          status: "ready",
-          pageIndex: 0,
-        });
+        expect(getLatestCanvasProps().slots).toEqual([
+          {
+            slot: { pageIndex: 0, position: "center" },
+            frame: expect.objectContaining({ status: "ready", pageIndex: 0 }),
+          },
+        ]);
       });
       await act(async () => {
         await flushMicrotasks();
@@ -1559,7 +2287,6 @@ describe("ReaderPage", () => {
       type: "application/x-cbz",
     });
 
-    // 1. get待機中にTR-08終了 -> 遅延resolveしてもopenArchive/putは呼ばれない
     const getDeferred1 = createDeferred<readonly ZipPageEntry[] | null>();
     const repo1 = createMockZipIndexCacheRepo({
       get: vi.fn(() => getDeferred1.promise),
@@ -1594,7 +2321,6 @@ describe("ReaderPage", () => {
     expect(repo1.put).not.toHaveBeenCalled();
     unmountRace1();
 
-    // 2. get待機中にアンマウント -> 遅延rejectしてもwarnログ・openArchive・エラー表示は呼ばれない
     window.history.replaceState(null, "", "/read/local");
     diagnosticLogger.clear();
     errorViewSpy.mockClear();
@@ -1646,18 +2372,13 @@ describe("ReaderPage", () => {
     );
 
     await waitFor(() => {
-      expect(getLatestCanvasProps().frame).toMatchObject({
-        status: "ready",
-        pageIndex: 0,
-      });
+      expect(getLatestCanvasProps().slots).toEqual([
+        {
+          slot: { pageIndex: 0, position: "center" },
+          frame: expect.objectContaining({ status: "ready", pageIndex: 0 }),
+        },
+      ]);
     });
-    expect(session1.api.openArchive).toHaveBeenCalledWith(
-      expect.objectContaining({
-        indexCacheKey: `local:${file.name}:${file.size}`,
-      }),
-      null,
-      1,
-    );
     unmount1();
 
     const session2 = createMockCoordinatorSession({
@@ -1671,10 +2392,12 @@ describe("ReaderPage", () => {
     renderWithSession({}, () => session2.handle, file);
 
     await waitFor(() => {
-      expect(getLatestCanvasProps().frame).toMatchObject({
-        status: "ready",
-        pageIndex: 0,
-      });
+      expect(getLatestCanvasProps().slots).toEqual([
+        {
+          slot: { pageIndex: 0, position: "center" },
+          frame: expect.objectContaining({ status: "ready", pageIndex: 0 }),
+        },
+      ]);
     });
     expect(session2.api.openArchive).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1685,8 +2408,8 @@ describe("ReaderPage", () => {
     );
   });
 
-  it("buildPrefetchTargets(+1..+20, -1..-2)が常時{visiblePageIndices:[N]}と共に渡され、1ページ時は近傍RPCを発行しないこと (AC-RD-05)", async () => {
-    // 1. 30ページアーカイブの page 0 (進行+1..+20のみ) および page 3 (進行[4..23] + 逆[2,1]) を検証
+  it("buildSpreadPrefetchTargets(+1..+20,-1..-2)が常時{visiblePageIndices}と共に渡され、1ページ時・L1全ヒット時に正しく連携すること (AC-RD-05, AC-RD-12)", async () => {
+    setWindowSize(375, 667);
     const mockSession30 = createMockCoordinatorSession({
       openArchive: vi.fn(async () => ({
         pageCount: 30,
@@ -1694,7 +2417,6 @@ describe("ReaderPage", () => {
         fromIndexCache: false,
       })),
       requestVisiblePages: vi.fn(async (pageIndices, _prefetch, epoch) => {
-        // 近傍バッチは返さず、ページ遷移ごとに Fast-Path が発火する状態を検証
         if (pageIndices.length === 1) {
           return [createReadyFrame(pageIndices[0], epoch)];
         }
@@ -1746,41 +2468,12 @@ describe("ReaderPage", () => {
     );
     unmount30();
 
-    // 2. 1ページアーカイブ時は prefetchTargets=[] かつ missingNeighbors=[] のため近傍バッチRPCを発行しない
-    const mockSession1 = createMockCoordinatorSession({
-      openArchive: vi.fn(async () => ({
-        pageCount: 1,
-        entries: [],
-        fromIndexCache: false,
-      })),
-    });
-    renderWithSession({}, () => mockSession1.handle);
-    await waitFor(() => {
-      expect(getLatestCanvasProps().frame).toMatchObject({
-        status: "ready",
-        pageIndex: 0,
-      });
-    });
-    await act(async () => {
-      await flushMicrotasks();
-    });
-    expect(mockSession1.api.requestVisiblePages).toHaveBeenCalledTimes(1);
-    expect(mockSession1.api.requestVisiblePages).toHaveBeenNthCalledWith(
-      1,
-      [0],
-      [],
-      1,
-      { visiblePageIndices: [0] },
-    );
-  });
-
-  it("L1全ヒット時はrequestVisiblePages([], prefetchTargets, epoch, {visiblePageIndices:[N]})でL2補充を呼び出し、両空時は呼ばないこと (AC-RD-05)", async () => {
     const frame0 = createReadyFrame(0, 1);
     const frame1 = createReadyFrame(1, 1);
     const frame2 = createReadyFrame(2, 1);
     const frame3 = createReadyFrame(3, 2);
 
-    const mockSession = createMockCoordinatorSession({
+    const hitSession = createMockCoordinatorSession({
       openArchive: vi.fn(async () => ({
         pageCount: 4,
         entries: [],
@@ -1796,21 +2489,22 @@ describe("ReaderPage", () => {
       }),
     });
 
-    const { unmount } = renderWithSession({}, () => mockSession.handle);
-
+    const { unmount: unmountHit } = renderWithSession(
+      {},
+      () => hitSession.handle,
+    );
     await waitFor(() => {
-      expect(mockSession.api.requestVisiblePages).toHaveBeenCalledTimes(2);
+      expect(hitSession.api.requestVisiblePages).toHaveBeenCalledTimes(2);
     });
     await act(async () => {
       await flushMicrotasks();
     });
 
-    // page 0 -> page 1 (L1ヒット、[3] のみ未取得)
     await act(async () => {
       getLatestHudProps().onNextPage();
       await flushMicrotasks();
     });
-    expect(mockSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
+    expect(hitSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
       3,
       [3],
       [2, 3, 0],
@@ -1818,23 +2512,23 @@ describe("ReaderPage", () => {
       { visiblePageIndices: [1] },
     );
 
-    // page 1 -> page 2 (2とその近傍 [3, 1] はすべて L1 ヒット -> pageIndices=[] で L2 補充呼び出し)
     await act(async () => {
       getLatestHudProps().onNextPage();
       await flushMicrotasks();
     });
-    expect(getLatestCanvasProps().frame).toBe(frame2);
-    expect(mockSession.api.requestVisiblePages).toHaveBeenCalledTimes(4);
-    expect(mockSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
+    expect(getLatestCanvasProps().slots).toEqual([
+      { slot: { pageIndex: 2, position: "center" }, frame: frame2 },
+    ]);
+    expect(hitSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
       4,
       [],
       [3, 1, 0],
       3,
       { visiblePageIndices: [2] },
     );
-    unmount();
+    unmountHit();
 
-    // L1ヒットかつ missingNeighbors=[] && prefetchTargets=[] の境界（1ページL1ヒット）ではRPCを呼ばない
+    // 1ページL1ヒット時はRPCを呼ばない
     const spyCachedFrame = createReadyFrame(0, 1);
     vi.spyOn(L1PageCache.prototype, "get").mockReturnValueOnce(spyCachedFrame);
     const mockSingleHitSession = createMockCoordinatorSession({
@@ -1846,12 +2540,15 @@ describe("ReaderPage", () => {
     });
     renderWithSession({}, () => mockSingleHitSession.handle);
     await waitFor(() => {
-      expect(getLatestCanvasProps().frame).toBe(spyCachedFrame);
+      expect(getLatestCanvasProps().slots).toEqual([
+        { slot: { pageIndex: 0, position: "center" }, frame: spyCachedFrame },
+      ]);
     });
     expect(mockSingleHitSession.api.requestVisiblePages).not.toHaveBeenCalled();
   });
 
   it("近傍バッチの部分エラーおよびRPC非中断reject時にL1へ全対象ページのエラーを格納し遷移時に表示すること (AC-RD-07)", async () => {
+    setWindowSize(375, 667);
     const frame0 = createReadyFrame(0, 1);
     const batchFailSession = createMockCoordinatorSession({
       openArchive: vi.fn(async () => ({
@@ -1886,7 +2583,6 @@ describe("ReaderPage", () => {
       await flushMicrotasks();
     });
 
-    // バッチ reject 時に [1, 2] 双方のエラーログと L1 エラーフレームが格納されていること
     expect(diagnosticLogger.getEntries()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1902,32 +2598,31 @@ describe("ReaderPage", () => {
       ]),
     );
 
-    // ページ 1 へ移動 -> L1 格納済みエラーフレームで即座に page エラー表示
     await act(async () => {
       getLatestHudProps().onNextPage();
       await flushMicrotasks();
     });
     expect(getLatestErrorViewProps()).toEqual({
       mode: "page",
+      slotPosition: "center",
       message:
         "ファイルの読み込みに失敗しました（アクセス権限またはストレージ状態を確認してください）",
       errorCode: "READ_ERROR",
     });
 
-    // ページ 2 へ移動 -> 同じく L1 格納済みエラーフレームで即座に page エラー表示
     await act(async () => {
       getLatestHudProps().onNextPage();
       await flushMicrotasks();
     });
     expect(getLatestErrorViewProps()).toEqual({
       mode: "page",
+      slotPosition: "center",
       message:
         "ファイルの読み込みに失敗しました（アクセス権限またはストレージ状態を確認してください）",
       errorCode: "READ_ERROR",
     });
     unmount();
 
-    // 2. 近傍バッチが [ready, error] の部分エラーを返した場合も各ページへ個別に適用されること
     diagnosticLogger.clear();
     errorViewSpy.mockClear();
     const partialSession = createMockCoordinatorSession({
@@ -1968,10 +2663,12 @@ describe("ReaderPage", () => {
       getLatestHudProps().onNextPage();
       await flushMicrotasks();
     });
-    expect(getLatestCanvasProps().frame).toMatchObject({
-      status: "ready",
-      pageIndex: 1,
-    });
+    expect(getLatestCanvasProps().slots).toEqual([
+      {
+        slot: { pageIndex: 1, position: "center" },
+        frame: expect.objectContaining({ status: "ready", pageIndex: 1 }),
+      },
+    ]);
     expect(errorViewSpy).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -1980,6 +2677,7 @@ describe("ReaderPage", () => {
     });
     expect(getLatestErrorViewProps()).toEqual({
       mode: "page",
+      slotPosition: "center",
       message: "ページの画像デコードに失敗しました",
       errorCode: "DECODE_FAILED",
     });

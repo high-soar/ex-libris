@@ -25,6 +25,11 @@ import {
   type ReaderCanvasHandle,
   type WebGLFatalErrorCode,
 } from "../../webgl/ReaderCanvas";
+import type {
+  ReadingDirection,
+  SpreadMode,
+  SpreadPageOffset,
+} from "../../webgl/types";
 import { L1PageCache } from "../../webgl/l1PageCache";
 import { ReaderErrorView } from "./ReaderErrorView";
 import { ReaderHudOverlay } from "./ReaderHudOverlay";
@@ -42,10 +47,14 @@ import {
 export interface ReaderPageInitialSnapshot {
   readonly totalPages: number;
   readonly currentPageIndex?: number;
-  readonly frame?: DecodedPageFrame | null;
+  readonly framesByPage?: Readonly<Record<number, DecodedPageFrame>>;
   readonly archiveError?: ExtractedReaderError | null;
   readonly isOpening?: boolean;
   readonly isHudOpen?: boolean;
+  readonly readingDirection?: ReadingDirection;
+  readonly spreadMode?: SpreadMode;
+  readonly spreadPageOffset?: SpreadPageOffset;
+  readonly viewportSize?: { readonly width: number; readonly height: number };
 }
 
 export interface ReaderPageProps {
@@ -186,7 +195,8 @@ export function ReaderPage({
     initialSnapshot?.currentPageIndex ?? 0,
   );
   const [currentFrame, setCurrentFrame] = useState<DecodedPageFrame | null>(
-    initialSnapshot?.frame ?? null,
+    initialSnapshot?.framesByPage?.[initialSnapshot.currentPageIndex ?? 0] ??
+      null,
   );
   const [archiveError, setArchiveError] = useState<ExtractedReaderError | null>(
     initialSnapshot?.archiveError ?? null,
@@ -744,7 +754,19 @@ export function ReaderPage({
         className="relative h-full w-full touch-none"
       >
         <ReaderCanvas
-          frame={currentFrame}
+          slots={
+            currentFrame !== null
+              ? [
+                  {
+                    slot: {
+                      pageIndex: currentFrame.pageIndex,
+                      position: "center",
+                    },
+                    frame: currentFrame,
+                  },
+                ]
+              : []
+          }
           onRendererReady={handleRendererReady}
           onFatalError={handleWebGLFatalError}
         />

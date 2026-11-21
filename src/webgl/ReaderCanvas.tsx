@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
-import type { DecodedPageFrame } from "../engine/types";
 import { WebGLRendererCore } from "./WebGLRendererCore";
+import type { RenderSlotFrame } from "./types";
 
 export type WebGLStatus = "initializing" | "ready" | "context-lost" | "error";
 export type WebGLFatalErrorCode = "WEBGL_UNSUPPORTED" | "WEBGL_INIT_FAILED";
@@ -12,10 +12,10 @@ export interface ReaderCanvasHandle {
 }
 
 export interface ReaderCanvasProps {
-  frame: DecodedPageFrame | null;
-  onRendererReady?: (handle: ReaderCanvasHandle | null) => void;
-  onFatalError?: (code: WebGLFatalErrorCode, message: string) => void;
-  getWebGL2Context?: (
+  readonly slots: readonly RenderSlotFrame[];
+  readonly onRendererReady?: (handle: ReaderCanvasHandle | null) => void;
+  readonly onFatalError?: (code: WebGLFatalErrorCode, message: string) => void;
+  readonly getWebGL2Context?: (
     canvas: HTMLCanvasElement,
   ) => WebGL2RenderingContext | null;
 }
@@ -70,7 +70,7 @@ function createRendererHandle(renderer: WebGLRendererCore): ReaderCanvasHandle {
 }
 
 export function ReaderCanvas({
-  frame,
+  slots,
   onRendererReady,
   onFatalError,
   getWebGL2Context,
@@ -80,8 +80,8 @@ export function ReaderCanvas({
   const isContextLostRef = useRef(false);
   const lastRenderedKeyRef = useRef("");
 
-  const frameRef = useRef(frame);
-  frameRef.current = frame;
+  const slotsRef = useRef(slots);
+  slotsRef.current = slots;
   const onRendererReadyRef = useRef(onRendererReady);
   onRendererReadyRef.current = onRendererReady;
   const onFatalErrorRef = useRef(onFatalError);
@@ -99,20 +99,9 @@ export function ReaderCanvas({
     }
   }, []);
 
-  const applyFrame = useCallback(
-    (renderer: WebGLRendererCore, nextFrame: DecodedPageFrame | null) => {
-      renderer.renderFrame(nextFrame);
-      if (nextFrame !== null && nextFrame.status === "ready") {
-        const page = String(nextFrame.pageIndex);
-        const epoch = String(nextFrame.epoch);
-        const nextKey = `${page}:${epoch}`;
-        if (lastRenderedKeyRef.current !== nextKey) {
-          lastRenderedKeyRef.current = nextKey;
-          setRendered({ page, epoch });
-        }
-      } else {
-        clearRenderedState();
-      }
+  const applySlots = useCallback(
+    (_renderer: WebGLRendererCore, _nextSlots: readonly RenderSlotFrame[]) => {
+      clearRenderedState();
     },
     [clearRenderedState],
   );
@@ -202,7 +191,7 @@ export function ReaderCanvas({
 
       isContextLostRef.current = false;
       syncSize();
-      applyFrame(renderer, frameRef.current);
+      applySlots(renderer, slotsRef.current);
       setStatus("ready");
       onRendererReadyRef.current?.(handle);
     };
@@ -218,7 +207,7 @@ export function ReaderCanvas({
         }
         const resized = syncSize(entries[0]);
         if (resized) {
-          applyFrame(renderer, frameRef.current);
+          applySlots(renderer, slotsRef.current);
         }
       });
       observer.observe(canvas);
@@ -234,7 +223,7 @@ export function ReaderCanvas({
     function handleDprChange(): void {
       bindDprListener();
       if (!isContextLostRef.current && syncSize()) {
-        applyFrame(renderer, frameRef.current);
+        applySlots(renderer, slotsRef.current);
       }
     }
     function bindDprListener(): void {
@@ -255,15 +244,15 @@ export function ReaderCanvas({
       renderer.dispose();
       onRendererReadyRef.current?.(null);
     };
-  }, [applyFrame, clearRenderedState]);
+  }, [applySlots, clearRenderedState]);
 
   useEffect(() => {
     const renderer = rendererRef.current;
     if (renderer === null || isContextLostRef.current) {
       return;
     }
-    applyFrame(renderer, frame);
-  }, [applyFrame, frame]);
+    applySlots(renderer, slots);
+  }, [applySlots, slots]);
 
   return (
     <canvas
