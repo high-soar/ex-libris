@@ -2,8 +2,8 @@
 type: spec-db-schema
 title: "Dexie.js（IndexedDB）ローカルDBスキーマ・インデックス定義"
 description: "仮想本棚、指定ルートフォルダ同期、ZIP目次キャッシュ、ローカル一時ZIP共用レジューム、および appDataFolder LWW 端末間同期を支える全9テーブル定義の正本"
-status: "Approved (Phase 2)"
-updated: "2026-11-19"
+status: "Review (#19)"
+updated: "2026-11-20"
 tags: [database, dexie, indexeddb, schema, bookshelf, lww-sync]
 related_specs:
   - docs/index.md
@@ -81,6 +81,9 @@ erDiagram
 | `pageCount` | `number`         |    -    | ゴミ除外・自然順ソート後の総論理ページ数                                                                             |
 | `entries`   | `ZipPageEntry[]` |    -    | 各ページのオフセット・圧縮方式・サイズ配列（2回目以降 0 RTT オープン用）                                             |
 | `cachedAt`  | `number`         |   Yes   | キャッシュ保存・最終参照日時（UNIX ms、古いエントリの整理用）                                                        |
+
+- **LRU 容量上限・整理ポリシー**: 最大保持件数は **500 件**（`ZIP_INDEX_CACHE_MAX_ENTRIES = 500`）。キャッシュヒット時（有効レコード検証後）に `cachedAt = Date.now()` を更新し、`put` 保存時に 500 件を超過した場合は `cachedAt` 昇順で最古の超過分を削除する。
+- **破損／不整合キャッシュの自動修復**: 取得時に空配列・`pageCount !== entries.length`・必須フィールド欠落・非有限数値・`localHeaderOffset >= physicalEnd` 等の不整合を検出した場合は、該当レコードを即時削除して `null` を返し、`parseZipDirectory` へ透過フォールバックする。
 
 ### 3.3 `readingProgress`（読書進捗・レジューム位置・既読状態 / `v0.1`〜）
 
@@ -168,6 +171,6 @@ erDiagram
 
 1. **段階的テーブル有効化ルール**:
    - `Phase 1` 時点では `version(1)`（`syncMeta`）が稼働中。
-   - `v0.1` で `version(2)`（`zipIndexCache`, `readingProgress`）、`v0.2` で `version(3)`（`driveSyncRoots`, `series`, `volumes`）、`v0.3` で `version(4)`（`collections`, `seriesCollections`）、`v0.4` で `version(5)`（`bookmarks`）を加算的に定義する。
+   - `v0.1` で `version(2)`（`zipIndexCache`, `readingProgress`）を先行定義し、`#19` で `ZipIndexCacheRepository` による `zipIndexCache` 読み書き・LRU 整理を有効化し、`#22` で `readingProgress` の Repository / UI 利用を有効化する。`v0.2` で `version(3)`（`driveSyncRoots`, `series`, `volumes`）、`v0.3` で `version(4)`（`collections`, `seriesCollections`）、`v0.4` で `version(5)`（`bookmarks`）を加算的に定義する。
 2. **`resetTestDb()` の不変契約**:
    - `resetTestDb(targetDb = db)` は、その時点で `ExLibrisDatabase` に定義されている **`targetDb.tables` 全件に対して `table.clear()` をトランザクションまたは並列で実行** し、テスト間の状態汚染を完全にゼロにする。

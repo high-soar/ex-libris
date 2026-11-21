@@ -2,7 +2,7 @@
 type: spec-architecture
 title: "4層＋マルチスレッドアーキテクチャと共通インターフェース契約"
 description: "Streaming & Provider・Engine Worker・Storage・Viewer & Bridge の4層責務境界、Zero-Copy 転送、メモリ予算定数、および TypeScript コア契約の正本"
-status: "Approved (#27)"
+status: "Review (#19)"
 updated: "2026-11-20"
 tags:
   [
@@ -104,7 +104,7 @@ flowchart TB
 | :---------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **1. Streaming & Provider Layer**         | `src/engine/io/`<br>`src/providers/{gdrive,filename,metadata,sync}/`                                                                                                                                                                       | ・`RandomAccessReader` 実装（`GoogleDriveRangeReader`, `LocalFileReader`, 将来拡張用 `HttpRangeReader`）<br>・指定ルートフォルダ配下の Drive `files.list` / `changes.list` 同期、自炊ファイル名スマートパーサー、公開書誌 API クライアント（NDL / AniList / Google Books）、`appDataFolder` LWW 同期エンジン<br>・React / DOM / WebGL2 への依存を一切持たない純粋 TypeScript モジュールとする                                                                                                                                                                                                                                               |
 | **2. Engine Worker Layer**                | `src/engine/zip/`<br>`src/engine/cache/`<br>`src/engine/prefetch/`<br>`src/engine/workers/`<br>`src/engine/cover/`                                                                                                                         | ・ZIP / ZIP64 / Shift_JIS 解析、LFH 可変長 1 RTT ゼロコピー切り出し、Fast-Path ＋ 10MB バイト予算先読み、80MB L2 LRU キャッシュ、Decode Worker プール（2 Worker ラウンドロビン/空き優先制御）、2段優先度表紙 WebP 抽出スケジューラ<br>・**ロジック本体は Worker グローバル（`self`）非依存の `*Core.ts` に分離して Vitest で 100% 単体検証し、`*.worker.ts` は数行の `Comlink.expose(...)` ブートストラップのみとする**                                                                                                                                                                                                                     |
-| **3. Storage Layer**                      | `src/storage/`<br>`src/storage/repositories/`                                                                                                                                                                                              | ・Dexie.js インスタンス（`ExLibrisDatabase`）とドメイン別 Repository インターフェース実装<br>・`resetTestDb()` により UT / Storybook / Playwright IT で 100% 決定論的に初期化可能とする                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **3. Storage Layer**                      | `src/storage/`<br>`src/storage/repositories/`                                                                                                                                                                                              | ・Dexie.js インスタンス（`ExLibrisDatabase`：`version(1)` `syncMeta` ＋ `v0.1` `version(2)` `zipIndexCache` / `readingProgress`）とドメイン別 Repository インターフェース実装（`ZipIndexCacheRepository`：最大 500 件 LRU・不正キャッシュ自動削除フォールバック）<br>・`resetTestDb()` により UT / Storybook / Playwright IT で 100% 決定論的に初期化可能とする                                                                                                                                                                                                                                                                             |
 | **4. Viewer, Diagnostics & Bridge Layer** | `src/app/`（`ServiceProvider` / `serviceContext` / `coordinatorClient`）<br>`src/features/{bookshelf,series-detail,reader,settings}/`<br>`src/webgl/`<br>`src/bridges/{oauth,http,app,volume-key}/`<br>`src/diagnostics/`<br>`src/shared/` | ・アプリケーション DI コンテナ / Comlink Worker クライアント管理（`ServiceProvider` / `serviceContext` / `coordinatorClient`）<br>・画面別 Container / Presentational コンポーネント（1対1 Story/UT・親子 `vi.spyOn` 完全分離）<br>・History API ベースのカスタムルーター（`src/shared/router/`）およびオンメモリローカル ZIP セッションストア（`src/features/reader/`）<br>・生 WebGL2 レンダラ（`WebGLRendererCore` と `<ReaderCanvas>` の分離）および L1 `ImageBitmap` 管理（`L1PageCache`）<br>・Capacitor ネイティブブリッジの薄いアダプタ層（`AppBridge` 等、Web/テスト時はモック実装へ自動フォールバック）およびオンメモリ診断ロガー |
 
 ---
@@ -179,7 +179,6 @@ export type ZipErrorCode =
   | "EMPTY_ARCHIVE"
   | "ENCRYPTED_ZIP"
   | "UNSUPPORTED_COMPRESSION"
-  | "ZIP64_NOT_SUPPORTED"
   | "DECODE_FAILED"
   | "READ_ERROR";
 
@@ -226,6 +225,13 @@ export interface OpenArchiveResult {
 }
 
 export interface CoordinatorWorkerApi {
+  /**
+   * アーカイブを開き論理ページ配列を確定する。
+   * UI スレッド（`ReaderPage` + `ZipIndexCacheRepository`）が有効な `cachedEntries` を渡した場合、
+   * Coordinator 側でも空配列チェック・基本構造検証を通過したときのみ Central Directory I/O をスキップして
+   * 0 RTT（`fromIndexCache: true`）で即座にオープンし、`null`・空配列・不正キャッシュ時は
+   * `parseZipDirectory` へフォールバックする（`fromIndexCache: false`）。
+   */
   openArchive(
     source: ArchiveSourceDescriptor,
     cachedEntries: readonly ZipPageEntry[] | null,

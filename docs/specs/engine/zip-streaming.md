@@ -1,10 +1,10 @@
 ---
 type: spec-engine
 title: "ZIPストリーミング・I/O・Worker エンジン仕様書"
-description: "LocalFileReader、標準ZIP/EOCD/CDH/LFH 1RTTパーサー、Coordinator/Decode Worker構成、およびrequestEpoch世代キャンセル制御の正本"
-status: "Approved"
+description: "LocalFileReader、標準ZIP/ZIP64/CP932対応パーサー、Coordinator/Decode Worker構成、zipIndexCache 0RTTオープン、およびrequestEpoch世代キャンセル制御の正本"
+status: "Review (#19)"
 updated: "2026-11-20"
-tags: [engine, zip, streaming, web-worker, comlink, cache, epoch]
+tags: [engine, zip, zip64, cp932, streaming, web-worker, comlink, cache, epoch]
 related_specs:
   - docs/index.md
   - docs/specs/requirements.md
@@ -74,22 +74,25 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 
 破損や非対応アーカイブを推測で握り潰さず、以下の明示的コードを持つ `ZipArchiveError` を送出します。
 
-| エラーコード              | 発生条件                                                                            |
-| :------------------------ | :---------------------------------------------------------------------------------- |
-| `CORRUPT_ZIP`             | EOCD シグネチャ（`0x06054b50`）不在、CD/LFH シグネチャ不整合、オフセット境界超過    |
-| `EMPTY_ARCHIVE`           | ゴミ除外・拡張子フィルタ後の有効画像ページが 0 件                                   |
-| `ENCRYPTED_ZIP`           | CDH の General Purpose Bit Flag Bit 0（暗号化フラグ `0x0001`）が立っている          |
-| `UNSUPPORTED_COMPRESSION` | 画像エントリの圧縮方式が `0`（Store）および `8`（Deflate）以外（例: Deflate64 等）  |
-| `ZIP64_NOT_SUPPORTED`     | `Phase 3` 制限: ZIP64 EOCD Locator（`0x07064b50`）または `0xFFFFFFFF`/`0xFFFF` 飽和 |
-| `DECODE_FAILED`           | `DecompressionStream` / `fflate` 伸長失敗または `createImageBitmap` デコード失敗    |
-| `READ_ERROR`              | `RandomAccessReader.readRange` の不正引数または I/O 失敗                            |
+| エラーコード              | 発生条件                                                                                                           |
+| :------------------------ | :----------------------------------------------------------------------------------------------------------------- |
+| `CORRUPT_ZIP`             | EOCD シグネチャ（`0x06054b50`）不在、CD/LFH/ZIP64 構造不整合、マルチディスク ZIP、オフセット境界超過、安全整数超過 |
+| `EMPTY_ARCHIVE`           | ゴミ除外・拡張子フィルタ後の有効画像ページが 0 件                                                                  |
+| `ENCRYPTED_ZIP`           | CDH の General Purpose Bit Flag Bit 0（暗号化フラグ `0x0001`）が立っている                                         |
+| `UNSUPPORTED_COMPRESSION` | 画像エントリの圧縮方式が `0`（Store）および `8`（Deflate）以外（例: Deflate64 等）                                 |
+| `DECODE_FAILED`           | `DecompressionStream` / `fflate` 伸長失敗または `createImageBitmap` デコード失敗                                   |
+| `READ_ERROR`              | `RandomAccessReader.readRange` の不正引数または I/O 失敗                                                           |
 
 ### 3.2 EOCD ＋ Central Directory 読込手順
 
 1. 末尾 `tailLength = Math.min(totalSize, ENGINE_BUDGETS.INITIAL_TAIL_READ_BYTES)`（`131_072` バイト）を `readRange(totalSize - tailLength, tailLength)` で 1 RTT 取得する。
 2. 末尾バッファを後方走査して EOCD シグネチャ `0x06054b50`（最小 22 バイト、ZIP コメント長 `commentLength` と末尾長の一致を確認）を特定する。
    - 見つからない場合は `CORRUPT_ZIP`。
-   - EOCD 直前（`eocdRelOffset - 20`）に ZIP64 EOCD Locator（`0x07064b50`）が存在する場合、または EOCD の `diskNumber` / `cdDiskNumber` / `diskEntries` / `totalEntries` / `cdSize` / `cdOffset` が `0xFFFF` / `0xFFFFFFFF` 飽和値の場合は `ZIP64_NOT_SUPPORTED` を送出する（ZIP64 本対応は `v0.1` で実装）。
+   - 先に `hasLocator = eocdRelOffset >= 20 && readUint32LE(tailView, eocdRelOffset - 20) === 0x07064b50` で ZIP64 EOCD Locator の有無を判定する：
+     - **Locator 不在時**: 標準 EOCD のマルチディスク値（`diskNumber !== 0 || cdDiskNumber !== 0 || diskEntries !== totalEntries`）または `0xFFFF` / `0xFFFFFFFF` 飽和値（`diskEntries === 0xffff || totalEntries === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff`）のいずれかが含まれる場合は `CORRUPT_ZIP` を送出する。
+     - **Locator 存在時**: Locator の `locatorDiskNumber === 0`・`totalDisks === 1`（不一致は `CORRUPT_ZIP`）、および標準 EOCD の非飽和ディスク番号（`diskNumber !== 0xffff && diskNumber !== 0` 等）を検証した上で 64bit `zip64EocdOffset` を `readSafeUint64`（`> BigInt(Number.MAX_SAFE_INTEGER)` なら `CORRUPT_ZIP`）で読み取る。さらに `zip64EocdOffset + 56 > eocdAbsoluteOffset - 20`（Locator 直前に最小 56 バイトの ZIP64 EOCD Record を収容できない境界違反）は即時 `CORRUPT_ZIP` とする。
+     - `zip64EocdOffset >= tailStart` なら `tailBuf` 内から、`zip64EocdOffset < tailStart` なら追加 1 RTT `reader.readRange(zip64EocdOffset, 56, signal)` で ZIP64 EOCD Record（シグネチャ `0x06064b50`, `sizeOfZip64Eocd >= 44`, 単一ディスク `0`, `diskEntries === totalEntries`, `cdOffset + cdSize <= zip64EocdOffset`, 全値安全整数範囲）を解決する。
+   - 最後に `totalEntries * 46 > cdSize` の場合は構造不正／OOM 防御として `CORRUPT_ZIP` を送出する。
 3. `cdOffset` および `cdSize` が既に取得済みの末尾バッファ内に収まっている場合は追加 I/O ゼロで解析する。
    - 末尾 128KB を超過する巨大な Central Directory の場合は、`readRange(cdOffset, cdSize)` で不足分を追加 1 RTT 取得する。
    - `cdOffset + cdSize > eocdAbsoluteOffset` 等の境界違反は `CORRUPT_ZIP`。
@@ -97,8 +100,10 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 ### 3.3 CDH 解析・不要エントリ除外・文字コード・自然順ソート
 
 1. Central Directory Header（シグネチャ `0x02014b50`）を順次走査する。
-2. **ファイル名デコード**:
-   - `Phase 3` では `new TextDecoder("utf-8", { fatal: false }).decode(nameBytes)` を使用する（Shift_JIS ファイル名を含む自炊 ZIP でもエラー停止させず開けるようにするため。CP932 本格デコードは `v0.1` で追加）。
+2. **ファイル名デコード（CP932 / Shift_JIS フォールバック対応）**:
+   - GPBF Bit 11（`0x0800`）が立っている場合は `new TextDecoder("utf-8", { fatal: false }).decode(nameBytes)` でデコードする。
+   - GPBF Bit 11 が `0` の場合はまず `new TextDecoder("utf-8", { fatal: true }).decode(nameBytes)` を試行し、`TypeError`（不正 UTF-8 バイト列）発生時のみ `new TextDecoder("shift-jis", { fatal: false }).decode(nameBytes)`（CP932）へフォールバックする。
+   - LFH の `fileNameLength` スキップ計算および 1 RTT 取得長算出のため、デコード前の生バイト長 `entryNameByteLength` を保持する。
 3. **不要エントリ除外・対象画像判定**:
    - 以下のいずれかに該当するエントリは除外する：
      - パス末尾が `/`（ディレクトリエントリ）、または外部属性のディレクトリビットが立っているエントリ
@@ -109,13 +114,13 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 4. **暗号化・圧縮方式・ZIP64 チェック（有効画像エントリ対象）**:
    - GPBF Bit 0 (`flags & 0x0001`) が立っている場合は `ENCRYPTED_ZIP`。
    - `compressionMethod !== 0 && compressionMethod !== 8` の場合は `UNSUPPORTED_COMPRESSION`。
-   - `compressedSize === 0xFFFFFFFF || uncompressedSize === 0xFFFFFFFF || localHeaderOffset === 0xFFFFFFFF` の場合は `ZIP64_NOT_SUPPORTED`。
+   - **ZIP64 Extra Field (`0x0001`) 先行解決 ＆ マルチディスク拒否**: 全 CDH エントリに対し、`physicalOffsets` 収集および `isJunkOrNonImageEntry` 除外の前に `diskStartNumber` チェックおよび `extraField` TLV 走査を実施する（非画像エントリの `localHeaderOffset` も `0xFFFFFFFF` 飽和し得るため）。非飽和・飽和を問わず `diskStartNumber !== 0`（`diskStartNumber !== 0xffff && diskStartNumber !== 0`、または `0x0001` 内 `diskStartNumber !== 0`）はマルチディスク ZIP として `CORRUPT_ZIP` を送出する。`uncompressedSize === 0xFFFFFFFF` / `compressedSize === 0xFFFFFFFF` / `localHeaderOffset === 0xFFFFFFFF` / `diskStartNumber === 0xFFFF` のいずれかが飽和している場合は Header ID `0x0001` ブロックを探索し、飽和項目のみ **PKWARE APPNOTE 順（`uncompressedSize` 8B → `compressedSize` 8B → `localHeaderOffset` 8B → `diskStartNumber` 4B）** で安全整数読み取りする。`0x0001` 不在・長不足・安全整数超過・`diskStartNumber !== 0` はすべて `CORRUPT_ZIP` とする。
 5. **物理終了位置（`physicalEnd`）の算出**:
    - ゴミ・非画像除外前の全 CDH エントリから `cdOffset` 未満の物理 `localHeaderOffset` を収集して昇順ソートする。全 CDH エントリの `localHeaderOffset` が `cdOffset` 未満の範囲で同一オフセット重複・逆転がある場合は `ZipArchiveError("CORRUPT_ZIP")` を送出する。
    - 各有効画像エントリの直後に位置する全 CDH エントリの物理配置順に基づく次の物理エントリ先頭（`localHeaderOffset < off < cdOffset` の最小 `off`、存在しない末尾エントリは `cdOffset`）を `physicalEnd` として設定する。
-6. **論理ページ順の自然順ソート**:
+6. **論理ページ順のセグメント単位自然順ソート**:
    - 有効画像エントリが 0 件の場合は `EMPTY_ARCHIVE` を送出する。
-   - `new Intl.Collator("ja", { numeric: true, sensitivity: "base" }).compare(a.entryName, b.entryName)` でソートし、0 始まりの `pageIndex` を付与する。
+   - `entryName.split(/[\\/]/)` でパスセグメント配列へ分割し、先頭セグメントから順に `new Intl.Collator("ja", { numeric: true, sensitivity: "base" }).compare(segA, segB)` で比較（共通接頭辞が同値ならセグメント数が少ない方を先）し、0 始まりの `pageIndex` を付与する。
 
 ### 3.4 LFH 可変長 1 RTT スライス切り出し
 
@@ -125,8 +130,10 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
    - `initialBuf.byteLength < 30` または Local File Header シグネチャ `0x04034b50` 不一致の場合は `CORRUPT_ZIP` を送出する。
    - LFH 側の `fileNameLength`（offset 26）と `extraFieldLength`（offset 28）を読み取って実データ開始相対位置 `dataStart = 30 + lfhFileNameLength + lfhExtraFieldLength` を算出する（CDH と LFH の `extraFieldLength` が異なる ZIP にも対応）。
    - `dataStart + entry.compressedSize > maxSpan` の場合は境界違反として `ZipArchiveError("CORRUPT_ZIP")` を送出する。
-   - `dataStart + entry.compressedSize <= initialBuf.byteLength` であれば `initialBuf.subarray(dataStart, dataStart + entry.compressedSize)` を返却する（1 RTT 完了）。
-   - LFH `extraField` が 1KB マージンを超過し（かつ `maxSpan` 内に収まり）`dataStart + entry.compressedSize > initialBuf.byteLength` となった場合は、未取得の末尾差分 `[entry.localHeaderOffset + initialBuf.byteLength, (dataStart + entry.compressedSize) - initialBuf.byteLength]` のみを `readRange` で追加取得し、`initialBuf` と結合して `[dataStart, dataStart + entry.compressedSize)` を返却する。
+   - `dataStart + entry.compressedSize <= initialBuf.byteLength` であれば `initialBuf.subarray(dataStart, dataStart + entry.compressedSize)` を返却する（1 RTT 完了、ゼロコピービュー）。
+   - LFH `extraField` が 1KB マージンを超過し（かつ `maxSpan` 内に収まり）`dataStart + entry.compressedSize > initialBuf.byteLength` となった場合は、以下の 2 ケースに分岐して 2 RTT で返却する：
+     - **ケース 2a（`dataStart < initialBuf.byteLength`）**: 未取得の末尾差分 `[entry.localHeaderOffset + initialBuf.byteLength, entry.compressedSize - (initialBuf.byteLength - dataStart)]` のみを `readRange` で追加取得し、`new Uint8Array(entry.compressedSize)` を直接確保して先頭に `initialBuf.subarray(dataStart)`・後続に末尾差分をコピーした `byteOffset === 0` の独立バッファを返却する（不要なヘッダ確保と `prepareDecodeTransfer` での再コピーを排除）。
+     - **ケース 2b（`dataStart >= initialBuf.byteLength`：`lfhExtraFieldLength` が `compressedSize + 1KB` を上回り `initialBuf` に圧縮本体を一切含まない）**: `readRange(entry.localHeaderOffset + dataStart, entry.compressedSize, signal)` で圧縮本体のみを直接追加取得し、`initialBuf` と結合せずそのまま返却する（`RangeError` と余剰コピーを防止）。
 
 ---
 
@@ -150,7 +157,8 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 2. **`openArchive(source, cachedEntries, epoch)`**:
    - `epoch < minActiveEpoch` の場合は即キャンセルエラー。
    - 既存アーカイブがあれば `closeArchive()` 相当のクリーンアップを実施。
-   - `source.kind === "local-session"` に対し `LocalFileReader(source.file)` を生成し、ZIP パーサーで `entries` を構築する（`Phase 3` では `cachedEntries` は常に `null`、`fromIndexCache: false`）。
+   - `source.kind === "local-session"` に対し `LocalFileReader(source.file)` を生成する。`cachedEntries` に非空配列かつ基本構造検証（`validateZipIndexEntries`：必須フィールド型・非負有限数値・`localHeaderOffset < physicalEnd` 等）を通過した配列が渡された場合のみ `parseZipDirectory` をスキップして 0 RTT（`fromIndexCache: true`）で即座に完了し、`null`・空配列・不整合配列の場合は自動的に `parseZipDirectory` へフォールバックする（`fromIndexCache: false`）。
+   - UI スレッド（`ReaderPage` + `ZipIndexCacheRepository`）が `source.indexCacheKey`（`local:${rawFileName}:${fileSize}`）で Dexie `zipIndexCache`（最大 500 件 LRU）を参照し、不整合キャッシュ検知時は自動削除して `cachedEntries = null` へ透過フォールバックし、通常オープン成功時に `entries` を非ブロッキング保存する。
 3. **`requestVisiblePages(pageIndices, prefetchIndices, epoch)`**:
    - `epoch < minActiveEpoch` の場合は `[]` を返却する。
    - `pageIndices` の各ページを `readCompressedPageSlice` ＋ `DecodeWorkerPool`（2 Worker）で処理し、`DecodedPageFrame[]` として返却する：
@@ -178,13 +186,16 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 
 ## 5. 受け入れ条件（`AC-ENG-xx`）
 
-|    AC ID    | 受け入れ条件                                                                                                                                                                                                                              |
-| :---------: | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AC-ENG-01` | `LocalFileReader` は `File.slice` で指定範囲を読み取り、ファイル末尾超過時は実サイズまで安全にクランプし、`AbortSignal` で中断できる。                                                                                                    |
-| `AC-ENG-02` | `zipParser.ts`（論理名 `ZipParserCore`: `parseZipDirectory`）は末尾 128KB から標準 ZIP の EOCD と CDH を解析し、128KB 超の巨大 CD も追加 1 RTT で完全解析できる。                                                                         |
-| `AC-ENG-03` | 画像拡張子（`.jpg/.jpeg/.png/.webp/.avif` 大小非区別）のみ抽出し、`__MACOSX/`・`._*`・`Thumbs.db`・`.DS_Store`・`desktop.ini`・ディレクトリを除外し、日本語自然順でソートする。                                                           |
-| `AC-ENG-04` | UTF-8 非厳格デコード（`fatal: false`）で非 UTF-8 ファイル名も停止せず開き、暗号化・未対応圧縮・ZIP64・空アーカイブ・破損 ZIP には明示的 `ZipErrorCode` を返す。                                                                           |
-| `AC-ENG-05` | LFH 可変長 `extraFieldLength` を LFH 先頭から実読取りし、全 CDH 基準の `physicalEnd` 境界内で 1 RTT（`+1KB` マージン）により正確な圧縮ペイロードを切り出せる。                                                                            |
-| `AC-ENG-06` | `DecodeWorkerCore` は Store (`0`) と Deflate (`8`: `DecompressionStream` ＋ `fflate` フォールバック) の双方を `ImageBitmap` へデコードできる。                                                                                            |
-| `AC-ENG-07` | `CoordinatorCore` は古い `requestEpoch` の進行中 `readRange` を `AbortController` で即時中断し、遅延到着した `ImageBitmap` は即 `bitmap.close()` して破棄する。                                                                           |
-| `AC-ENG-08` | `CoordinatorCore` / `DecodeWorkerCore` / `DecodeWorkerPool` / `coordinatorTransfer` / `comlinkErrorHandler` / `zipParser.ts`（論理名 `ZipParserCore`） / `LocalFileReader` のすべてが C0/C1/Functions/Lines 100% 単体テストを PASS する。 |
+|    AC ID    | 受け入れ条件                                                                                                                                                                                                                                                   |
+| :---------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AC-ENG-01` | `LocalFileReader` は `File.slice` で指定範囲を読み取り、ファイル末尾超過時は実サイズまで安全にクランプし、`AbortSignal` で中断できる。                                                                                                                         |
+| `AC-ENG-02` | `zipParser.ts`（論理名 `ZipParserCore`: `parseZipDirectory`）は末尾 128KB から標準 ZIP の EOCD と CDH を解析し、128KB 超の巨大 CD も追加 1 RTT で完全解析できる。                                                                                              |
+| `AC-ENG-03` | 画像拡張子（`.jpg/.jpeg/.png/.webp/.avif` 大小非区別）のみ抽出し、`__MACOSX/`・`._*`・`Thumbs.db`・`.DS_Store`・`desktop.ini`・ディレクトリを除外し、`/`・`\` セグメント単位の日本語自然順でソートする。                                                       |
+| `AC-ENG-04` | GPBF Bit 11 判定＋UTF-8 非厳格／strict 失敗時 CP932（Shift_JIS）フォールバックで日本語ファイル名も正しくデコードし、暗号化・未対応圧縮・空アーカイブ・破損／マルチディスク ZIP には明示的 `ZipErrorCode` を返す。                                              |
+| `AC-ENG-05` | LFH 可変長 `extraFieldLength` を LFH 先頭から実読取りし、全 CDH 基準の `physicalEnd` 境界内で 1 RTT（`+1KB` マージン）により正確な圧縮ペイロードを切り出せる。                                                                                                 |
+| `AC-ENG-06` | `DecodeWorkerCore` は Store (`0`) と Deflate (`8`: `DecompressionStream` ＋ `fflate` フォールバック) の双方を `ImageBitmap` へデコードできる。                                                                                                                 |
+| `AC-ENG-07` | `CoordinatorCore` は古い `requestEpoch` の進行中 `readRange` を `AbortController` で即時中断し、遅延到着した `ImageBitmap` は即 `bitmap.close()` して破棄する。                                                                                                |
+| `AC-ENG-08` | `CoordinatorCore` / `DecodeWorkerCore` / `DecodeWorkerPool` / `coordinatorTransfer` / `comlinkErrorHandler` / `zipParser.ts`（論理名 `ZipParserCore`） / `LocalFileReader` のすべてが C0/C1/Functions/Lines 100% 単体テストを PASS する。                      |
+| `AC-ENG-09` | ZIP64 EOCD Locator / ZIP64 EOCD Record（4GB 超オフセット・`0x0001` Extra Field 全 CDH 先行解決含む）を安全整数範囲内で完全解析し、マルチディスク ZIP・`Number.MAX_SAFE_INTEGER` 超過・`totalEntries * 46 > cdSize` を `CORRUPT_ZIP` として拒否できる。         |
+| `AC-ENG-10` | GPBF Bit 11 未設定の Shift_JIS（CP932）日本語ファイル名を文字化けせず復元でき、`readCompressedPageSlice` の 2 RTT 経路も `byteOffset === 0` の独立バッファ直接返却により不要な二重コピーを発生させない（`HO-03` 前半）。                                       |
+| `AC-ENG-11` | `DexieZipIndexCacheRepository`（Dexie `version(2)` `zipIndexCache`・最大 500 件 LRU・不整合レコード自動削除フォールバック）と `ReaderPage` / `CoordinatorCore.openArchive` の連携により、同一アーカイブ 2 回目以降を 0 RTT（`fromIndexCache: true`）で開ける。 |
