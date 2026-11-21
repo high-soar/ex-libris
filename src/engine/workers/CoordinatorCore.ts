@@ -6,6 +6,7 @@ import type {
   DecodedPageFrame,
   OpenArchiveResult,
   RandomAccessReader,
+  RequestVisiblePagesOptions,
   ZipErrorCode,
   ZipPageEntry,
 } from "../types";
@@ -21,6 +22,7 @@ export type ArchiveReaderFactory = (
 export interface CoordinatorCoreDeps {
   readonly decodePool: DecodeWorkerApi;
   readonly createReader?: ArchiveReaderFactory;
+  readonly l2MaxBytes?: number;
 }
 
 function defaultCreateReader(
@@ -223,8 +225,10 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
     pageIndices: readonly number[],
     prefetchIndices: readonly number[],
     epoch: number,
+    options?: RequestVisiblePagesOptions,
   ): Promise<DecodedPageFrame[]> {
     void prefetchIndices;
+    void options;
 
     if (
       epoch < this.minActiveEpoch ||

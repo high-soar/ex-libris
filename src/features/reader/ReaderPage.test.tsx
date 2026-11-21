@@ -39,6 +39,7 @@ import { RouterProvider } from "../../shared/router/RouterProvider";
 import { resetTestDb } from "../../storage/db";
 import type { ZipIndexCacheRepository } from "../../storage/repositories/zipIndexCacheRepository";
 import * as ReaderCanvasModule from "../../webgl/ReaderCanvas";
+import { L1PageCache } from "../../webgl/l1PageCache";
 import * as ReaderErrorViewModule from "./ReaderErrorView";
 import * as ReaderHudOverlayModule from "./ReaderHudOverlay";
 import { ReaderPage, type ReaderPageProps } from "./ReaderPage";
@@ -378,11 +379,10 @@ describe("ReaderPage", () => {
     expect(clearAllTextures).not.toHaveBeenCalled();
   });
 
-  it("openArchive成功後にFast-Pathでページ0を描画し完了後に近傍[1][2]を個別先読みしてL1ヒット時は再取得しないこと", async () => {
+  it("openArchive成功後にFast-Path([0], prefetchTargets, epoch, {visiblePageIndices:[0]})を描画し完了後に未取得近傍[1,2]を1バッチ要求しL1ヒット時はL2補充と残近傍を1回で要求すること (AC-RD-05)", async () => {
     const openDeferred = createDeferred<OpenArchiveResult>();
     const page0Deferred = createDeferred<DecodedPageFrame[]>();
-    const page1Deferred = createDeferred<DecodedPageFrame[]>();
-    const page2Deferred = createDeferred<DecodedPageFrame[]>();
+    const neighbors0Deferred = createDeferred<DecodedPageFrame[]>();
     const page3Deferred = createDeferred<DecodedPageFrame[]>();
 
     const frame0 = createReadyFrame(0, 1);
@@ -393,10 +393,12 @@ describe("ReaderPage", () => {
     const mockSession = createMockCoordinatorSession({
       openArchive: vi.fn(() => openDeferred.promise),
       requestVisiblePages: vi.fn((pageIndices) => {
-        const target = pageIndices[0];
-        if (target === 0) return page0Deferred.promise;
-        if (target === 1) return page1Deferred.promise;
-        if (target === 2) return page2Deferred.promise;
+        if (pageIndices.length === 1 && pageIndices[0] === 0) {
+          return page0Deferred.promise;
+        }
+        if (pageIndices.length === 2 && pageIndices[0] === 1) {
+          return neighbors0Deferred.promise;
+        }
         return page3Deferred.promise;
       }),
     });
@@ -417,7 +419,7 @@ describe("ReaderPage", () => {
       );
     });
 
-    // openArchive 完了 -> まず Fast-Path [0] のみ要求される
+    // openArchive 完了 -> まず Fast-Path [0] と優先順 prefetchTargets [1..5] ＆ { visiblePageIndices: [0] } が要求される
     await act(async () => {
       openDeferred.resolve({
         pageCount: 6,
@@ -431,12 +433,13 @@ describe("ReaderPage", () => {
     expect(mockSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
       1,
       [0],
-      [],
+      [1, 2, 3, 4, 5],
       1,
+      { visiblePageIndices: [0] },
     );
     expect(screen.getByTestId("reader-loading")).toBeVisible();
 
-    // Fast-Path [0] 完了 -> 描画されローディング消滅、その後に近傍 [1] と [2] が個別要求される
+    // Fast-Path [0] 完了 -> 描画されローディング消滅、その後に近傍 [1, 2] が 1 バッチで要求される
     await act(async () => {
       page0Deferred.resolve([frame0]);
       await flushMicrotasks();
@@ -444,28 +447,22 @@ describe("ReaderPage", () => {
 
     expect(screen.queryByTestId("reader-loading")).not.toBeInTheDocument();
     expect(getLatestCanvasProps().frame).toBe(frame0);
-    expect(mockSession.api.requestVisiblePages).toHaveBeenCalledTimes(3);
+    expect(mockSession.api.requestVisiblePages).toHaveBeenCalledTimes(2);
     expect(mockSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
       2,
-      [1],
+      [1, 2],
       [],
       1,
-    );
-    expect(mockSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
-      3,
-      [2],
-      [],
-      1,
+      { visiblePageIndices: [0] },
     );
 
-    // 近傍 [1], [2] が到着して L1 に格納される
+    // 近傍バッチ [1, 2] が到着して L1 に格納される
     await act(async () => {
-      page1Deferred.resolve([frame1]);
-      page2Deferred.resolve([frame2]);
+      neighbors0Deferred.resolve([frame1, frame2]);
       await flushMicrotasks();
     });
 
-    // ページ 1 へ移動 -> L1 キャッシュヒットのため [1] は再取得せず、[3] のみ取得する
+    // ページ 1 へ移動 -> L1 キャッシュヒットのため [1] は再取得せず、未取得近傍 [3] と先読み窓 [2, 3, 4, 5, 0] を 1 回で要求する
     act(() => {
       getLatestHudProps().onNextPage();
     });
@@ -473,12 +470,13 @@ describe("ReaderPage", () => {
     expect(mockSession.api.cancelEpochBelow).toHaveBeenCalledWith(2);
     expect(getLatestCanvasProps().frame).toBe(frame1);
     expect(getLatestHudProps().currentPageIndex).toBe(1);
-    expect(mockSession.api.requestVisiblePages).toHaveBeenCalledTimes(4);
+    expect(mockSession.api.requestVisiblePages).toHaveBeenCalledTimes(3);
     expect(mockSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
-      4,
+      3,
       [3],
-      [],
+      [2, 3, 4, 5, 0],
       2,
+      { visiblePageIndices: [1] },
     );
 
     await act(async () => {
@@ -512,17 +510,34 @@ describe("ReaderPage", () => {
         fromIndexCache: false,
       })),
       requestVisiblePages: vi.fn(async (pageIndices, _prefetch, epoch) => {
-        const target = pageIndices[0];
-        if (target === 0 && epoch === 1) return [frame0];
-        if (target === 1 && epoch === 1) return stalePrefetchDeferred.promise;
-        if (target === 2 && epoch === 1) return staleErrorDeferred.promise;
-        if (target === 1 && epoch === 2) return [frame1];
-        if (target === 2 && epoch === 3) return [frame2];
-        if (target === 3 && epoch === 4) return [frame3];
-        if (target === 4 && epoch === 5) return [frame4];
-        if (target === 5 && epoch === 6) return [frame5];
-        if (target === 6 && epoch === 7) return [frame6];
-        if (target === 7 && epoch === 7) {
+        if (pageIndices.length === 1 && pageIndices[0] === 0 && epoch === 1) {
+          return [frame0];
+        }
+        if (pageIndices.length === 2 && pageIndices[0] === 1 && epoch === 1) {
+          return stalePrefetchDeferred.promise;
+        }
+        if (pageIndices.length === 1 && pageIndices[0] === 1 && epoch === 2) {
+          return [frame1];
+        }
+        if (pageIndices.length === 2 && pageIndices[0] === 2 && epoch === 2) {
+          return staleErrorDeferred.promise;
+        }
+        if (pageIndices.length === 1 && pageIndices[0] === 2 && epoch === 3) {
+          return [frame2];
+        }
+        if (pageIndices.length === 1 && pageIndices[0] === 3 && epoch === 4) {
+          return [frame3];
+        }
+        if (pageIndices.length === 1 && pageIndices[0] === 4 && epoch === 5) {
+          return [frame4];
+        }
+        if (pageIndices.length === 1 && pageIndices[0] === 5 && epoch === 6) {
+          return [frame5];
+        }
+        if (pageIndices.length === 1 && pageIndices[0] === 6 && epoch === 7) {
+          return [frame6];
+        }
+        if (pageIndices.length === 1 && pageIndices[0] === 7 && epoch === 7) {
           // 返却フレーム自体に古い epoch が混入しているケース
           return [createReadyFrame(7, 1, staleInnerEpochBitmap)];
         }
@@ -543,23 +558,29 @@ describe("ReaderPage", () => {
       expect(getLatestCanvasProps().frame).toBe(frame0);
     });
 
-    // ページ 1 へ進めて epoch を 2 へ上げる（epoch 1 の [1], [2] はまだ未完了）
+    // ページ 1 -> 2 へ進めて epoch を 3 へ上げる（epoch 1 の [1,2] と epoch 2 の [2,3] はまだ未完了）
     await act(async () => {
       getLatestHudProps().onNextPage();
       await flushMicrotasks();
     });
     expect(getLatestCanvasProps().frame).toBe(frame1);
 
-    // epoch 1 で遅延到着した ready と error は破棄され、ready の bitmap.close() が即座に呼ばれる
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestCanvasProps().frame).toBe(frame2);
+
+    // epoch 1/2 で遅延到着した ready と error は破棄され、ready の bitmap.close() が即座に呼ばれる
     await act(async () => {
       stalePrefetchDeferred.resolve([staleReadyFrame]);
-      staleErrorDeferred.resolve([createErrorFrame(2, 1)]);
+      staleErrorDeferred.resolve([createErrorFrame(2, 2)]);
       await flushMicrotasks();
     });
     expect(staleReadyBitmap.close).toHaveBeenCalledTimes(1);
 
-    // 連続して 2 -> 3 -> 4 -> 5 -> 6 へ進み、L1(5枚) 上限超過で最古ページが退避・解放される
-    for (const expectedPage of [2, 3, 4, 5, 6]) {
+    // 連続して 3 -> 4 -> 5 -> 6 へ進み、L1(5枚) 上限超過で最古ページが退避・解放される
+    for (const expectedPage of [3, 4, 5, 6]) {
       await act(async () => {
         getLatestHudProps().onNextPage();
         await flushMicrotasks();
@@ -786,6 +807,9 @@ describe("ReaderPage", () => {
         fromIndexCache: false,
       })),
       requestVisiblePages: vi.fn(async (pageIndices, _prefetch, epoch) => {
+        if (pageIndices.length === 2) {
+          return [];
+        }
         const target = pageIndices[0];
         if (target === 0) return [frame0];
         if (target === 1) {
@@ -1659,5 +1683,306 @@ describe("ReaderPage", () => {
       entries,
       1,
     );
+  });
+
+  it("buildPrefetchTargets(+1..+20, -1..-2)が常時{visiblePageIndices:[N]}と共に渡され、1ページ時は近傍RPCを発行しないこと (AC-RD-05)", async () => {
+    // 1. 30ページアーカイブの page 0 (進行+1..+20のみ) および page 3 (進行[4..23] + 逆[2,1]) を検証
+    const mockSession30 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 30,
+        entries: [],
+        fromIndexCache: false,
+      })),
+      requestVisiblePages: vi.fn(async (pageIndices, _prefetch, epoch) => {
+        // 近傍バッチは返さず、ページ遷移ごとに Fast-Path が発火する状態を検証
+        if (pageIndices.length === 1) {
+          return [createReadyFrame(pageIndices[0], epoch)];
+        }
+        return [];
+      }),
+    });
+
+    const { unmount: unmount30 } = renderWithSession(
+      {},
+      () => mockSession30.handle,
+    );
+
+    await waitFor(() => {
+      expect(mockSession30.api.requestVisiblePages).toHaveBeenCalledTimes(2);
+    });
+    expect(mockSession30.api.requestVisiblePages).toHaveBeenNthCalledWith(
+      1,
+      [0],
+      Array.from({ length: 20 }, (_, i) => i + 1),
+      1,
+      { visiblePageIndices: [0] },
+    );
+    expect(mockSession30.api.requestVisiblePages).toHaveBeenNthCalledWith(
+      2,
+      [1, 2],
+      [],
+      1,
+      { visiblePageIndices: [0] },
+    );
+
+    for (const targetPage of [1, 2, 3]) {
+      await act(async () => {
+        getLatestHudProps().onNextPage();
+        await flushMicrotasks();
+      });
+      expect(getLatestHudProps().currentPageIndex).toBe(targetPage);
+    }
+
+    const expectedAtPage3 = [
+      ...Array.from({ length: 20 }, (_, i) => i + 4),
+      2,
+      1,
+    ];
+    expect(mockSession30.api.requestVisiblePages).toHaveBeenCalledWith(
+      [3],
+      expectedAtPage3,
+      4,
+      { visiblePageIndices: [3] },
+    );
+    unmount30();
+
+    // 2. 1ページアーカイブ時は prefetchTargets=[] かつ missingNeighbors=[] のため近傍バッチRPCを発行しない
+    const mockSession1 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 1,
+        entries: [],
+        fromIndexCache: false,
+      })),
+    });
+    renderWithSession({}, () => mockSession1.handle);
+    await waitFor(() => {
+      expect(getLatestCanvasProps().frame).toMatchObject({
+        status: "ready",
+        pageIndex: 0,
+      });
+    });
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    expect(mockSession1.api.requestVisiblePages).toHaveBeenCalledTimes(1);
+    expect(mockSession1.api.requestVisiblePages).toHaveBeenNthCalledWith(
+      1,
+      [0],
+      [],
+      1,
+      { visiblePageIndices: [0] },
+    );
+  });
+
+  it("L1全ヒット時はrequestVisiblePages([], prefetchTargets, epoch, {visiblePageIndices:[N]})でL2補充を呼び出し、両空時は呼ばないこと (AC-RD-05)", async () => {
+    const frame0 = createReadyFrame(0, 1);
+    const frame1 = createReadyFrame(1, 1);
+    const frame2 = createReadyFrame(2, 1);
+    const frame3 = createReadyFrame(3, 2);
+
+    const mockSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 4,
+        entries: [],
+        fromIndexCache: false,
+      })),
+      requestVisiblePages: vi.fn(async (pageIndices) => {
+        if (pageIndices.length === 1 && pageIndices[0] === 0) return [frame0];
+        if (pageIndices.length === 2 && pageIndices[0] === 1) {
+          return [frame1, frame2];
+        }
+        if (pageIndices.length === 1 && pageIndices[0] === 3) return [frame3];
+        return [];
+      }),
+    });
+
+    const { unmount } = renderWithSession({}, () => mockSession.handle);
+
+    await waitFor(() => {
+      expect(mockSession.api.requestVisiblePages).toHaveBeenCalledTimes(2);
+    });
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    // page 0 -> page 1 (L1ヒット、[3] のみ未取得)
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(mockSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
+      3,
+      [3],
+      [2, 3, 0],
+      2,
+      { visiblePageIndices: [1] },
+    );
+
+    // page 1 -> page 2 (2とその近傍 [3, 1] はすべて L1 ヒット -> pageIndices=[] で L2 補充呼び出し)
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestCanvasProps().frame).toBe(frame2);
+    expect(mockSession.api.requestVisiblePages).toHaveBeenCalledTimes(4);
+    expect(mockSession.api.requestVisiblePages).toHaveBeenNthCalledWith(
+      4,
+      [],
+      [3, 1, 0],
+      3,
+      { visiblePageIndices: [2] },
+    );
+    unmount();
+
+    // L1ヒットかつ missingNeighbors=[] && prefetchTargets=[] の境界（1ページL1ヒット）ではRPCを呼ばない
+    const spyCachedFrame = createReadyFrame(0, 1);
+    vi.spyOn(L1PageCache.prototype, "get").mockReturnValueOnce(spyCachedFrame);
+    const mockSingleHitSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 1,
+        entries: [],
+        fromIndexCache: false,
+      })),
+    });
+    renderWithSession({}, () => mockSingleHitSession.handle);
+    await waitFor(() => {
+      expect(getLatestCanvasProps().frame).toBe(spyCachedFrame);
+    });
+    expect(mockSingleHitSession.api.requestVisiblePages).not.toHaveBeenCalled();
+  });
+
+  it("近傍バッチの部分エラーおよびRPC非中断reject時にL1へ全対象ページのエラーを格納し遷移時に表示すること (AC-RD-07)", async () => {
+    const frame0 = createReadyFrame(0, 1);
+    const batchFailSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 4,
+        entries: [],
+        fromIndexCache: false,
+      })),
+      requestVisiblePages: vi.fn(
+        async (
+          pageIndices: readonly number[],
+          _prefetch: readonly number[],
+          epoch: number,
+        ) => {
+          if (pageIndices.length === 1 && pageIndices[0] === 0) return [frame0];
+          if (pageIndices.length === 2 && pageIndices[0] === 1) {
+            throw new ZipArchiveError(
+              "READ_ERROR",
+              "neighbor batch read error",
+            );
+          }
+          return pageIndices.map((idx) => createReadyFrame(idx, epoch));
+        },
+      ),
+    });
+
+    const { unmount } = renderWithSession({}, () => batchFailSession.handle);
+
+    await waitFor(() => {
+      expect(batchFailSession.api.requestVisiblePages).toHaveBeenCalledTimes(2);
+    });
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    // バッチ reject 時に [1, 2] 双方のエラーログと L1 エラーフレームが格納されていること
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "error",
+          scope: "reader",
+          detail: "READ_ERROR: page 2",
+        }),
+        expect.objectContaining({
+          level: "error",
+          scope: "reader",
+          detail: "READ_ERROR: page 3",
+        }),
+      ]),
+    );
+
+    // ページ 1 へ移動 -> L1 格納済みエラーフレームで即座に page エラー表示
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestErrorViewProps()).toEqual({
+      mode: "page",
+      message:
+        "ファイルの読み込みに失敗しました（アクセス権限またはストレージ状態を確認してください）",
+      errorCode: "READ_ERROR",
+    });
+
+    // ページ 2 へ移動 -> 同じく L1 格納済みエラーフレームで即座に page エラー表示
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestErrorViewProps()).toEqual({
+      mode: "page",
+      message:
+        "ファイルの読み込みに失敗しました（アクセス権限またはストレージ状態を確認してください）",
+      errorCode: "READ_ERROR",
+    });
+    unmount();
+
+    // 2. 近傍バッチが [ready, error] の部分エラーを返した場合も各ページへ個別に適用されること
+    diagnosticLogger.clear();
+    errorViewSpy.mockClear();
+    const partialSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 4,
+        entries: [],
+        fromIndexCache: false,
+      })),
+      requestVisiblePages: vi.fn(
+        async (
+          pageIndices: readonly number[],
+          _prefetch: readonly number[],
+          epoch: number,
+        ) => {
+          if (pageIndices.length === 1 && pageIndices[0] === 0) return [frame0];
+          if (pageIndices.length === 2 && pageIndices[0] === 1) {
+            return [
+              createReadyFrame(1, epoch),
+              createErrorFrame(2, epoch, "DECODE_FAILED"),
+            ];
+          }
+          return pageIndices.map((idx) => createReadyFrame(idx, epoch));
+        },
+      ),
+    });
+    const { unmount: unmountPartial } = renderWithSession(
+      {},
+      () => partialSession.handle,
+    );
+    await waitFor(() => {
+      expect(partialSession.api.requestVisiblePages).toHaveBeenCalledTimes(2);
+    });
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestCanvasProps().frame).toMatchObject({
+      status: "ready",
+      pageIndex: 1,
+    });
+    expect(errorViewSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestErrorViewProps()).toEqual({
+      mode: "page",
+      message: "ページの画像デコードに失敗しました",
+      errorCode: "DECODE_FAILED",
+    });
+    unmountPartial();
   });
 });

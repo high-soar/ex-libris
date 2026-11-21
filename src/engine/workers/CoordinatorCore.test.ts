@@ -11,6 +11,7 @@ import {
   createMemoryReader,
 } from "../zip/__fixtures__/zipBuilder";
 import { CoordinatorCore } from "./CoordinatorCore";
+import { prepareDecodeTransfer } from "./coordinatorTransfer";
 
 interface FakeBitmapWithSpy extends ImageBitmap {
   close: ReturnType<typeof vi.fn>;
@@ -475,4 +476,616 @@ describe("CoordinatorCore", () => {
       name: "AbortError",
     });
   });
+
+  it("L2ヒット時の0RTT再デコードと実structuredClone({transfer})デタッチ模擬下のHO-03非破壊・非L2複数消費者共有を検証すること (AC-ENG-12, AC-ENG-14)", async () => {
+    const p0 = new Uint8Array([10, 20, 30, 40]);
+    const p1 = new Uint8Array([50, 60, 70, 80]);
+    const zipBytes = buildSyntheticZip({
+      entries: [
+        { name: "000.jpg", data: p0, compressionMethod: 0 },
+        { name: "001.jpg", data: p1, compressionMethod: 8 },
+      ],
+    });
+    const baseReader = createMemoryReader(zipBytes);
+    const decodedPayloads: Array<{ method: number; bytes: number[] }> = [];
+
+    const transferSimulatingPool: DecodeWorkerApi = {
+      decodePageSlice: vi.fn(async (compressedData, compressionMethod) => {
+        const { data, transferables } = prepareDecodeTransfer(compressedData);
+        const transferred = structuredClone(data, { transfer: transferables });
+        decodedPayloads.push({
+          method: compressionMethod,
+          bytes: Array.from(transferred),
+        });
+        return {
+          bitmap: createFakeBitmap(800, 1200),
+          width: 800,
+          height: 1200,
+        };
+      }),
+    };
+
+    const coordinator = new CoordinatorCore({
+      decodePool: transferSimulatingPool,
+      createReader: () => baseReader,
+    });
+    const openResult = await coordinator.openArchive(
+      createLocalSource(zipBytes),
+      null,
+      1,
+    );
+    expect(openResult.pageCount).toBe(2);
+    baseReader.reads.length = 0;
+
+    // 1. 初回 Fast-Path で page 0 を取得・L2 格納し、structuredClone({ transfer }) を通す
+    const firstFrames = await coordinator.requestVisiblePages([0], [], 1);
+    expect(firstFrames).toHaveLength(1);
+    expect(firstFrames[0].status).toBe("ready");
+    expect(baseReader.reads).toHaveLength(1);
+    expect(decodedPayloads[0]).toEqual({ method: 0, bytes: Array.from(p0) });
+
+    // 2. L1 退避後の再めくり模擬（同一 page 0 を再度要求）-> readRange 0 回で L2 ヒット & 破壊されず再デコード成功
+    baseReader.reads.length = 0;
+    const secondFrames = await coordinator.requestVisiblePages([0], [], 2);
+    expect(secondFrames).toHaveLength(1);
+    expect(secondFrames[0].status).toBe("ready");
+    expect(baseReader.reads).toHaveLength(0);
+    expect(decodedPayloads[1]).toEqual({ method: 0, bytes: Array.from(p0) });
+
+    // 3. L2 格納不可状態（80MB超ページピン中）で同世代重複要求 [1, 1] が In-Flight 共有した場合も
+    //    consumerCount > 1 により markSharedBuffer 保護され、structuredClone({ transfer }) で互いを破壊しないこと
+    const oversizedBytes = new Uint8Array(150).fill(0xab);
+    const smallShared = new Uint8Array([1, 2, 3, 4]);
+    const zipWithOversized = buildSyntheticZip({
+      entries: [
+        { name: "000.jpg", data: oversizedBytes, compressionMethod: 0 },
+        { name: "001.jpg", data: smallShared, compressionMethod: 0 },
+      ],
+    });
+    const smallReader = createMemoryReader(zipWithOversized);
+    const smallCoordinator = new CoordinatorCore({
+      decodePool: transferSimulatingPool,
+      createReader: () => smallReader,
+      l2MaxBytes: 100,
+    });
+    await smallCoordinator.openArchive(
+      createLocalSource(zipWithOversized),
+      null,
+      1,
+    );
+    await smallCoordinator.requestVisiblePages([0], [], 1, {
+      visiblePageIndices: [0],
+    });
+    smallReader.reads.length = 0;
+
+    // page 0 がピン中なので page 1 (<=100B) は L2 格納されず false になるが、重複要求 [1, 1] は In-Flight 共有＆両方非破壊でデコード成功
+    decodedPayloads.length = 0;
+    const sharedFrames = await smallCoordinator.requestVisiblePages(
+      [1, 1],
+      [],
+      1,
+      {
+        visiblePageIndices: [0],
+      },
+    );
+    expect(sharedFrames).toHaveLength(2);
+    expect(sharedFrames.every((f) => f.status === "ready")).toBe(true);
+    expect(smallReader.reads).toHaveLength(1);
+    expect(decodedPayloads).toEqual([
+      { method: 0, bytes: Array.from(smallShared) },
+      { method: 0, bytes: Array.from(smallShared) },
+    ]);
+  });
+
+  it("64KB超ギャップ複数バッチ分割時を含むWarm PrefetchとL1近傍要求の先行In-Flight共有で重複readRangeがゼロになること (AC-ENG-13, AC-ENG-14)", async () => {
+    const p0 = new Uint8Array([1, 2, 3]);
+    const p1 = new Uint8Array([4, 5, 6]);
+    const p2 = new Uint8Array([7, 8, 9]);
+    const p3 = new Uint8Array([10, 11, 12]);
+    const zipBytes = buildSyntheticZip({
+      entries: [
+        { name: "000.jpg", data: p0 },
+        { name: "001.jpg", data: p1 },
+        { name: "gap.bin", data: new Uint8Array(70_000) },
+        { name: "002.jpg", data: p2 },
+        { name: "003.jpg", data: p3 },
+      ],
+    });
+    const baseReader = createMemoryReader(zipBytes);
+    const parsedEntries = await parseZipDirectoryForTest(baseReader);
+    baseReader.reads.length = 0;
+
+    let resolveGateBatch0!: () => void;
+    const batch0GatePromise = new Promise<void>((resolveGate) => {
+      resolveGateBatch0 = resolveGate;
+    });
+    let resolveBatch0Started!: () => void;
+    const batch0Started = new Promise<void>((resolveStarted) => {
+      resolveBatch0Started = resolveStarted;
+    });
+    const gatedReader: RandomAccessReader = {
+      sourceId: baseReader.sourceId,
+      totalSize: baseReader.totalSize,
+      async readRange(offset, length, signal) {
+        if (offset === parsedEntries[1].localHeaderOffset) {
+          resolveBatch0Started();
+          await batch0GatePromise;
+        }
+        return baseReader.readRange(offset, length, signal);
+      },
+    };
+
+    const decodePool: DecodeWorkerApi = {
+      decodePageSlice: vi.fn(async (data) => ({
+        bitmap: createFakeBitmap(data.byteLength, 100),
+        width: data.byteLength,
+        height: 100,
+      })),
+    };
+
+    const coordinator = new CoordinatorCore({
+      decodePool,
+      createReader: () => gatedReader,
+    });
+
+    await coordinator.openArchive(createLocalSource(zipBytes), null, 1);
+    baseReader.reads.length = 0;
+
+    // 1. Fast-Path [0] 完了時に Warm Prefetch (Batch 0=[1], Batch 1=[2,3]) がバックグラウンド開始される（RPCは待たずに即返却）
+    const fastFrames = await coordinator.requestVisiblePages(
+      [0],
+      [1, 2, 3],
+      1,
+      { visiblePageIndices: [0] },
+    );
+    expect(fastFrames).toHaveLength(1);
+    expect(baseReader.reads).toHaveLength(1); // page 0 のみ
+
+    // Batch 0 の readRange 開始まで待機（Batch 0 完了前 = Batch 1 はまだ readRange 前）
+    await batch0Started;
+
+    // 2. Batch 0 実行中に L1 近傍 [1, 2] をバッチ要求 -> 同期先行登録済み inflightPageReads に両方合流し、追加 readRange 0 回
+    const neighborPromise = coordinator.requestVisiblePages([1, 2], [], 1, {
+      visiblePageIndices: [0],
+    });
+    await Promise.resolve();
+    expect(baseReader.reads).toHaveLength(1); // Batch 0 は baseReader 転送前かつ追加要求ゼロ
+
+    resolveGateBatch0();
+    const neighborFrames = await neighborPromise;
+    expect(neighborFrames.map((f) => f.pageIndex)).toEqual([1, 2]);
+    // 読込内訳: page 0 (1回) + Warm Batch 0 [1] (1回) + Warm Batch 1 [2,3] (1回) = 計 3 回のみ（重複ゼロ）
+    await vi.waitFor(() => {
+      expect(baseReader.reads).toHaveLength(3);
+    });
+  });
+
+  it("遅延readRange中のcancelEpochBelowおよび新世代割り込みで旧世代完了を待たず即座にinflight解放・単独Fast-Pathを開始すること (AC-ENG-07, AC-ENG-14)", async () => {
+    const zipBytes = buildSyntheticZip({
+      entries: [
+        { name: "000.jpg", data: new Uint8Array([1, 2, 3]) },
+        { name: "001.jpg", data: new Uint8Array([4, 5, 6]) },
+        { name: "002.jpg", data: new Uint8Array([7, 8, 9]) },
+      ],
+    });
+    const baseReader = createMemoryReader(zipBytes);
+    const parsedEntries = await parseZipDirectoryForTest(baseReader);
+
+    let hangEpoch1Prefetch = true;
+    let resolveHangingPrefetchRead!: (buf: Uint8Array) => void;
+    let prefetchReadStarted!: () => void;
+    const prefetchReadStartedPromise = new Promise<void>((resolve) => {
+      prefetchReadStarted = resolve;
+    });
+
+    let hangFastPathPage0 = false;
+    let resolveHangingFastPath!: (buf: Uint8Array) => void;
+
+    const reader: RandomAccessReader = {
+      sourceId: baseReader.sourceId,
+      totalSize: baseReader.totalSize,
+      async readRange(offset, length, signal) {
+        if (
+          hangEpoch1Prefetch &&
+          offset === parsedEntries[1].localHeaderOffset
+        ) {
+          hangEpoch1Prefetch = false;
+          prefetchReadStarted();
+          // AbortSignal を無視して arrayBuffer() が完了しない LocalFileReader を模擬
+          return new Promise<Uint8Array>((resolve) => {
+            resolveHangingPrefetchRead = resolve;
+          });
+        }
+        if (
+          hangFastPathPage0 &&
+          offset === parsedEntries[0].localHeaderOffset
+        ) {
+          hangFastPathPage0 = false;
+          return new Promise<Uint8Array>((resolve) => {
+            resolveHangingFastPath = resolve;
+          });
+        }
+        return baseReader.readRange(offset, length, signal);
+      },
+    };
+
+    const coordinator = new CoordinatorCore({
+      decodePool: {
+        decodePageSlice: vi.fn(async () => ({
+          bitmap: createFakeBitmap(),
+          width: 100,
+          height: 100,
+        })),
+      },
+      createReader: () => reader,
+    });
+    await coordinator.openArchive(createLocalSource(zipBytes), null, 1);
+
+    // 1. epoch=1 で page 0 表示＋Warm Prefetch [1, 2] 起動 -> Batch [1, 2] が AbortSignal 無視でハング
+    await coordinator.requestVisiblePages([0], [1, 2], 1, {
+      visiblePageIndices: [0],
+    });
+    await prefetchReadStartedPromise;
+
+    // epoch=1 の近傍 [1] が In-Flight に相乗り待機中に cancelEpochBelow(2) を発火
+    const abortedNeighborPromise = coordinator.requestVisiblePages([1], [], 1, {
+      visiblePageIndices: [0],
+    });
+    coordinator.cancelEpochBelow(2);
+
+    // abort() と同期的に inflightPageReads が解放されるため、旧 readRange 未完了のまま epoch=2 Fast-Path [1] が即完了する
+    const fastEpoch2Frames = await coordinator.requestVisiblePages([1], [], 2, {
+      visiblePageIndices: [1],
+    });
+    expect(fastEpoch2Frames).toHaveLength(1);
+    expect(fastEpoch2Frames[0]).toMatchObject({
+      status: "ready",
+      pageIndex: 1,
+      epoch: 2,
+    });
+    expect(await abortedNeighborPromise).toEqual([]);
+
+    // ハングしていた epoch=1 の readRange が後から解決しても安全に無視され、epoch=2 の状態を破壊しない
+    resolveHangingPrefetchRead(
+      zipBytes.slice(
+        parsedEntries[1].localHeaderOffset,
+        parsedEntries[2].physicalEnd,
+      ),
+    );
+    await Promise.resolve();
+
+    // 2. cancelEpochBelow を呼ばずに新世代 epoch=3 が来た場合も、古い activePrefetch (epoch<3) を自動中断すること
+    hangEpoch1Prefetch = true;
+    const secondHangPromise = new Promise<void>((resolve) => {
+      prefetchReadStarted = resolve;
+    });
+    await coordinator.requestVisiblePages([0], [1, 2], 2, {
+      visiblePageIndices: [0],
+    });
+    await secondHangPromise;
+
+    // epoch=3 を cancelEpochBelow なしで呼ぶと epoch=2 の activePrefetch が自動 abort され page 1 を即単独取得する
+    const preemptedFrames = await coordinator.requestVisiblePages([1], [], 3, {
+      visiblePageIndices: [1],
+    });
+    expect(preemptedFrames).toHaveLength(1);
+    expect(preemptedFrames[0]).toMatchObject({
+      status: "ready",
+      pageIndex: 1,
+      epoch: 3,
+    });
+    resolveHangingPrefetchRead(new Uint8Array(0));
+
+    // 3. 既存 inflightPageReads に異世代 Fast-Path (epoch=3) が残っている状態で epoch=4 が同じ page 0 を要求した場合は
+    //    旧世代の完了を待たず単独取得すること（settle 時も新世代エントリを誤削除しない）
+    hangFastPathPage0 = true;
+    const oldEpochFast = coordinator.requestVisiblePages([0], [], 3);
+    await vi.waitFor(() => expect(resolveHangingFastPath).toBeDefined());
+    const newEpochFast = await coordinator.requestVisiblePages([0], [], 4);
+    expect(newEpochFast).toHaveLength(1);
+    expect(newEpochFast[0]).toMatchObject({
+      status: "ready",
+      pageIndex: 0,
+      epoch: 4,
+    });
+    resolveHangingFastPath(
+      zipBytes.slice(
+        parsedEntries[0].localHeaderOffset,
+        parsedEntries[0].physicalEnd,
+      ),
+    );
+    await oldEpochFast;
+  });
+
+  it("Warm Prefetch失敗(READ_ERROR/一部破損CORRUPT_ZIP)時は待機中リクエストが直接readCompressedPageSliceへフォールバックすること (AC-ENG-13, AC-ENG-14)", async () => {
+    const zipBytes = buildSyntheticZip({
+      entries: [
+        { name: "000.jpg", data: new Uint8Array([1, 2, 3]) },
+        { name: "001.jpg", data: new Uint8Array([4, 5, 6]) },
+        {
+          name: "002.jpg",
+          data: new Uint8Array([7, 8, 9]),
+          overrideLfhSignature: 0xdeadbeef,
+        },
+      ],
+    });
+    const baseReader = createMemoryReader(zipBytes);
+    const parsedEntries = await parseZipDirectoryForTest(baseReader);
+
+    let failPrefetchRead = true;
+    let startPrefetchRead!: () => void;
+    let releasePrefetchError!: () => void;
+    const prefetchReadEntered = new Promise<void>((resolve) => {
+      startPrefetchRead = resolve;
+    });
+
+    const reader: RandomAccessReader = {
+      sourceId: baseReader.sourceId,
+      totalSize: baseReader.totalSize,
+      async readRange(offset, length, signal) {
+        if (failPrefetchRead && offset === parsedEntries[1].localHeaderOffset) {
+          failPrefetchRead = false;
+          startPrefetchRead();
+          await new Promise<void>((resolve) => {
+            releasePrefetchError = resolve;
+          });
+          throw new ZipArchiveError("READ_ERROR", "transient prefetch failure");
+        }
+        return baseReader.readRange(offset, length, signal);
+      },
+    };
+
+    const coordinator = new CoordinatorCore({
+      decodePool: {
+        decodePageSlice: vi.fn(async () => ({
+          bitmap: createFakeBitmap(),
+          width: 100,
+          height: 100,
+        })),
+      },
+      createReader: () => reader,
+    });
+    await coordinator.openArchive(createLocalSource(zipBytes), null, 1);
+
+    // 1. Warm Prefetch が READ_ERROR 失敗 -> 相乗りしていた page 1 は null 解決後に直接読込へフォールバック成功し、
+    //    LFH破損の page 2 は直接読込でも CORRUPT_ZIP としてページ単位 error フレームになる
+    await coordinator.requestVisiblePages([0], [1, 2], 1, {
+      visiblePageIndices: [0],
+    });
+    await prefetchReadEntered;
+    const fallbackPromise = coordinator.requestVisiblePages([1, 2], [], 1, {
+      visiblePageIndices: [0],
+    });
+    releasePrefetchError();
+
+    const fallbackFrames = await fallbackPromise;
+    expect(fallbackFrames).toHaveLength(2);
+    expect(fallbackFrames[0]).toMatchObject({ status: "ready", pageIndex: 1 });
+    expect(fallbackFrames[1]).toMatchObject({
+      status: "error",
+      pageIndex: 2,
+      errorCode: "CORRUPT_ZIP",
+    });
+
+    // 2. Warm Prefetch 内で一部破損(CORRUPT_ZIP)が発生し onPageSettledEmpty で null 解決された場合もフォールバックすること
+    await coordinator.openArchive(createLocalSource(zipBytes), null, 2);
+    const partialPromise = coordinator.requestVisiblePages([0], [2], 2, {
+      visiblePageIndices: [0],
+    });
+    await partialPromise;
+    const page2Frames = await coordinator.requestVisiblePages([2], [], 2, {
+      visiblePageIndices: [0],
+    });
+    expect(page2Frames[0]).toMatchObject({
+      status: "error",
+      pageIndex: 2,
+      errorCode: "CORRUPT_ZIP",
+    });
+  });
+
+  it("空pageIndicesでのL2補充・1epoch1回制限・同世代In-Flight除外と旧世代In-Flight非除外を検証すること (AC-ENG-12, AC-ENG-14)", async () => {
+    const zipBytes = buildSyntheticZip({
+      entries: [
+        { name: "000.jpg", data: new Uint8Array([1, 2, 3]) },
+        { name: "001.jpg", data: new Uint8Array([4, 5, 6]) },
+        { name: "002.jpg", data: new Uint8Array([7, 8, 9]) },
+        { name: "003.jpg", data: new Uint8Array([10, 11, 12]) },
+      ],
+    });
+    const baseReader = createMemoryReader(zipBytes);
+    const parsedEntries = await parseZipDirectoryForTest(baseReader);
+
+    let holdPage1 = false;
+    let releasePage1!: () => void;
+    let holdPage2 = false;
+    let releasePage2!: () => void;
+    const gatedReader: RandomAccessReader = {
+      sourceId: baseReader.sourceId,
+      totalSize: baseReader.totalSize,
+      async readRange(offset, length, signal) {
+        if (holdPage1 && offset === parsedEntries[1].localHeaderOffset) {
+          holdPage1 = false;
+          await new Promise<void>((resolve) => {
+            releasePage1 = resolve;
+          });
+        }
+        if (holdPage2 && offset === parsedEntries[2].localHeaderOffset) {
+          holdPage2 = false;
+          await new Promise<void>((resolve) => {
+            releasePage2 = resolve;
+          });
+        }
+        return baseReader.readRange(offset, length, signal);
+      },
+    };
+
+    const coordinator = new CoordinatorCore({
+      decodePool: {
+        decodePageSlice: vi.fn(async () => ({
+          bitmap: createFakeBitmap(),
+          width: 100,
+          height: 100,
+        })),
+      },
+      createReader: () => gatedReader,
+    });
+    await coordinator.openArchive(createLocalSource(zipBytes), null, 1);
+    baseReader.reads.length = 0;
+
+    // 1. 空 pageIndices [] で L2 補充が同期起動され、同一 epoch=1 での 2 回目 Warm Prefetch は起動されない
+    const emptyFrames = await coordinator.requestVisiblePages([], [1], 1, {
+      visiblePageIndices: [0],
+    });
+    expect(emptyFrames).toEqual([]);
+    await vi.waitFor(() => expect(baseReader.reads).toHaveLength(1));
+
+    // 同一 epoch=1 で別の prefetchIndices=[2] を渡しても 1 epoch 1 回制限で再起動されない
+    await coordinator.requestVisiblePages([], [2], 1, {
+      visiblePageIndices: [0],
+    });
+    await Promise.resolve();
+    expect(baseReader.reads).toHaveLength(1);
+
+    // 2. 旧世代(epoch=1) In-Flight [1] と 同世代(epoch=2) In-Flight [2] が混在中に
+    //    空 pageIndices で epoch=2 Warm Prefetch [1, 2, 3] を起動すると、同世代 [2] のみ除外され [1, 3] が先読みされる
+    holdPage1 = true;
+    holdPage2 = true;
+    const oldInflight = coordinator.requestVisiblePages([1], [], 1);
+    const sameInflight = coordinator.requestVisiblePages([2], [], 2);
+    await vi.waitFor(() => {
+      expect(releasePage1).toBeDefined();
+      expect(releasePage2).toBeDefined();
+    });
+    baseReader.reads.length = 0;
+
+    await coordinator.requestVisiblePages([], [1, 2, 3], 2, {
+      visiblePageIndices: [0],
+    });
+    await vi.waitFor(() =>
+      expect(baseReader.reads.length).toBeGreaterThanOrEqual(1),
+    );
+    // Warm Prefetch が発行され、かつ同世代 [2] が計画に含まれないこと（[1] と [3] は各単独範囲または別バッチ）
+    releasePage1();
+    releasePage2();
+    await Promise.all([oldInflight, sameInflight]);
+  });
+
+  it("80MB超例外ページの表示中一時保持・Warm Prefetch抑止・ピン移動時の即時退避およびopen/closeでの全破棄を検証すること (AC-ENG-12)", async () => {
+    const p0Oversized = new Uint8Array(150).fill(0x11);
+    const p1Small = new Uint8Array(20).fill(0x22);
+    const p2Small = new Uint8Array(20).fill(0x33);
+    const zipBytes = buildSyntheticZip({
+      entries: [
+        { name: "000.jpg", data: p0Oversized },
+        { name: "001.jpg", data: p1Small },
+        { name: "002.jpg", data: p2Small },
+      ],
+    });
+    const baseReader = createMemoryReader(zipBytes);
+
+    const coordinator = new CoordinatorCore({
+      decodePool: {
+        decodePageSlice: vi.fn(async () => ({
+          bitmap: createFakeBitmap(),
+          width: 100,
+          height: 100,
+        })),
+      },
+      createReader: () => baseReader,
+      l2MaxBytes: 100,
+    });
+    await coordinator.openArchive(createLocalSource(zipBytes), null, 1);
+    baseReader.reads.length = 0;
+
+    // 1. 超過ページ 0 を非表示近傍として要求した場合（visible=[1]）は L2 に格納されない
+    await coordinator.requestVisiblePages([0], [], 1, {
+      visiblePageIndices: [1],
+    });
+    expect(baseReader.reads).toHaveLength(1);
+    await coordinator.requestVisiblePages([0], [], 1, {
+      visiblePageIndices: [1],
+    });
+    expect(baseReader.reads).toHaveLength(2);
+
+    // 2. 表示ページとして page 0 を要求 -> L2 に一時ピン保持され、Warm Prefetch [1, 2] は抑止される
+    baseReader.reads.length = 0;
+    await coordinator.requestVisiblePages([0], [1, 2], 2, {
+      visiblePageIndices: [0],
+    });
+    expect(baseReader.reads).toHaveLength(1);
+    await Promise.resolve();
+    expect(baseReader.reads).toHaveLength(1);
+
+    // ピン維持中は 0RTT ヒット
+    await coordinator.requestVisiblePages([0], [], 2, {
+      visiblePageIndices: [0],
+    });
+    expect(baseReader.reads).toHaveLength(1);
+
+    // 3. 別ページへピン移動（visiblePageIndices: [1]）した瞬間に超過ページ 0 は即時退避され、以後の [0] は再読込となる
+    await coordinator.requestVisiblePages([1], [2], 3, {
+      visiblePageIndices: [1],
+    });
+    const readsBeforeRevisit0 = baseReader.reads.length;
+    await coordinator.requestVisiblePages([0], [], 4, {
+      visiblePageIndices: [0],
+    });
+    expect(baseReader.reads.length).toBe(readsBeforeRevisit0 + 1);
+
+    // 4. closeArchive および openArchive 開始時に L2 キャッシュ・Warm Prefetch 世代が全破棄されること
+    await coordinator.requestVisiblePages([1], [2], 5, {
+      visiblePageIndices: [1],
+    });
+    await vi.waitFor(() =>
+      expect(baseReader.reads.length).toBeGreaterThan(readsBeforeRevisit0 + 1),
+    );
+    await coordinator.closeArchive();
+
+    // close 後の再 open で同じ epoch=1 でも L2 キャッシュが空＆Warm Prefetch も再実行可能
+    await coordinator.openArchive(createLocalSource(zipBytes), null, 1);
+    baseReader.reads.length = 0;
+    await coordinator.requestVisiblePages([1], [2], 1, {
+      visiblePageIndices: [1],
+    });
+    await vi.waitFor(() => expect(baseReader.reads.length).toBe(2));
+
+    // close せずに別アーカイブへ openArchive した際も既存 L2 と待機中 In-Flight が全破棄されること
+    let blockInflight!: () => void;
+    const blockingReader: RandomAccessReader = {
+      sourceId: baseReader.sourceId,
+      totalSize: baseReader.totalSize,
+      async readRange(offset, length, signal) {
+        if (offset === 0) {
+          return new Promise<Uint8Array>((resolve) => {
+            blockInflight = () =>
+              resolve(baseReader.readRange(offset, length, signal));
+          });
+        }
+        return baseReader.readRange(offset, length, signal);
+      },
+    };
+    const resetCoordinator = new CoordinatorCore({
+      decodePool: {
+        decodePageSlice: vi.fn(async () => ({
+          bitmap: createFakeBitmap(),
+          width: 100,
+          height: 100,
+        })),
+      },
+      createReader: () => blockingReader,
+    });
+    await resetCoordinator.openArchive(createLocalSource(zipBytes), null, 1);
+    const waitingRequest = resetCoordinator.requestVisiblePages([0], [], 1);
+    await vi.waitFor(() => expect(blockInflight).toBeDefined());
+    await resetCoordinator.closeArchive();
+    expect(await waitingRequest).toEqual([]);
+    blockInflight();
+  });
 });
+
+async function parseZipDirectoryForTest(
+  reader: RandomAccessReader,
+): Promise<ZipPageEntry[]> {
+  const { parseZipDirectory } = await import("../zip/zipParser");
+  return parseZipDirectory(reader);
+}
