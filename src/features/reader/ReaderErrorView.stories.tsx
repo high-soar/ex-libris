@@ -39,3 +39,27 @@ export const PageDecodeError: Story = {
     errorCode: "DECODE_FAILED",
   },
 };
+
+/** 見開き左スロットのみデコード失敗時の半面エラーカード（p.3） */
+export const PageDecodeErrorLeftSlot: Story = {
+  name: "個別ページデコードエラー（左スロット・ページ番号付き）",
+  args: {
+    mode: "page",
+    slotPosition: "left",
+    pageNumber: 3,
+    message: "ページの画像デコードに失敗しました",
+    errorCode: "DECODE_FAILED",
+  },
+};
+
+/** 見開き右スロットのみデコード失敗時の半面エラーカード（p.2） */
+export const PageDecodeErrorRightSlot: Story = {
+  name: "個別ページデコードエラー（右スロット・ページ番号付き）",
+  args: {
+    mode: "page",
+    slotPosition: "right",
+    pageNumber: 2,
+    message: "ファイルの読み込みに失敗しました",
+    errorCode: "READ_ERROR",
+  },
+};

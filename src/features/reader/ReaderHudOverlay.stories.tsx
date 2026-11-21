@@ -22,6 +22,9 @@ const meta: Meta<typeof ReaderHudOverlay> = {
     onClose: () => {},
     onNextPage: () => {},
     onPrevPage: () => {},
+    onCycleSpreadMode: () => {},
+    onToggleSpreadPageOffset: () => {},
+    onToggleReadingDirection: () => {},
   },
 };
 
@@ -57,6 +60,52 @@ export const OpenLastPage: Story = {
     isOpen: true,
     currentPageIndex: 23,
     totalPages: 24,
+  },
+};
+
+/** 右開き・見開き表示時の2段オーバーレイ HUD（auto + 見開き・2-3 / 24 表記） */
+export const OpenSpreadRtl: Story = {
+  name: "HUD表示（右開き・見開き）",
+  args: {
+    isOpen: true,
+    currentPageIndex: 1,
+    maxDisplayedPageIndex: 2,
+    totalPages: 24,
+    pageIndicatorText: "2-3 / 24",
+    readingDirection: "rtl",
+    spreadMode: "auto",
+    effectiveSpreadMode: "spread",
+    spreadPageOffset: 0,
+  },
+};
+
+/** 左開き・見開き・1ページずらしON時の2段オーバーレイ HUD（ボタン順反転・ハイライト状態） */
+export const OpenSpreadLtrOffsetOn: Story = {
+  name: "HUD表示（左開き・見開き・1ページずらしON）",
+  args: {
+    isOpen: true,
+    currentPageIndex: 2,
+    maxDisplayedPageIndex: 3,
+    totalPages: 24,
+    pageIndicatorText: "3-4 / 24",
+    readingDirection: "ltr",
+    spreadMode: "spread",
+    effectiveSpreadMode: "spread",
+    spreadPageOffset: 1,
+  },
+};
+
+/** 左開き・単ページ固定時の2段オーバーレイ HUD（1ページずらし無効状態） */
+export const OpenForcedSingleLtr: Story = {
+  name: "HUD表示（左開き・単ページ固定）",
+  args: {
+    isOpen: true,
+    currentPageIndex: 0,
+    totalPages: 24,
+    readingDirection: "ltr",
+    spreadMode: "single",
+    effectiveSpreadMode: "single",
+    spreadPageOffset: 0,
   },
 };
 
