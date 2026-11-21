@@ -9,7 +9,12 @@ import {
   createMemoryReader,
   createVirtualOffsetReader,
 } from "./__fixtures__/zipBuilder";
-import { parseZipDirectory, readCompressedPageSlice } from "./zipParser";
+import {
+  computeEntryFetchSpan,
+  extractCompressedSliceFromBuffer,
+  parseZipDirectory,
+  readCompressedPageSlice,
+} from "./zipParser";
 
 describe("zipParser", () => {
   it("末尾128KBから1RTTでEOCDとCDHを解析しStore・Deflateページ情報を返すこと (AC-ENG-02)", async () => {
@@ -1221,5 +1226,78 @@ describe("zipParser", () => {
     await expect(
       parseZipDirectory(createMemoryReader(junkDupZip)),
     ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+  });
+
+  it("computeEntryFetchSpanとextractCompressedSliceFromBufferが直接呼び出しでLFH計算・1RTT/2RTT抽出・全境界エラーを処理できること (AC-ENG-05, AC-ENG-10, AC-ENG-13)", async () => {
+    const entryUnclamped: ZipPageEntry = {
+      pageIndex: 0,
+      entryName: "001.jpg",
+      entryNameByteLength: 7,
+      compressionMethod: 0,
+      compressedSize: 100,
+      uncompressedSize: 100,
+      localHeaderOffset: 0,
+      physicalEnd: 5_000,
+      crc32: 0,
+    };
+    expect(computeEntryFetchSpan(entryUnclamped)).toBe(
+      30 + 7 + 100 + ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES,
+    );
+
+    const entryClamped: ZipPageEntry = {
+      ...entryUnclamped,
+      physicalEnd: 500,
+    };
+    expect(computeEntryFetchSpan(entryClamped)).toBe(500);
+
+    const dummyReader = createMemoryReader(new Uint8Array(64));
+    await expect(
+      extractCompressedSliceFromBuffer(
+        dummyReader,
+        { ...entryUnclamped, localHeaderOffset: -1 },
+        new Uint8Array(64),
+      ),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    await expect(
+      extractCompressedSliceFromBuffer(
+        dummyReader,
+        { ...entryUnclamped, physicalEnd: 29 },
+        new Uint8Array(64),
+      ),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    await expect(
+      extractCompressedSliceFromBuffer(
+        dummyReader,
+        entryUnclamped,
+        new Uint8Array(29),
+      ),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+
+    // 結合バッファ（非ゼロオフセット subarray）からの 1 RTT 抽出
+    const payload0 = new Uint8Array([1, 2, 3, 4]);
+    const payload1 = new Uint8Array([5, 6, 7, 8]);
+    const zipBytes = buildSyntheticZip({
+      entries: [
+        { name: "001.jpg", data: payload0 },
+        { name: "002.jpg", data: payload1 },
+      ],
+    });
+    const memoryReader = createMemoryReader(zipBytes);
+    const parsed = await parseZipDirectory(memoryReader);
+    memoryReader.reads.length = 0;
+
+    const sub = zipBytes.subarray(
+      parsed[1].localHeaderOffset,
+      parsed[1].physicalEnd,
+    );
+    const extracted = await extractCompressedSliceFromBuffer(
+      memoryReader,
+      parsed[1],
+      sub,
+    );
+    expect(extracted).toEqual(payload1);
+    expect(memoryReader.reads).toHaveLength(0);
   });
 });

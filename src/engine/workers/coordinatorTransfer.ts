@@ -8,18 +8,37 @@ export interface PreparedDecodeTransfer {
   readonly transferables: [ArrayBuffer];
 }
 
+export interface PrepareDecodeTransferOptions {
+  readonly shared?: boolean;
+}
+
+const sharedBuffers = new WeakSet<ArrayBuffer>();
+
+export function markSharedBuffer(buffer: ArrayBufferLike): void {
+  if (buffer instanceof ArrayBuffer) {
+    sharedBuffers.add(buffer);
+  }
+}
+
+export function isSharedBuffer(buffer: ArrayBufferLike): boolean {
+  return buffer instanceof ArrayBuffer && sharedBuffers.has(buffer);
+}
+
 /**
  * 圧縮画像スライスを Decode Worker へ Zero-Copy 転送するための `Transferable` を準備する。
  *
- * `byteOffset === 0 && byteLength === buffer.byteLength && buffer instanceof ArrayBuffer` の場合は
- * 元 `ArrayBuffer` をそのまま `Comlink.transfer` 対象としてデタッチするため、
- * 将来 `v0.1` で `L2ByteCache` 等の共有キャッシュ由来スライスを渡す際は
- * 事前にコピー（または共有フラグ導入）して元キャッシュを破壊しないこと。
+ * `options?.shared === true` または `isSharedBuffer(compressedData.buffer) === true` の場合、
+ * あるいは部分ビュー・非 `ArrayBuffer` の場合は元バッファのデタッチ破壊を防ぐため
+ * `slice()` で独立 `ArrayBuffer` を複製して返す。
  */
 export function prepareDecodeTransfer(
   compressedData: Uint8Array,
+  options?: PrepareDecodeTransferOptions,
 ): PreparedDecodeTransfer {
+  const isShared =
+    options?.shared === true || isSharedBuffer(compressedData.buffer);
   if (
+    !isShared &&
     compressedData.byteOffset === 0 &&
     compressedData.byteLength === compressedData.buffer.byteLength &&
     compressedData.buffer instanceof ArrayBuffer

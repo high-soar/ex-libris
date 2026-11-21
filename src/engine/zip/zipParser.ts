@@ -697,11 +697,7 @@ export async function parseZipDirectory(
   return buildLogicalPageEntries(parsed, eocd.cdOffset);
 }
 
-export async function readCompressedPageSlice(
-  reader: RandomAccessReader,
-  entry: ZipPageEntry,
-  signal?: AbortSignal,
-): Promise<Uint8Array> {
+function assertValidLfhSpan(entry: ZipPageEntry): number {
   const maxSpan = entry.physicalEnd - entry.localHeaderOffset;
   if (entry.localHeaderOffset < 0 || maxSpan < 30) {
     throw new ZipArchiveError(
@@ -709,19 +705,27 @@ export async function readCompressedPageSlice(
       `LFHの物理範囲が不正です: ${entry.entryName}`,
     );
   }
+  return maxSpan;
+}
 
-  const fetchLength = Math.min(
+export function computeEntryFetchSpan(entry: ZipPageEntry): number {
+  const maxSpan = entry.physicalEnd - entry.localHeaderOffset;
+  return Math.min(
     maxSpan,
     30 +
       entry.entryNameByteLength +
       entry.compressedSize +
       ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES,
   );
-  const initialBuf = await reader.readRange(
-    entry.localHeaderOffset,
-    fetchLength,
-    signal,
-  );
+}
+
+export async function extractCompressedSliceFromBuffer(
+  reader: RandomAccessReader,
+  entry: ZipPageEntry,
+  initialBuf: Uint8Array,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  const maxSpan = assertValidLfhSpan(entry);
 
   if (initialBuf.byteLength < 30) {
     throw new ZipArchiveError(
@@ -788,4 +792,21 @@ export async function readCompressedPageSlice(
   combined.set(headSlice, 0);
   combined.set(tailSlice, headSlice.byteLength);
   return combined;
+}
+
+export async function readCompressedPageSlice(
+  reader: RandomAccessReader,
+  entry: ZipPageEntry,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  assertValidLfhSpan(entry);
+
+  const fetchLength = computeEntryFetchSpan(entry);
+  const initialBuf = await reader.readRange(
+    entry.localHeaderOffset,
+    fetchLength,
+    signal,
+  );
+
+  return extractCompressedSliceFromBuffer(reader, entry, initialBuf, signal);
 }
