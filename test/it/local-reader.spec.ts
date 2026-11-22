@@ -1643,6 +1643,13 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     const gammaLightShot = await canvas.screenshot();
     const lightenedThin = readPngPixelAtRatio(gammaLightShot, 0.34, 0.75);
     expect(lightenedThin.g).toBeGreaterThan(150);
+    const preSharpEdge = readPngHorizontalContrastRange(
+      gammaLightShot,
+      0.75,
+      0.56,
+      0.76,
+    );
+    expect(preSharpEdge.contrast).toBeGreaterThan(baseEdge.contrast);
 
     // 4. sharpness -> 1.00 (右下階段エッジ周辺の最大・最小コントラスト差がオーバーシュートにより拡大)
     await tapCenter();
@@ -1662,7 +1669,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
       0.56,
       0.76,
     );
-    expect(sharpEdge.contrast).toBeGreaterThan(baseEdge.contrast + 50);
+    expect(sharpEdge.contrast).toBeGreaterThan(preSharpEdge.contrast + 50);
 
     // 5. 「リセット」で初期ニュートラル値と元 RGB へ復帰
     await tapCenter();
