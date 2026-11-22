@@ -46,8 +46,41 @@ const SLIDER_CONFIGS: readonly SliderConfig[] = [
   },
 ];
 
+const SECONDARY_BUTTON_CLASS =
+  "touch-manipulation rounded-lg border border-slate-700 bg-slate-800 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700 sm:text-sm";
+
 function stopEventPropagation(event: SyntheticEvent<HTMLElement>): void {
   event.stopPropagation();
+}
+
+function SaveStatusMessage({
+  saveStatus,
+}: {
+  readonly saveStatus: ShaderSaveStatus;
+}): ReactNode {
+  if (saveStatus === "saved") {
+    return (
+      <p
+        data-testid="shader-save-status"
+        role="status"
+        className="text-xs font-medium text-emerald-400"
+      >
+        デフォルト設定を保存しました
+      </p>
+    );
+  }
+  if (saveStatus === "error") {
+    return (
+      <p
+        data-testid="shader-save-status"
+        role="alert"
+        className="text-xs font-medium text-rose-400"
+      >
+        デフォルト設定の保存に失敗しました
+      </p>
+    );
+  }
+  return null;
 }
 
 export function ReaderShaderSheet({
@@ -93,7 +126,7 @@ export function ReaderShaderSheet({
         style={{
           paddingBottom: "calc(1rem + env(safe-area-inset-bottom, 0px))",
         }}
-        className="absolute inset-x-0 bottom-0 z-40 mx-auto w-full max-w-xl rounded-t-2xl border border-b-0 border-slate-700/80 bg-slate-950/95 px-4 pt-4 text-slate-100 shadow-2xl backdrop-blur-md sm:px-6"
+        className="absolute inset-x-0 bottom-0 z-40 mx-auto max-h-[80vh] w-full max-w-xl overflow-y-auto rounded-t-2xl border border-b-0 border-slate-700/80 bg-slate-950/95 px-4 pt-4 text-slate-100 shadow-2xl backdrop-blur-md sm:px-6"
       >
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-sm font-bold text-white sm:text-base">
@@ -103,7 +136,7 @@ export function ReaderShaderSheet({
             type="button"
             data-testid="shader-sheet-close-button"
             onClick={onClose}
-            className="touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700 sm:text-sm"
+            className={`${SECONDARY_BUTTON_CLASS} px-3 py-1`}
           >
             閉じる
           </button>
@@ -156,31 +189,14 @@ export function ReaderShaderSheet({
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/80 pt-3">
           <div className="min-h-4 flex-1">
-            {saveStatus === "saved" && (
-              <p
-                data-testid="shader-save-status"
-                role="status"
-                className="text-xs font-medium text-emerald-400"
-              >
-                デフォルト設定を保存しました
-              </p>
-            )}
-            {saveStatus === "error" && (
-              <p
-                data-testid="shader-save-status"
-                role="alert"
-                className="text-xs font-medium text-rose-400"
-              >
-                デフォルト設定の保存に失敗しました
-              </p>
-            )}
+            <SaveStatusMessage saveStatus={saveStatus} />
           </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
               data-testid="shader-reset-button"
               onClick={onReset}
-              className="touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700 sm:text-sm"
+              className={`${SECONDARY_BUTTON_CLASS} px-3 py-1.5`}
             >
               リセット
             </button>
