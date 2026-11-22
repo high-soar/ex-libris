@@ -1,8 +1,13 @@
 import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
 import type { DecodedPageFrame } from "../engine/types";
 import type { ReadyPageFrame } from "./l1PageCache";
+import { DEFAULT_SHADER_CORRECTION_PARAMS } from "./shaderParams";
 import { FRAGMENT_SHADER_SOURCE, VERTEX_SHADER_SOURCE } from "./shaders";
-import type { RenderSlotFrame, ViewportSlot } from "./types";
+import type {
+  RenderSlotFrame,
+  ShaderCorrectionParams,
+  ViewportSlot,
+} from "./types";
 
 export type BitmapCropper = (
   bitmap: ImageBitmap,
@@ -417,6 +422,14 @@ export class WebGLRendererCore {
 
   getMaxTextureSize(): number {
     return this.maxTextureSize;
+  }
+
+  getShaderParams(): ShaderCorrectionParams {
+    return { ...DEFAULT_SHADER_CORRECTION_PARAMS };
+  }
+
+  setShaderParams(_params: ShaderCorrectionParams): boolean {
+    return false;
   }
 
   notifyContextLost(): void {

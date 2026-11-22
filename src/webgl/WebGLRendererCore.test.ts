@@ -7,7 +7,8 @@ import {
   clampViewportDimensions,
   computeAspectFitScale,
 } from "./WebGLRendererCore";
-import type { RenderSlotFrame } from "./types";
+import { DEFAULT_SHADER_CORRECTION_PARAMS } from "./shaderParams";
+import type { RenderSlotFrame, ShaderCorrectionParams } from "./types";
 
 function createFakeBitmap(width = 800, height = 1200): ImageBitmap {
   return {
@@ -231,6 +232,7 @@ function createMockWebGL2Context(overrides: MockGLOverrides = {}) {
     texParameteri: vi.fn(),
     useProgram: vi.fn(),
     uniform2f: vi.fn(),
+    uniform1f: vi.fn(),
     uniform1i: vi.fn(),
     drawArrays: vi.fn(),
   };
@@ -398,6 +400,10 @@ describe("WebGLRendererCore", () => {
       { uniformLocations: { u_scale: null } },
       { uniformLocations: { u_offset: null } },
       { uniformLocations: { u_texture: null } },
+      { uniformLocations: { u_sharpness: null } },
+      { uniformLocations: { u_whitePoint: null } },
+      { uniformLocations: { u_blackPoint: null } },
+      { uniformLocations: { u_gamma: null } },
     ];
     for (const badOverrides of badLocationCases) {
       const { gl: glLoc, mocks: mLoc } = createMockWebGL2Context(badOverrides);
@@ -1327,5 +1333,157 @@ describe("WebGLRendererCore", () => {
     renderer.renderFrame(createReadyFrame(0));
     renderer.dispose();
     expect(mocks.deleteProgram).not.toHaveBeenCalled();
+  });
+
+  it("setShaderParamsで正規化更新と同一値スキップを行い、renderSlotsでuniform1fバインドおよびcontextlost/restored跨ぎ保持を行うこと (AC-GL-05, AC-GL-09)", () => {
+    const { gl, mocks } = createMockWebGL2Context();
+    const renderer = new WebGLRendererCore(gl);
+
+    const initial = renderer.getShaderParams();
+    expect(initial).toEqual(DEFAULT_SHADER_CORRECTION_PARAMS);
+    // getShaderParams は外部変更から内部状態を保護するコピーを返すこと
+    (initial as { sharpness: number }).sharpness = 0.9;
+    expect(renderer.getShaderParams()).toEqual(
+      DEFAULT_SHADER_CORRECTION_PARAMS,
+    );
+
+    // 同一値（正規化後に一致する値を含む）は false を返すこと
+    expect(renderer.setShaderParams(DEFAULT_SHADER_CORRECTION_PARAMS)).toBe(
+      false,
+    );
+    expect(
+      renderer.setShaderParams({
+        sharpness: -0.01,
+        whitePoint: 1.5,
+        blackPoint: -0,
+        gamma: 1.001,
+      }),
+    ).toBe(false);
+
+    // 各項目を個別に変化させた場合のみ true を返すこと
+    expect(
+      renderer.setShaderParams({
+        ...DEFAULT_SHADER_CORRECTION_PARAMS,
+        sharpness: 0.354,
+      }),
+    ).toBe(true);
+    expect(renderer.getShaderParams()).toEqual({
+      sharpness: 0.35,
+      whitePoint: 1,
+      blackPoint: 0,
+      gamma: 1,
+    });
+    expect(
+      renderer.setShaderParams({
+        sharpness: 0.35,
+        whitePoint: 0.92,
+        blackPoint: 0,
+        gamma: 1,
+      }),
+    ).toBe(true);
+    expect(
+      renderer.setShaderParams({
+        sharpness: 0.35,
+        whitePoint: 0.92,
+        blackPoint: 0.12,
+        gamma: 1,
+      }),
+    ).toBe(true);
+    expect(
+      renderer.setShaderParams({
+        sharpness: 0.35,
+        whitePoint: 0.92,
+        blackPoint: 0.12,
+        gamma: 0.85,
+      }),
+    ).toBe(true);
+
+    const expectedParams: ShaderCorrectionParams = {
+      sharpness: 0.35,
+      whitePoint: 0.92,
+      blackPoint: 0.12,
+      gamma: 0.85,
+    };
+    expect(renderer.getShaderParams()).toEqual(expectedParams);
+
+    // renderSlots 実行時に 4 Uniform が uniform1f でバインドされること
+    const bitmap = createFakeBitmap(800, 1200);
+    const frame = createReadyFrame(0, bitmap);
+    renderer.renderFrame(frame);
+
+    expect(mocks.uniform1f).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "u_sharpness" }),
+      0.35,
+    );
+    expect(mocks.uniform1f).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "u_whitePoint" }),
+      0.92,
+    );
+    expect(mocks.uniform1f).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "u_blackPoint" }),
+      0.12,
+    );
+    expect(mocks.uniform1f).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "u_gamma" }),
+      0.85,
+    );
+
+    // パラメータ変更後の再描画ではテクスチャ再転送なしで Uniform のみ更新されること
+    mocks.texImage2D.mockClear();
+    mocks.generateMipmap.mockClear();
+    mocks.uniform1f.mockClear();
+    expect(
+      renderer.setShaderParams({
+        sharpness: 0.5,
+        whitePoint: 0.9,
+        blackPoint: 0.1,
+        gamma: 1.2,
+      }),
+    ).toBe(true);
+    renderer.renderFrame(frame);
+    expect(mocks.texImage2D).not.toHaveBeenCalled();
+    expect(mocks.generateMipmap).not.toHaveBeenCalled();
+    expect(mocks.uniform1f).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "u_sharpness" }),
+      0.5,
+    );
+    expect(mocks.uniform1f).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "u_gamma" }),
+      1.2,
+    );
+
+    // notifyContextLost / reinitializeAfterContextLost を跨いでも shaderParams が維持されること
+    renderer.notifyContextLost();
+    expect(renderer.getShaderParams()).toEqual({
+      sharpness: 0.5,
+      whitePoint: 0.9,
+      blackPoint: 0.1,
+      gamma: 1.2,
+    });
+    mocks.uniform1f.mockClear();
+    renderer.reinitializeAfterContextLost();
+    expect(renderer.getShaderParams()).toEqual({
+      sharpness: 0.5,
+      whitePoint: 0.9,
+      blackPoint: 0.1,
+      gamma: 1.2,
+    });
+    renderer.renderFrame(frame);
+    expect(mocks.uniform1f).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "u_sharpness" }),
+      0.5,
+    );
+    expect(mocks.uniform1f).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "u_whitePoint" }),
+      0.9,
+    );
+    expect(mocks.uniform1f).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "u_blackPoint" }),
+      0.1,
+    );
+    expect(mocks.uniform1f).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "u_gamma" }),
+      1.2,
+    );
   });
 });
