@@ -3,6 +3,7 @@ import { createElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { MockAppBridge } from "../bridges/app/mockAppBridge";
 import type { CoordinatorWorkerApi } from "../engine/types";
+import { DEFAULT_SHADER_CORRECTION_PARAMS } from "../webgl/shaderParams";
 import {
   ServiceContext,
   type ServiceContextValue,
@@ -27,6 +28,19 @@ describe("serviceContext", () => {
         get: vi.fn(async () => null),
         put: vi.fn(async () => {}),
         delete: vi.fn(async () => {}),
+      },
+      readingProgressRepo: {
+        get: vi.fn(async () => null),
+        put: vi.fn(async () => {}),
+        listRecentLocal: vi.fn(async () => []),
+        delete: vi.fn(async () => {}),
+        clearLocal: vi.fn(async () => {}),
+      },
+      readerSettingsRepo: {
+        getShaderDefaults: vi.fn(async () => ({
+          ...DEFAULT_SHADER_CORRECTION_PARAMS,
+        })),
+        saveShaderDefaults: vi.fn(async (params) => ({ ...params })),
       },
     };
 
