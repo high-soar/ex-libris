@@ -46,13 +46,14 @@ related_tests:
 
 WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React DOM から分離し、Vitest 上でモック `WebGL2RenderingContext` と `FakeImageBitmap`（`close()` スパイ）を用いて C0/C1/Functions/Lines 100% で検証します。
 
-| モジュールパス                   | 責務                                                                                                                                                           |
-| :------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/webgl/types.ts`             | `ReadingDirection`, `SpreadMode`, `ViewportSlotLayout`, `ShaderCorrectionParams`, `DEFAULT_SHADER_CORRECTION_PARAMS`, `normalizeShaderCorrectionParams` 共有型 |
-| `src/webgl/l1PageCache.ts`       | `L1_MAX_PAGES = 5` 上限の L1 `ImageBitmap` ＋ ページ状態（`ready` / `error`）管理と即時 `close()`                                                              |
-| `src/webgl/shaders.ts`           | 生 WebGL2 頂点シェーダー（`u_scale` + `u_offset`）・1パス画質補正フラグメントシェーダー（画面微分 5タップ USM ＋ 白黒レベル ＋ 標準ガンマ）GLSL ソース定数     |
-| `src/webgl/WebGLRendererCore.ts` | WebGL2 パイプライン本体（`MAX_TEXTURE_SIZE` 分割/リサイズ、Mipmap 転送、4補正 Uniform バインド、単頁/2スロット背表紙密着フィット描画、復帰解放）               |
-| `src/webgl/ReaderCanvas.tsx`     | `<canvas>` マウント、`ResizeObserver` DPR 追従、`shaderParams` 即時再描画、非同期テクスチャ準備再描画、`webglcontextlost`/`restored` 配線、決定論的 DOM 属性   |
+| モジュールパス                   | 責務                                                                                                                                                              |
+| :------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/webgl/types.ts`             | `ReadingDirection`, `SpreadMode`, `EffectiveSpreadMode`, `SpreadPageOffset`, `ViewportSlotLayout`, `RenderSlotFrame`, `ShaderCorrectionParams` 等の純粋共有型定義 |
+| `src/webgl/shaderParams.ts`      | `DEFAULT_SHADER_CORRECTION_PARAMS`, `SHADER_PARAM_RANGES`, `normalizeShaderCorrectionParams`, `isDefaultShaderParams`, `formatShaderParamsAttribute` 実行時純関数 |
+| `src/webgl/l1PageCache.ts`       | `L1_MAX_PAGES = 5` 上限の L1 `ImageBitmap` ＋ ページ状態（`ready` / `error`）管理と即時 `close()`                                                                 |
+| `src/webgl/shaders.ts`           | 生 WebGL2 頂点シェーダー（`u_scale` + `u_offset`）・1パス画質補正フラグメントシェーダー（画面微分 5タップ USM ＋ 白黒レベル ＋ 標準ガンマ）GLSL ソース定数        |
+| `src/webgl/WebGLRendererCore.ts` | WebGL2 パイプライン本体（`MAX_TEXTURE_SIZE` 分割/リサイズ、Mipmap 転送、4補正 Uniform バインド、単頁/2スロット背表紙密着フィット描画、復帰解放）                  |
+| `src/webgl/ReaderCanvas.tsx`     | `<canvas>` マウント、`ResizeObserver` DPR 追従、`shaderParams` 状態常時同期＆再描画、非同期テクスチャ準備再描画、`webglcontextlost`/`restored` 配線、DOM 属性     |
 
 ---
 
@@ -119,14 +120,14 @@ WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React D
 
 ### 3.4 1 パス自炊画質補正シェーダー仕様（`ShaderCorrectionParams`）
 
-1. **パラメータ許容範囲・初期値・正規化（`src/webgl/types.ts`）**:
+1. **パラメータ許容範囲・初期値・正規化（`src/webgl/shaderParams.ts`）**:
    - `DEFAULT_SHADER_CORRECTION_PARAMS = { sharpness: 0, whitePoint: 1, blackPoint: 0, gamma: 1 }`
    - 各項目の許容範囲・刻み幅（`SHADER_PARAM_RANGES`）：
      - `sharpness`: `0.00 〜 1.00`（step `0.05`）
      - `whitePoint`: `0.80 〜 1.00`（step `0.01`）
      - `blackPoint`: `0.00 〜 0.25`（step `0.01`）
      - `gamma`: `0.60 〜 1.60`（step `0.05`）
-   - `normalizeShaderCorrectionParams(raw: unknown)` はプレーンオブジェクト上の自前プロパティ（`Object.prototype.hasOwnProperty.call`）のみを参照し、有限数値を許容範囲へクランプ・小数第2位丸め（`Math.round(clamped * 100) / 100`）して返す（欠落・不正値は項目単位で初期値へフォールバック）。
+   - `normalizeShaderCorrectionParams(raw: unknown)` はプレーンオブジェクト（`typeof raw === "object" && raw !== null && !Array.isArray(raw)`）上の自前プロパティ（`Object.prototype.hasOwnProperty.call`）のみを参照し、有限数値を許容範囲へクランプ・小数第2位丸め（`Math.round(clamped * 100) / 100`）して返す（欠落・不正値は項目単位で初期値へフォールバック）。
 2. **フラグメントシェーダー演算式（`src/webgl/shaders.ts`）**:
    - `#version 300 es` / `precision highp float;` 上で、`u_texture` に加え `u_sharpness`, `u_whitePoint`, `u_blackPoint`, `u_gamma` の 4 つの `float` Uniform を受け取る（`initPipeline()` で全 Uniform ロケーションが非 `null` であることを検証し、欠落時は `WebGLInitError` を送出）。
    - **Step 1（画面空間偏微分 5タップ軽量アンシャープマスク）**:
@@ -145,7 +146,7 @@ WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React D
 ### 3.5 `webglcontextlost` / `webglcontextrestored` 耐性
 
 1. `<ReaderCanvas>` は `canvas` 要素で `webglcontextlost` リスナーを登録し、必ず **`event.preventDefault()`** を実行してコンテキスト復元を許可した上で、即座に **`renderer.notifyContextLost()`**（`contextGeneration` インクリメント・進行中非同期分割無効化・ロスト済み `textures`／`failedOversizedBitmaps` クリア）を呼び出してロスト〜リストア間の非同期完了レースを遮断し、`diagnosticLogger.warn("webgl2", ...)` へ記録する。この際、インスタンス上の `shaderParams` は破棄せず保持する。
-2. `webglcontextrestored` 発火時、`WebGLRendererCore.reinitializeAfterContextLost()` を呼び出して `contextGeneration` を進め、シェーダープログラム・VAO/VBO・Uniform ロケーション・`MAX_TEXTURE_SIZE` を再構築した上で、**保持中の `shaderParams` と `L1PageCache` に残存している `ImageBitmap` 群から現在スロットのテクスチャ・Mipmap・画質補正描画（必要時は `MAX_TEXTURE_SIZE` ガード含む）を自動再生成して再描画** する。
+2. `webglcontextrestored` 発火時、`WebGLRendererCore.reinitializeAfterContextLost()` を呼び出して `contextGeneration` を進め、シェーダープログラム・VAO/VBO・Uniform ロケーション・`MAX_TEXTURE_SIZE` を再構築した上で、**保持中の最新 `shaderParams` と `L1PageCache` に残存している `ImageBitmap` 群から現在スロットのテクスチャ・Mipmap・画質補正描画（必要時は `MAX_TEXTURE_SIZE` ガード含む）を自動再生成して再描画** する。
 3. WebGL2 コンテキスト自体が取得不可、またはシェーダーのコンパイル/リンクに失敗した場合は、致命的エラーコールバック（`WEBGL_UNSUPPORTED` / `WEBGL_INIT_FAILED`）を発火する。
 
 ---
@@ -159,8 +160,8 @@ WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React D
   - `onRendererReady?: (handle: ReaderCanvasHandle | null) => void`
   - `onFatalError?: (code: WebGLFatalErrorCode, message: string) => void`
   - `getWebGL2Context?: (canvas: HTMLCanvasElement) => WebGL2RenderingContext | null`
-- **`shaderParams` 更新および非同期分割準備時の自動再描画**:
-  - `shaderParams` Prop が変化した際、`!isContextLostRef.current` であれば `renderer.setShaderParams(...)` を反映して即座に `applySlots` で再描画する。
+- **`shaderParams` 常時状態同期および非同期分割準備時の自動再描画**:
+  - マウント初期化時、および `shaderParams` Prop が変化した際は、**`isContextLostRef.current` が `true` の間であっても必ず `renderer.setShaderParams(shaderParams)` による内部状態同期と `data-shader-params` 属性反映を実行** し、`!isContextLostRef.current` のときに `applySlots` で WebGL 再描画する（これによりコンテキストロスト中のデフォルト設定読込完了やスライダー変更も `webglcontextrestored` 復帰描画へ確実に反映される）。
   - `WebGLRendererCore` の `onAsyncTextureReady` を受け取り、`!isContextLostRef.current` のときに最新の `slotsRef.current` を再適用して決定論的 DOM 属性を更新する。
 - **決定論的テスト用 DOM 属性**:
   - `data-testid="reader-canvas"`

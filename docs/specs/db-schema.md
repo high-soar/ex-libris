@@ -80,7 +80,7 @@ erDiagram
 
 - **`'defaultReaderSettingsJson'` 保存・正規化契約（`ReaderSettingsRepository` / `v0.1`〜）**:
   - 保存形式は `{ version: 1, shader: ShaderCorrectionParams }` の JSON 文字列とする（将来の `v0.4` 拡張を見据えたバージョン付き構造）。
-  - 取得時に未保存の場合は `DEFAULT_SHADER_CORRECTION_PARAMS`（`{ sharpness: 0, whitePoint: 1, blackPoint: 0, gamma: 1 }`）を返す。不正な JSON や非オブジェクト値が格納されていた場合は例外を送出せず該当レコードを削除して初期値へフォールバックし、部分欠落・範囲外数値は `normalizeShaderCorrectionParams` で許容範囲へクランプ・正規化する。
+  - 取得時に未保存の場合は `DEFAULT_SHADER_CORRECTION_PARAMS`（`{ sharpness: 0, whitePoint: 1, blackPoint: 0, gamma: 1 }`）を返す。JSON パース失敗、ルート値が非プレーンオブジェクト（`null`・プリミティブ・配列）、または自前の `shader` プロパティ（`Object.prototype.hasOwnProperty.call` 判定）が存在するのに非プレーンオブジェクト（`null`・プリミティブ・配列）である場合は、破損レコードとして `syncMeta` から該当キーを削除して初期値へフォールバックし、プレーンオブジェクト内の部分欠落・範囲外数値は `normalizeShaderCorrectionParams` で許容範囲へクランプ・正規化する。
 
 ### 3.2 `zipIndexCache`（ZIP Central Directory 解析済み目次キャッシュ / `v0.1`〜）
 
@@ -107,13 +107,15 @@ erDiagram
 | `lastReadAt`       | `number`                               |   Yes   | 最終閲覧日時（UNIX ms）                                                            |
 | `updatedAt`        | `number`                               |   Yes   | LWW 同期調停用タイムスタンプ（UNIX ms）                                            |
 
-- **`local:*` 識別子の解析・容量上限ポリシー（`ReadingProgressRepository`）**:
+- **非同期操作の FIFO 直列化契約（`ReadingProgressRepository`）**:
+  - `TR-08`（`popstate` 同一コミット遷移を含む）で fire-and-forget 発行される `put(...)` と直後の `SCR-01` マウント時 `listRecentLocal(10)` や即座の再オープン時 `get(targetKey)`、および連続ページ送り時の `put(...)` が競合して古い値を返したり順序逆転したりしないよう、Dexie 実装内部で全メソッド（`put` / `delete` / `clearLocal` / `get` / `listRecentLocal`）を Promise キューにより **FIFO 直列実行** する。
+- **`local:*` 識別子の解析・容量上限・抽出クエリポリシー**:
   - `local:${rawFileName}:${fileSize}` はファイル名自体に `:` が含まれるケースを安全に扱えるよう、接頭辞 `"local:"` と末尾の `lastIndexOf(":")` で `rawFileName`（非空文字列）と `fileSize`（0 以上の安全整数 `/^\d+$/`）へ分離する。
-  - ローカル一時 ZIP の進捗レコード（`targetKey` が `"local:"` で始まるもの）の最大保持件数は **100 件**（`LOCAL_READING_PROGRESS_MAX_ENTRIES = 100`）とし、`put` 保存時に `local:*` 件数が上限を超過した場合は `lastReadAt` 昇順（同値時は `targetKey` 昇順）で最古の `local:*` レコードのみを削除する。**`vol:*`（Google Drive 永続巻）レコードは LRU 退避の対象外とし一切削除しない**。
-  - `SCR-01` の「最近のローカル閲覧履歴」表示（`listRecentLocal(limit = 10)`）では、有効な `local:*` レコードのみを `lastReadAt` 降順で最大 10 件返す（`clearLocal()` 実行時も `local:*` のみを削除し `vol:*` は保護する）。
-- **破損／不整合レコードの自動修復と `readStatus` 判定**:
-  - `get(targetKey)` 時に `totalPageCount < 1`、`currentPageIndex < 0`、`currentPageIndex >= totalPageCount`、不正な `readStatus` / `spreadPageOffset`、または不正な `local:*` キー形式を検出した場合は、該当レコードを即時削除して `null` を返す。
-  - リーダー閲覧中の保存時は、現在画面に表示されているスロットの最大ページ番号 `maxDisplayedPageIndex >= totalPageCount - 1`（単ページの最終頁および最終頁を含む 2 ページ見開きの双方）であれば `'completed'`、それより手前であれば `'reading'` として記録し、再オープン時はステータスにかかわらず保存済み `currentPageIndex`（実ページ数でクランプ）と `spreadPageOffset` から忠実にレジュームする。
+  - ローカル一時 ZIP の進捗レコード（`targetKey` が `"local:"` で始まるもの）の最大保持件数は **100 件**（`LOCAL_READING_PROGRESS_MAX_ENTRIES = 100`）とし、`put` 保存時に `where("targetKey").startsWith("local:")` 件数が上限を超過した場合は `lastReadAt` 昇順（同値時は `targetKey` 昇順）で最古の `local:*` レコードのみを削除する。**`vol:*`（Google Drive 永続巻）レコードは LRU 退避の対象外とし一切削除しない**。
+  - `SCR-01` の「最近のローカル閲覧履歴」表示（`listRecentLocal(limit = 10)`）では、`where("targetKey").startsWith("local:")` から有効なレコードのみを抽出し、`lastReadAt` 降順（同値時は `targetKey` 昇順の決定論的タイブレーク）で最大 `limit` 件（`limit <= 0` 時は `[]`）を返す（`clearLocal()` 実行時も `local:*` のみを削除し `vol:*` は保護する）。
+- **破損／不整合レコード検証と寸法確定ベースの `readStatus` 判定**:
+  - レコード妥当性条件：`totalPageCount` が 1 以上の `Number.isSafeInteger`、`currentPageIndex` が `0 <= currentPageIndex < totalPageCount` の `Number.isSafeInteger`、`lastReadAt` / `updatedAt` が有限数（`Number.isFinite`）、`readStatus` が `'unread' | 'reading' | 'completed'`、`spreadPageOffset` が `0 | 1`、かつ `targetKey` が `local:*` の場合は `parseLocalProgressTargetKey(targetKey) !== null && volumeId === null`、`vol:${id}` の場合は `id.length > 0 && volumeId === id` を満たすこと。`get(targetKey)` 時に不整合レコードを検出した場合は即時削除して `null` を返す。
+  - リーダー閲覧中の保存時は、見開き第 2 スロット（`currentPageIndex + 1`）は `currentPageIndex` と `currentPageIndex + 1` の双方が `knownDimensions` 上で非横長（`width <= height`）と寸法確定している場合のみ表示済みとみなし（寸法未確定の `moveToPage` 直後やデコード完了前離脱時は `currentPageIndex` 単独基準）、確定表示最大ページ `confirmedMaxDisplayedPageIndex >= totalPageCount - 1` であれば `'completed'`、それより手前であれば `'reading'` として記録する。再オープン時はステータスにかかわらず保存済み `currentPageIndex`（実ページ数でクランプ）と `spreadPageOffset`（1 ページ本 `pageCount <= 1` 時は `0` へ正規化）から忠実にレジュームする。
 
 ### 3.4 `driveSyncRoots`（Google Drive 同期対象ルートフォルダ / `v0.2`〜）
 

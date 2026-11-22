@@ -60,9 +60,9 @@ related_tests:
 1. **セッション不在フォールバック（`TR-10`）**:
    - `/read/local` マウント時にオンメモリセッション（`useLocalReaderSessionStore.session`）が `null` の場合（リロードや URL 直接入力時）、エラー画面や空白で停止せず、即座に `router.replace("/")` で `SCR-01` へ遷移する。
 2. **優先度 2（画質補正シート閉鎖）とリーダー終了・完全リソース解放（優先度 3: `TR-08`）**:
-   - **優先度 2 戻る制御**: 画質補正ボトムシート（`ReaderShaderSheet`）が開いている状態（`isShaderSheetOpen === true`）で Android ハードウェア戻るボタン（`AppBridge` `backButton`）、キーボード `Escape` キー、またはシート外バックドロップタップが発生した場合は、**`TR-08` を発火せず `isShaderSheetOpen = false` のみを実行してフルスクリーン閲覧状態へ戻る**。
-   - **優先度 3 リーダー終了（`TR-08`）**: 上部 HUD の「戻る」ボタン、エラー画面の「ホームへ戻る」ボタン、ボトムシート非表示時の `Escape` キー／Android ハードウェア戻るボタン、またはブラウザ戻る（`popstate`）によるルート離脱で発動し、以下の順序でリソースを確定解放して `/` へ戻る：
-     1. 有効閲覧中であれば現在のページ進捗と `spreadPageOffset` を `ReadingProgressRepository.put(...)` へ即時フラッシュ発行
+   - **優先度 2 戻る制御**: 致命的エラーが発生しておらず画質補正ボトムシート（`ReaderShaderSheet`）が開いている状態（`activeFatalError === null && isShaderSheetOpen`）で Android ハードウェア戻るボタン（`AppBridge` `backButton`）、キーボード `Escape` キー、またはシート外バックドロップタップが発生した場合は、**`TR-08` を発火せず `isShaderSheetOpen = false` のみを実行してフルスクリーン閲覧状態へ戻る**。
+   - **優先度 3 リーダー終了（`TR-08`）**: 上部 HUD の「戻る」ボタン、エラー画面の「ホームへ戻る」ボタン、ボトムシート非表示時（または致命的エラー表示中）の `Escape` キー／Android ハードウェア戻るボタン、またはブラウザ戻る（`popstate`）によるルート離脱で発動し、以下の順序でリソースを確定解放して `/` へ戻る：
+     1. 有効閲覧中であれば現在のページ進捗と `spreadPageOffset` を `ReadingProgressRepository.put(...)` へ即時フラッシュ発行（Repository 内の FIFO 直列化により、遷移先 `SCR-01` の `listRecentLocal(10)` より先に確実にコミットされる）
      2. 進行中 `requestEpoch` を無効化（`cancelEpochBelow`）＋ `CoordinatorWorker.closeArchive()` 呼び出し（Worker 内 `L2ByteCache` 全破棄含む）
      3. `L1PageCache.clear()` により保持中の全 `ImageBitmap.close()` ＋ `WebGLRendererCore` 全テクスチャ（複数タイル含む）`gl.deleteTexture()` 実行
      4. `WebGLRendererCore.dispose()` 実行
@@ -70,13 +70,14 @@ related_tests:
      6. `router.back()`（`pushState` 履歴戻り、直接遷移等では `router.replace("/")`、`popstate` 時は現在履歴を維持）
 3. **`zipIndexCache` 0 RTT オープン・`readingProgress` 自動レジューム・共通画質補正デフォルト復元**:
    - アーカイブオープン時（`initialSnapshot === undefined` 時）：
+     - オープン試行開始時に `currentPageIndex = 0`, `spreadPageOffset = 0`, `totalPages = 0` へ初期化する。
      - `ServiceContext.readerSettingsRepo.getShaderDefaults()` を非同期取得し、取得完了までにユーザーが手動でスライダー操作を行っていなければ `shaderParams` へ初期適用する（失敗時は警告ログ記録の上でニュートラル初期値を維持）。
      - `ServiceContext.zipIndexCacheRepo.get(source.indexCacheKey)` および `ServiceContext.readingProgressRepo.get(source.progressTargetKey)` を安全に参照する（IndexedDB エラー時や破損レコード時は警告ログ記録の上で `null` へフォールバック）。
-     - `openArchive` 成功後、保存済み進捗レコードが存在する場合は **`readStatus` が `"reading"` か `"completed"` かを問わず、`spreadPageOffset = saved.spreadPageOffset` および `currentPageIndex = Math.min(result.pageCount - 1, Math.max(0, saved.currentPageIndex))` を復元** して初回 `loadPageWindow` を開始する（未保存時は `pageIndex = 0`, `spreadPageOffset = 0`）。
+     - `openArchive` 成功後、保存済み進捗レコードが存在する場合は **`readStatus` が `"reading"` か `"completed"` かを問わず、`spreadPageOffset = result.pageCount > 1 ? saved.spreadPageOffset : 0`（1 ページ本では `0` へ正規化）および `currentPageIndex = Math.min(result.pageCount - 1, Math.max(0, saved.currentPageIndex))` を復元** して初回 `loadPageWindow` を開始する（未保存時は `pageIndex = 0`, `spreadPageOffset = 0`）。
    - `!result.fromIndexCache` で通常オープンに成功した場合は `zipIndexCacheRepo.put(source.indexCacheKey, result.entries)` を非ブロッキングで保存する。
-4. **`readingProgress` 永続化トリガーと `readStatus` 判定**:
+4. **`readingProgress` 永続化トリガーと寸法確定ベースの `readStatus` 判定**:
    - `initialSnapshot === undefined && session !== null && !isOpening && totalPages > 0 && archiveError === null && webglFatalError === null` の条件下でのみ進捗を保存する（破損・空アーカイブ等の異常時は一切書き込まない）。
-   - 現在の表示スロット最大ページ `maxDisplayedPageIndex >= totalPages - 1` であれば `readStatus = "completed"`、それより手前であれば `readStatus = "reading"` とし、`local:${rawFileName}:${fileSize}`（`volumeId: null`）で保存する（失敗時は `diagnosticLogger.warn("reader", ...)` のみ記録し閲覧を継続）。
+   - **寸法未確定時の早期 `completed` 誤判定防止**: `computeViewportSlotLayout` は未デコードの隣接ページを暫定的に縦長と仮定して 2 スロット `[N, N+1]` を返すため、`persistCurrentProgress` では見開き第 2 スロット（`N + 1`）は **`N` と `N + 1` の双方が `knownDimensions` 上で非横長（`width <= height`）と確定している場合のみ** 表示済みに含める（`moveToPage` 直後やデコード完了前の離脱で寸法未確定の間は `currentPageIndex` 単独基準とする）。この確定表示最大ページ `confirmedMaxDisplayedPageIndex >= totalPages - 1` であれば `readStatus = "completed"`、それより手前であれば `readStatus = "reading"` とし、`local:${rawFileName}:${fileSize}`（`volumeId: null`）で保存する（失敗時は `diagnosticLogger.warn("reader", ...)` のみ記録し閲覧を継続）。
    - 保存発火タイミング：①`loadPageWindow` 完了時（初回オープン・めくり・シーク・見開き／向き変化後の寸法確定時）、②`moveToPage`（前後めくり・シーク確定）および `handleToggleSpreadPageOffset` 直後、③`TR-08` 終了・`popstate` 離脱・`window` `"pagehide"`・`document` `"visibilitychange"`（`document.visibilityState === "hidden"`）発生時。
 5. **Fast-Path・L1 近傍バッチ・10MB Warm Prefetch 連携（単ページ／見開き共用）**:
    - 有効表示モード（`effectiveSpreadMode`）・`spreadPageOffset`・セッション内既知寸法（`knownDimensions`）から現在の取得候補 `visibleTargets`（単ページ確定時は `[N]`、見開きペア候補時は `[N, N+1]`）を決定し、保護ウィンドウ `protectedPages`（単ページ時 `[N-1, N, N+1, N+2]` 最大 4 枚、見開き時 `[first-1, first, last, last+1, last+2]` 最大 5 枚＝`L1_MAX_PAGES`）、近傍先読み `neighbors`（単ページ時 `[N+1, N+2, N-1]`、見開き時 `[last+1, last+2, first-1]`）、および閲覧優先順 `prefetchTargets`（進行方向 `[last+1 .. last+20]` ＋ 逆方向 `[first-1, first-2]`、`0 <= idx < totalPages`）を算出する。
@@ -140,7 +141,7 @@ related_tests:
 3. **下部バー（`data-testid="reader-hud-bottom"`）の 3段構成（1280px / 375px 両対応）**:
    - **上段（シークバー行：`data-testid="reader-hud-seek-row"`）**:
      - ページシークバー（`<input type="range" data-testid="reader-seekbar" />`）を配置し、`min={0}`, `max={Math.max(0, totalPages - 1)}`, `step={1}`, `dir={readingDirection === "rtl" ? "rtl" : "ltr"}`, `data-reading-direction={readingDirection}`, `disabled={totalPages <= 1}` とする（`rtl` では右端が 1P・左端が最終 P、`ltr` では左端が 1P・右端が最終 P となる）。
-     - **ドラッグプレビュー＆確定時 Epoch 更新**: `onPointerDown` から `onPointerUp` までのドラッグ中はローカルの `seekPreviewIndex` のみを更新し、中段の `reader-page-indicator` を `${seekPreviewIndex + 1} / ${totalPages}`（`data-seek-preview="true"`）のプレビュー表示へ切り替え、**ドラッグ中は Worker RPC を発火しない**。`onPointerUp` 確定時（目標ページが `currentPageIndex` と異なる場合）および非ドラッグ時の `onChange`（キーボード操作等）でのみ `onCommitSeek(targetIndex)` を 1 回発火し、新 `requestEpoch` での Fast-Path 描画を実行する（`onPointerCancel` 時はジャンプせずプレビューを解除）。
+     - **ドラッグプレビュー＆要素外リリース対応の確定時 Epoch 更新**: `onPointerDown` 開始後はローカルの `seekPreviewIndex` のみを `onChange` で更新し、中段の `reader-page-indicator` を `${seekPreviewIndex + 1} / ${totalPages}`（`data-seek-preview="true"`）のプレビュー表示へ切り替え、**ドラッグ中は Worker RPC を発火しない**。ドラッグ中に指が `<input>` 矩形外へ外れて離された場合も取りこぼさないよう、ドラッグ開始中は要素イベントに加えて **`window` の `pointerup`（確定）および `pointercancel`（キャンセル）** でも完結させ、確定時（目標ページが `currentPageIndex` と異なる場合）および非ドラッグ時の `onChange`（キーボード操作等）でのみ `onCommitSeek(targetIndex)` を 1 回発火する。`pointercancel` 発生時、ドラッグ途中の `isOpen === false` 閉鎖時、およびアンマウント時はジャンプを発火せずプレビュー状態を解除する。
    - **中段（ページナビゲーション行：`data-testid="reader-hud-nav-row"`）**:
      - `rtl` 時: 左に「`← 次へ`」（`data-testid="reader-next-button"`）、中央にページインジケータ（`data-testid="reader-page-indicator"`）、右に「`前へ →`」（`data-testid="reader-prev-button"`）。
      - `ltr` 時: 左に「`← 前へ`」（`data-testid="reader-prev-button"`）、中央にページインジケータ（`data-testid="reader-page-indicator"`）、右に「`次へ →`」（`data-testid="reader-next-button"`）。
@@ -170,7 +171,7 @@ related_tests:
 
 ### 4.1 アーカイブ全体・環境エラー（閲覧不能時）
 
-アーカイブオープン時または WebGL2 初期化時に以下のエラーが発生した場合、`diagnosticLogger.error("reader", ...)` に記録した上で、全画面エラーパネル（`data-testid="reader-error-view"`）と **「ホームへ戻る」ボタン**（`data-testid="reader-error-back-button"`, `TR-08` 実行）を表示する。
+アーカイブオープン時または WebGL2 初期化・コンテキスト復帰時に以下のエラーが発生した場合、`isHudOpen = false` および `isShaderSheetOpen = false` へリセットし（エラー画面上で優先度 2 戻る制御が誤吸収しないよう保証）、`diagnosticLogger.error("reader", ...)` に記録した上で、全画面エラーパネル（`data-testid="reader-error-view"`）と **「ホームへ戻る」ボタン**（`data-testid="reader-error-back-button"`, `TR-08` 実行）を表示する。
 
 - `CORRUPT_ZIP`: 「ZIP ファイルが破損しているため開けませんでした」
 - `EMPTY_ARCHIVE`: 「表示できる画像ファイル（JPEG / PNG / WebP / AVIF）が見つかりませんでした」

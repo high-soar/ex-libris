@@ -18,6 +18,7 @@ tags:
 related_specs:
   - docs/index.md
   - docs/specs/requirements.md
+  - docs/specs/architecture.md
   - docs/specs/db-schema.md
   - docs/specs/screen-transitions.md
   - docs/specs/features/reader.md

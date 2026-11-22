@@ -2,8 +2,8 @@
 type: spec-requirements
 title: "全体要件定義・機能一覧・ミニMilestoneロードマップ"
 description: "ExLibris のプロダクトゴール、前提制約、非機能要件（TTFP・メモリ予算）、全機能カタログ割当、および Phase 3〜v1.0 マイルストーン計画の正本"
-status: "Approved (#27)"
-updated: "2026-11-20"
+status: "Review (#22)"
+updated: "2026-11-22"
 tags: [requirements, roadmap, mvp, non-functional, ex-libris, android]
 related_specs:
   - docs/index.md
@@ -101,7 +101,7 @@ related_tests:
 |                            | OPFS による L2 キャッシュ永続化＆一時オフライン持ち出し                                    |       `v1.1+`        | 初期スコープ外                                                                                           |
 | **D. WebGL2・画質補正**    | 生 WebGL2 単ページ描画 ＋ ハードウェア Mipmap（モアレ除去）                                |    **`Phase 3`**     | Canvas 2D 不使用                                                                                         |
 |                            | `MAX_TEXTURE_SIZE` 上限検知・分割/縮小ガード                                               |      **`v0.1`**      | 4096px 上限端末の黒画面防止                                                                              |
-|                            | シャープネス（LOD バイアス）＋ 白黒レベル・ガンマ補正シェーダー                            |      **`v0.1`**      | 全作品共通デフォルト補正                                                                                 |
+|                            | シャープネス（画面微分 5タップ USM）＋ 白黒レベル・ガンマ補正シェーダー                    |      **`v0.1`**      | 全作品共通デフォルト補正                                                                                 |
 |                            | インテリジェント見開き制御 ＆「1ページずらし」ワンタップ補正                               |      **`v0.1`**      | 横長スキャン画像の単枚自動表示含む                                                                       |
 |                            | 右開き／左開き切替                                                                         |      **`v0.1`**      |                                                                                                          |
 |                            | 作品別シェーダー・綴じ方向プリセット保存                                                   |      **`v0.4`**      |                                                                                                          |
