@@ -62,6 +62,10 @@ export async function createFileDataTransfer(
   );
 }
 
+const CORRUPT_PNG_BYTES = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0xff, 0x00, 0x01, 0x02,
+]);
+
 function createPngChunk(type: string, data: Uint8Array): Uint8Array {
   const typeBytes = new TextEncoder().encode(type);
   const crcInput = new Uint8Array(4 + data.byteLength);
@@ -78,10 +82,10 @@ function createPngChunk(type: string, data: Uint8Array): Uint8Array {
   return chunk;
 }
 
-export function createSyntheticPng(
-  rgba: readonly [number, number, number, number],
-  width = 4,
-  height = 4,
+function buildPngFromTemplateRow(
+  width: number,
+  height: number,
+  templateRow: Uint8Array,
 ): Uint8Array {
   const ihdrData = new Uint8Array(13);
   const ihdrView = new DataView(ihdrData.buffer);
@@ -95,17 +99,8 @@ export function createSyntheticPng(
 
   const rowStride = 1 + width * 4;
   const rawScanlines = new Uint8Array(height * rowStride);
-  const [r, g, b, a] = rgba;
   for (let y = 0; y < height; y += 1) {
-    const rowStart = y * rowStride;
-    rawScanlines[rowStart] = 0;
-    for (let x = 0; x < width; x += 1) {
-      const px = rowStart + 1 + x * 4;
-      rawScanlines[px] = r;
-      rawScanlines[px + 1] = g;
-      rawScanlines[px + 2] = b;
-      rawScanlines[px + 3] = a;
-    }
+    rawScanlines.set(templateRow, y * rowStride);
   }
 
   const ihdr = createPngChunk("IHDR", ihdrData);
@@ -124,6 +119,46 @@ export function createSyntheticPng(
     offset += part.byteLength;
   }
   return out;
+}
+
+export function createSyntheticPng(
+  rgba: readonly [number, number, number, number],
+  width = 4,
+  height = 4,
+): Uint8Array {
+  const rowStride = 1 + width * 4;
+  const templateRow = new Uint8Array(rowStride);
+  templateRow[0] = 0;
+  const [r, g, b, a] = rgba;
+  for (let x = 0; x < width; x += 1) {
+    const px = 1 + x * 4;
+    templateRow[px] = r;
+    templateRow[px + 1] = g;
+    templateRow[px + 2] = b;
+    templateRow[px + 3] = a;
+  }
+  return buildPngFromTemplateRow(width, height, templateRow);
+}
+
+export function createSplitColorPng(
+  leftRgba: readonly [number, number, number, number],
+  rightRgba: readonly [number, number, number, number],
+  width: number,
+  height: number,
+): Uint8Array {
+  const rowStride = 1 + width * 4;
+  const templateRow = new Uint8Array(rowStride);
+  templateRow[0] = 0;
+  const splitX = Math.floor(width / 2);
+  for (let x = 0; x < width; x += 1) {
+    const [r, g, b, a] = x < splitX ? leftRgba : rightRgba;
+    const px = 1 + x * 4;
+    templateRow[px] = r;
+    templateRow[px + 1] = g;
+    templateRow[px + 2] = b;
+    templateRow[px + 3] = a;
+  }
+  return buildPngFromTemplateRow(width, height, templateRow);
 }
 
 export function buildSyntheticThreePageArchive(): Uint8Array {
@@ -168,7 +203,7 @@ export function buildPartialCorruptArchive(): Uint8Array {
     entries: [
       {
         name: "001.png",
-        data: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00, 0x01, 0x02]),
+        data: CORRUPT_PNG_BYTES,
         compressionMethod: 0,
       },
       {
@@ -177,6 +212,141 @@ export function buildPartialCorruptArchive(): Uint8Array {
         compressionMethod: 8,
       },
     ],
+  });
+}
+
+export function buildSyntheticPortraitSpreadArchive(): Uint8Array {
+  const pageSpecs: readonly {
+    readonly name: string;
+    readonly rgba: readonly [number, number, number, number];
+    readonly compressionMethod: 0 | 8;
+  }[] = [
+    { name: "001.png", rgba: [255, 0, 0, 255], compressionMethod: 0 }, // 0: 赤
+    { name: "002.png", rgba: [0, 255, 0, 255], compressionMethod: 8 }, // 1: 緑
+    { name: "003.png", rgba: [0, 0, 255, 255], compressionMethod: 0 }, // 2: 青
+    { name: "004.png", rgba: [255, 255, 0, 255], compressionMethod: 8 }, // 3: 黄
+    { name: "005.png", rgba: [0, 255, 255, 255], compressionMethod: 0 }, // 4: シアン
+    { name: "006.png", rgba: [255, 0, 255, 255], compressionMethod: 8 }, // 5: マゼンタ
+  ];
+
+  return buildSyntheticZip({
+    entries: pageSpecs.map((page) => ({
+      name: page.name,
+      data: createSyntheticPng(page.rgba, 64, 96),
+      compressionMethod: page.compressionMethod,
+    })),
+  });
+}
+
+export function buildSyntheticMixedSpreadArchive(): Uint8Array {
+  const pageSpecs: readonly {
+    readonly name: string;
+    readonly rgba: readonly [number, number, number, number];
+    readonly width: number;
+    readonly height: number;
+    readonly compressionMethod: 0 | 8;
+  }[] = [
+    {
+      name: "001.png",
+      rgba: [255, 0, 0, 255],
+      width: 64,
+      height: 96,
+      compressionMethod: 0,
+    }, // 0: 表紙 縦(赤)
+    {
+      name: "002.png",
+      rgba: [0, 255, 0, 255],
+      width: 64,
+      height: 96,
+      compressionMethod: 8,
+    }, // 1: 縦(緑)
+    {
+      name: "003.png",
+      rgba: [0, 0, 255, 255],
+      width: 64,
+      height: 96,
+      compressionMethod: 0,
+    }, // 2: 縦(青)
+    {
+      name: "004.png",
+      rgba: [255, 255, 0, 255],
+      width: 160,
+      height: 80,
+      compressionMethod: 8,
+    }, // 3: 横長(黄)
+    {
+      name: "005.png",
+      rgba: [0, 255, 255, 255],
+      width: 64,
+      height: 96,
+      compressionMethod: 0,
+    }, // 4: 縦(シアン)
+    {
+      name: "006.png",
+      rgba: [255, 0, 255, 255],
+      width: 64,
+      height: 96,
+      compressionMethod: 8,
+    }, // 5: 縦(マゼンタ)
+  ];
+
+  return buildSyntheticZip({
+    entries: pageSpecs.map((page) => ({
+      name: page.name,
+      data: createSyntheticPng(page.rgba, page.width, page.height),
+      compressionMethod: page.compressionMethod,
+    })),
+  });
+}
+
+export function buildSyntheticOversizedTextureArchive(
+  maxTextureSize: number,
+): Uint8Array {
+  const coverPng = createSyntheticPng([0, 255, 0, 255], 64, 96);
+  const oversizedPng = createSplitColorPng(
+    [255, 0, 0, 255],
+    [0, 0, 255, 255],
+    maxTextureSize + 128,
+    64,
+  );
+
+  return buildSyntheticZip({
+    entries: [
+      {
+        name: "001.png",
+        data: coverPng,
+        compressionMethod: 0,
+      },
+      {
+        name: "002.png",
+        data: oversizedPng,
+        compressionMethod: 0,
+      },
+    ],
+  });
+}
+
+export function buildSpreadCorruptArchive(
+  corruptPageIndices: readonly number[],
+): Uint8Array {
+  const corruptSet = new Set(corruptPageIndices);
+  const pageSpecs: readonly {
+    readonly name: string;
+    readonly rgba: readonly [number, number, number, number];
+  }[] = [
+    { name: "001.png", rgba: [255, 0, 0, 255] },
+    { name: "002.png", rgba: [0, 255, 0, 255] },
+    { name: "003.png", rgba: [0, 0, 255, 255] },
+  ];
+
+  return buildSyntheticZip({
+    entries: pageSpecs.map((page, index) => ({
+      name: page.name,
+      data: corruptSet.has(index)
+        ? CORRUPT_PNG_BYTES
+        : createSyntheticPng(page.rgba, 64, 96),
+      compressionMethod: 0,
+    })),
   });
 }
 
@@ -386,7 +556,11 @@ export async function readZipIndexCacheRecord(
   }, cacheKey);
 }
 
-export function readPngCenterPixel(pngBytes: Uint8Array): {
+export function readPngPixelAtRatio(
+  pngBytes: Uint8Array,
+  xRatio: number,
+  yRatio: number,
+): {
   r: number;
   g: number;
   b: number;
@@ -444,8 +618,12 @@ export function readPngCenterPixel(pngBytes: Uint8Array): {
   }
   const inflated = unzlibSync(compressed);
 
+  const clampedXRatio = Math.min(1, Math.max(0, xRatio));
+  const clampedYRatio = Math.min(1, Math.max(0, yRatio));
+  const targetX = Math.min(width - 1, Math.floor(width * clampedXRatio));
+  const targetY = Math.min(height - 1, Math.floor(height * clampedYRatio));
+
   const stride = width * bpp;
-  const targetY = Math.floor(height / 2);
   let prevRow: Uint8Array | null = null;
   let currRow = new Uint8Array(stride);
 
@@ -482,10 +660,18 @@ export function readPngCenterPixel(pngBytes: Uint8Array): {
     currRow = nextRow;
   }
 
-  const centerOffset = Math.floor(width / 2) * bpp;
+  const pixelOffset = targetX * bpp;
   return {
-    r: currRow[centerOffset],
-    g: currRow[centerOffset + 1],
-    b: currRow[centerOffset + 2],
+    r: currRow[pixelOffset],
+    g: currRow[pixelOffset + 1],
+    b: currRow[pixelOffset + 2],
   };
+}
+
+export function readPngCenterPixel(pngBytes: Uint8Array): {
+  r: number;
+  g: number;
+  b: number;
+} {
+  return readPngPixelAtRatio(pngBytes, 0.5, 0.5);
 }
