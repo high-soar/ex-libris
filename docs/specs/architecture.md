@@ -45,8 +45,10 @@ related_tests:
   - src/engine/workers/coordinatorTransfer.test.ts
   - src/engine/zip/zipIndexValidation.test.ts
   - src/engine/zip/zipParser.test.ts
+  - src/features/bookshelf/RecentLocalHistorySection.test.tsx
   - src/features/reader/localReaderSessionStore.test.ts
   - src/features/reader/spreadLayout.test.ts
+  - src/features/reader/ReaderShaderSheet.test.tsx
   - src/features/reader/ReaderPage.test.tsx
   - src/shared/constants/app.test.ts
   - src/shared/router/RouterProvider.test.tsx

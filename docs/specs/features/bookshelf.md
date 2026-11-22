@@ -29,6 +29,7 @@ related_tests:
   - src/features/bookshelf/BookshelfPage.test.tsx
   - src/features/bookshelf/BookshelfHeader.test.tsx
   - src/features/bookshelf/LocalArchiveEmptyState.test.tsx
+  - src/features/bookshelf/RecentLocalHistorySection.test.tsx
   - src/features/reader/localReaderSessionStore.test.ts
   - src/diagnostics/diagnosticLogger.test.ts
   - test/vrt/vrt.spec.ts
