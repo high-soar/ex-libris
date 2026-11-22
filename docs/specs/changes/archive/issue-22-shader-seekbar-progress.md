@@ -216,13 +216,14 @@ related_tests:
 3. **MK-3（`#60` / PR #64 @ `af8645b` マージ完了）: `ReaderCanvas` シェーダー反映・`ReaderPage` 自動レジューム／優先度2戻る制御・`BookshelfPage` 閲覧履歴統合**:
    - 対象: `src/webgl/ReaderCanvas.tsx`（`.stories.tsx` / `.test.tsx`）, `src/features/reader/ReaderPage.tsx`（`.stories.tsx` / `.test.tsx`）, `src/features/bookshelf/BookshelfPage.tsx`（`.stories.tsx` / `.test.tsx`）, `test/vrt/snapshots/*`
    - 実績: C0/C1/Functions/Lines 100% PASS ＆ VRT 1280px/375px PASS、AI 自律マージ完了（`Closes #60`）
-4. **IT (Step 4: `#61` `Closes #22`, `Closes #61`): Playwright `SCN-01`/`SCN-02` E2E 拡充・手動検証用 `ho08-shader-seek-test.cbz` 生成・仕様アーカイブ・Android 実機検証**:
-   - 対象: `test/it/helpers.ts`, `test/it/smoke.spec.ts`, `test/it/local-reader.spec.ts`, `scripts/generate-manual-test-archives.mjs`, `scripts/generate-manual-test-archives.d.mts`, `scripts/generate-manual-test-archives.test.ts`, `test/fixtures/manual/ho08-shader-seek-test.cbz`, `test/fixtures/manual/README.md`, `docs/quality/bug-and-handover-log.md`（No. 37〜38 PR #64 @ `af8645b` 同期）, 本差分仕様の `Completed (Archived)` 化＆`docs/specs/changes/archive/` 移動, App 全体正本 7 冊の `Approved (#22)` 化
+4. **IT (Step 4: `#61` / 最終 PR #65 `Closes #22`, `Closes #61`): Playwright `SCN-01`/`SCN-02` E2E 拡充・手動検証用 `ho08-shader-seek-test.cbz` 生成・仕様アーカイブ・Android 実機検証**:
+   - 対象: `test/it/helpers.ts`, `test/it/smoke.spec.ts`, `test/it/local-reader.spec.ts`, `scripts/generate-manual-test-archives.mjs`, `scripts/generate-manual-test-archives.d.mts`, `scripts/generate-manual-test-archives.test.ts`, `test/fixtures/manual/ho08-shader-seek-test.cbz`, `test/fixtures/manual/README.md`, `docs/quality/bug-and-handover-log.md`（No. 32〜41 同期 ＆ `HO-08` 実機確認精算）, 本差分仕様の `Completed (Archived)` 化＆`docs/specs/changes/archive/` 移動, App 全体正本 7 冊の `Approved (#22)` 化
+   - 実績: Playwright `SCN-01`/`SCN-02` 計 26/26 PASS ＆ CI/AI レビュー Gate 1〜6 収束後、`build-android.yml`（Run `#45042333265` / Drive `app-debug.apk` `1HIS95V2PjNom_l9dvszkRsMap0P8bJp7` ＆ `ho08-shader-seek-test.cbz` `1CCtDHrSJm_Q53ec94mAWh5togTscj17N`）により `HO-08` 実機項目 ①〜④ すべて問題なし・診断ログ `[WARN]`/`[ERROR]` ゼロを確認し `Resolved` へ精算。
 
-### 5.2 申し送り事項（`HO-08`）と Android 実機検証計画（区分 A: `親 Issue #22 完了前`）
+### 5.2 申し送り事項（`HO-08`）と Android 実機検証実績（区分 A: `親 Issue #22 完了前`）
 
 - **判定理由**: 生 WebGL2 カスタムフラグメントシェーダー（`dFdx`/`dFdy` 画面微分 5タップ USM ＋ レベル・ガンマ補正）のモバイル GPU 精度・60fps スライダー追従、タッチドラッグシークバー、および Android ハードウェア戻るボタン優先度 2 制御を含むため、[workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット) の **区分 A（親 Issue #22 完了前に実機検証を実施）** と判定する。
-- **`HO-08` 実機確認予定項目（Step 4 Gate 1〜6 通過後に `app-debug.apk` と `ho08-shader-seek-test.cbz` を Google Drive へ配置して提示）**:
+- **`HO-08` 実機確認実績（状態: `Resolved`、完了ゲート: `親 Issue #22 完了前` / Run `#45042333265` `debug` / Drive `app-debug.apk` ＆ `ho08-shader-seek-test.cbz` にて全 4 項目 OK、診断ログ `entries: 8` `[WARN]`/`[ERROR]` ゼロ確認）**:
   1. **生 WebGL2 1パス画質補正シェーダー＆スライダー追従**: `ho08-shader-seek-test.cbz`（および手持ち自炊 CBZ）を開き、上部 HUD「画質補正」から `whitePoint`（黄ばみ白飛ばし）・`blackPoint`（裏写り引き締め）・`gamma`（薄墨濃化）・`sharpness`（描線強調）を動かした際、カクつき・シェーダーエラーなくリアルタイムに紙面が変化し、「リセット」および「デフォルト保存」（別ファイル／再起動後も維持）が機能すること。
   2. **Android ハードウェア戻るボタン優先度 2 → 優先度 3 遷移**: 画質補正ボトムシート表示中に Android の戻る操作（3ボタン／ジェスチャー）を行うとリーダーを終了せずシートのみが閉じ、もう一度戻る操作を行うと `SCR-01` へ戻ること。
   3. **`rtl` / `ltr` シークバー操作**: 右開き（右端＝1P・左端＝最終P）および左開き（左端＝1P・右端＝最終P）の双方で、ドラッグ中はページ番号プレビューが滑らかに追従し、指を離した確定時に目的ページへ即座にジャンプできること。
