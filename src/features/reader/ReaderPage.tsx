@@ -31,6 +31,7 @@ import type {
   PageDimensions,
   ReadingDirection,
   RenderSlotFrame,
+  ShaderCorrectionParams,
   SlotPosition,
   SpreadMode,
   SpreadPageOffset,
@@ -38,6 +39,7 @@ import type {
 } from "../../webgl/types";
 import { ReaderErrorView } from "./ReaderErrorView";
 import { ReaderHudOverlay } from "./ReaderHudOverlay";
+import type { ShaderSaveStatus } from "./ReaderShaderSheet";
 import {
   type LocalReaderSession,
   useLocalReaderSessionStore,
@@ -74,6 +76,9 @@ export interface ReaderPageInitialSnapshot {
   readonly spreadMode?: SpreadMode;
   readonly spreadPageOffset?: SpreadPageOffset;
   readonly viewportSize?: { readonly width: number; readonly height: number };
+  readonly shaderParams?: ShaderCorrectionParams;
+  readonly isShaderSheetOpen?: boolean;
+  readonly shaderSaveStatus?: ShaderSaveStatus;
 }
 
 export interface ReaderPageProps {
