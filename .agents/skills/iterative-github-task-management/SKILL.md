@@ -56,7 +56,7 @@ description: "Use when breaking down a Feature Request Issue into an iterative m
 2. 最後の Sub-issue PR（または IT PR）において、完了した差分仕様ファイルの状態を `Completed (Archived)` に更新し、**`git mv docs/specs/changes/issue-XX-<slug>.md docs/specs/changes/archive/issue-XX-<slug>.md` でアーカイブディレクトリへ移動** する。
 3. PR に `Closes #親Issue番号`（および該当する場合は `Closes #IT-Sub-issue番号`）を設定し、Task Completion Gate 条件 1〜6（CI / 独立 `pr-reviewer` レビュー収束）を完遂する。
 4. **📱 親 Issue 単位で実機検証を実施する対象の場合**:
-   - 最終 PR が Gate 1〜6 を通過した段階で、`gh workflow run build-android.yml --ref <対象ブランチ>` を実行して署名済み検証 APK をクラウドビルドし、[docs/guidelines/workflow.md §2.2](../../../docs/guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット) に従い **APK Artifact リンク付きの「Android 実機検証試験項目表」** を人間に提示する。
+   - 最終 PR が Gate 1〜6 を通過した段階で、[android-apk-distribution スキル](../android-apk-distribution/SKILL.md) に従って `gh workflow run build-android.yml --ref <対象ブランチ> -f build_type=debug` を実行・展開して Google Drive の `app-debug.apk`（`app-release.apk` とは分離）へ自動配置し、[docs/guidelines/workflow.md §2.2](../../../docs/guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット) に従い **APK 取得リンク・必要時の検証サンプル（[test/fixtures/manual/](../../../test/fixtures/manual/README.md)）付きの「Android 実機検証試験項目表」** を人間に提示する。
    - 実機検証 OK 後、**人間のレビュー・マージ（出口ゲート）によって親 Issue を同期クローズする**（**AI による直接 Issue クローズや最終 PR の自己マージは厳禁**）。
 
 ---
@@ -85,5 +85,5 @@ description: "Use when breaking down a Feature Request Issue into an iterative m
 ミニリリース Milestone（`v0.1`, `v0.2` 等、または Phase 3 PoC 完了節目）の完了承認 Issue では、[docs/guidelines/workflow.md](../../../docs/guidelines/workflow.md#5-ミニリリース-milestone-と品質改善kaizenループ) および [phase-final-review スキル](../phase-final-review/SKILL.md) に従い以下の 3 段階で進行します。
 
 1. **Step 1（全体横断レビュー）【👤 人間が各モデルでキック】**: 各モデルのオーケストレーターで横断レビューを実行し、Milestone 承認 Issue に Round 1 結果をコメント投稿する。
-2. **Step 2（横断レビュー指摘是正 PR ＆ Android 実機検証）【🤖 指摘是正 PR は AI 自律マージ → 📱 人間による実機検証】**: `R1-xx` 是正 PR を Gate 1〜6 完遂後に自律マージし、続けて「Android 実機検証試験項目表」を提示して実機検証を収束させる。
-3. **Step 3（品質分析レポート・再発防止 Kaizen・バグ＆申し送りアーカイブ・正本一括 Approved 化・バージョン更新：最終承認 PR）【👤 人間承認・マージ】**: 1 本の最終 PR（`Closes #Milestone承認Issue`）で品質分析レポート作成、ガイドライン/スキル Kaizen、バグ＆HO アーカイブ、正本一括 `Approved` 化、および `package.json` の `version` 更新（`X.Y.0`）を実施し、人間のマージをもって Milestone を完了する。
+2. **Step 2（横断レビュー指摘是正 PR ＆ Android 実機検証）【🤖 指摘是正 PR は AI 自律マージ → 📱 人間による実機検証】**: `R1-xx` 是正 PR を Gate 1〜6 完遂後に自律マージし、続けて [android-apk-distribution スキル](../android-apk-distribution/SKILL.md) に従って検証 APK をビルド・Google Drive `app-debug.apk` へ分離配置の上「Android 実機検証試験項目表」を提示して実機検証を収束させる。
+3. **Step 3（品質分析レポート・再発防止 Kaizen・バグ＆申し送りアーカイブ・正本一括 Approved 化・バージョン更新：最終承認 PR）【👤 人間承認・マージ】**: 1 本の最終 PR（`Closes #Milestone承認Issue`）で品質分析レポート作成、ガイドライン/スキル Kaizen、バグ＆HO アーカイブ、正本一括 `Approved` 化、および `package.json` の `version` 更新（`X.Y.0`）を実施し、人間のマージ（および `release.yml` 完了後の [android-apk-distribution スキル](../android-apk-distribution/SKILL.md) による Drive `app-release.apk` 配置）をもって Milestone を完了する。

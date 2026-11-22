@@ -68,7 +68,7 @@ Phase 3 以降の PR 作業では、[.github/pull_request_template.md](../../../
    - **👤 人間マージ待機とする PR**:
      - **Step 2（設計更新 PR / `Refs #親Issue`）**、**Step 4（最終 IT PR・親 Issue 完了 PR / `Closes #親Issue`）**、**Milestone Step 3（品質分析 Kaizen・ログアーカイブ・最終承認 PR / `Closes #MilestoneIssue`）**
      - または [docs/guidelines/workflow.md §4.1](../../../docs/guidelines/workflow.md#41-ai-自律マージの停止人間エスカレーション条件) のエスカレーション条件に該当する場合。
-     - ※親 Issue 実機検証対象時は、Gate 1〜6 完了直後に `gh workflow run build-android.yml --ref <対象ブランチ>` を実行し、APK Artifact 取得リンクと「Android 実機検証試験項目表」を併せて提示する。
+     - ※親 Issue 実機検証対象時は、Gate 1〜6 完了直後に [android-apk-distribution スキル](../android-apk-distribution/SKILL.md) に従って `gh workflow run build-android.yml --ref <対象ブランチ> -f build_type=debug` を実行し、成果物を展開して Google Drive の `app-debug.apk`（`app-release.apk` とは分離）へ自動上書き配置の上、APK 取得リンク・必要時の検証用サンプル（[test/fixtures/manual/](../../../test/fixtures/manual/README.md)）・「Android 実機検証試験項目表」を併せて提示する。
    - **🤖 AI（Orchestrator）が自律マージする PR**:
      - **Step 3（MK Sub-issue PR / `Closes #Sub-issue`）** および **Milestone Step 2（横断レビュー指摘是正 PR / `Closes #Sub-issue`、実機不具合追加是正 PR 含む）** であり、エスカレーション条件のいずれにも該当しない場合。
      - **アクション**: メインエージェント（Orchestrator）が `gh pr merge <PR番号> --squash --delete-branch` を実行して PR をマージし、`git switch main && git pull --ff-only origin main` で最新化した上で、直ちに次の Sub-issue へ進む。

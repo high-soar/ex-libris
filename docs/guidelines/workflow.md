@@ -3,7 +3,7 @@ type: guideline
 title: "開発プロセス・ワークフロー標準（SSOT）"
 description: "ハイブリッド進行モデル、Issue駆動マイクロ・ウォーターフォール、Android実機検証の実施判断・試験項目提示ルール、OKFステータス管理、Task Completion Gate 7条件（中間PR自律マージ＆エスカレーション規律）、およびミニMilestone運用（Step 3での品質分析・アーカイブ統合）の正本。"
 status: "Approved"
-updated: "2026-11-18"
+updated: "2026-11-21"
 tags:
   [
     workflow,
@@ -88,10 +88,10 @@ flowchart LR
 | **A. 親 Issue 単位で実機検証を実施**                  | 以下の **いずれか 1 つ以上** に該当し、実機での検証観点が複数見込まれる場合：<br>1. Android ネイティブ層（Java / Capacitor Plugin / Google OAuth / OS 権限・インテント）の新設・変更<br>2. WebGL2 シェーダー描画（モアレ・`MAX_TEXTURE_SIZE`）、高解像度画像 VRAM 制御（`ImageBitmap.close()`）、または 60fps スワイプ・ピンチズーム・音量キー等の物理操作を伴う変更<br>3. 実機検証項目が目安 **3 項目以上** 発生する場合 | `親 Issue #XX 完了前`   | **親 Issue の最終 PR（`Closes #親Issue`）が Gate 1〜6 を通過した直後**（人間の最終マージ前）                           |
 | **B. Milestone 最終レビュー後に一括で実機検証を実施** | 上記 A に該当しない場合（純粋な ZIP/ファイル名/書誌パーサーロジック、Dexie.js クエリ、標準的な本棚 Web UI コンポーネント変更など、UT / Storybook VRT / Playwright IT で十分に担保でき、実機確認が軽微なスモーク確認に留まる場合）                                                                                                                                                                                         | `Milestone v0.X 完了前` | **Milestone Step 2（横断レビュー指摘是正 PR）を AI が自律マージした直後**（Milestone Step 3 品質分析・最終承認 PR 前） |
 
-- **実機検証試験項目表およびクラウド APK の提示ルール（PCレス Remote Agent 運用）**:
-  1. 実機検証ゲート到達時に AI が対象ブランチに対して `gh workflow run build-android.yml --ref <branch>` を自動実行し、完了した **APK Artifact のダウンロード URL** を添えて提示する。
+- **実機検証試験項目表およびクラウド APK の提示・Google Drive 自動配置ルール（PCレス Remote Agent 運用）**:
+  1. 開発中の実機検証ゲート到達時に、AI が対象ブランチに対して `gh workflow run build-android.yml --ref <branch> -f build_type=debug` を自動実行し、完了した Artifact（`ex-libris-debug-apk`）をダウンロード・展開して Google Drive 上の **開発検証用 `app-debug.apk`（正式リリース用 `app-release.apk` とは別ファイルで分離維持）** へ自動上書き配置（[android-apk-distribution スキル](../../.agents/skills/android-apk-distribution/SKILL.md) 準拠）した上で、取得リンクを添えて提示する。
   2. **検証対象の `HO-xx` / Issue 番号とビルド対象ブランチ（または SHA）** を明記する。
-  3. **カテゴリ別の試験項目表**（`項番` / `確認項目` / `具体的な操作手順` / `期待される結果（OK条件）`）および **効率的な一筆書き確認ルート** を記載する（異常発生時はアプリ内診断ログの1タップコピー結果をチャットへ共有して解析する）。
+  3. **カテゴリ別の試験項目表**（`項番` / `確認項目` / `具体的な操作手順` / `期待される結果（OK条件）`）および **効率的な一筆書き確認ルート** を記載し、境界検証用テストファイルが必要な場合は [test/fixtures/manual/](../../test/fixtures/manual/README.md) へ登録・管理した上で Google Drive 共有（または案内）を行う（異常発生時はアプリ内診断ログの1タップコピー結果をチャットへ共有して解析する）。
 
 ---
 
@@ -127,13 +127,13 @@ Phase 3 以降のすべての PR 作業において、**PR を作成しただけ
    - 指摘事項（`[P0]`〜`[P3]`）がある場合、①修正コミット＆再検証、②PR 返信、③`pr-reviewer` Round 2+ 再レビュー依頼、④レビュアーによる解消確認（Resolved）投稿の 4 ステップを完遂すること（**実装側単独での自己完了判定は厳禁**）。
 7. **PR 種別に応じたマージ完了（👤 人間承認・マージ待機 または 🤖 AI 自律マージ）**:
 
-| PR 種別                                                                                                          |        マージ権限         | 完了アクション                                                                                                                                                                                                                    |
-| :--------------------------------------------------------------------------------------------------------------- | :-----------------------: | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **① Step 2: 設計更新 PR**（`Refs #親Issue`）                                                                     |        **👤 人間**        | Gate 1〜6 完了を人間に報告し、人間の最終確認・マージを待つ（入口ゲート）。                                                                                                                                                        |
-| **② Step 3: MK Sub-issue PR**（`Closes #Sub-issue`）                                                             | **🤖 AI（Orchestrator）** | §4.1 のエスカレーション条件に該当しないことを確認の上、`gh pr merge --squash --delete-branch` で自律マージし、直ちに次の Sub-issue（または Step 4）へ進む。                                                                       |
-| **③ Step 4: 最終 IT PR / 親 Issue 完了 PR**（`Closes #親Issue`）                                                 |        **👤 人間**        | Gate 1〜6 完了を人間に報告（親 Issue 実機検証対象時は `build-android.yml` を自動起動し APK Artifact URL と「Android 実機検証試験項目表」を併せて提示）し、人間の最終確認・マージを待つ（出口ゲート）。                            |
-| **④ Milestone Step 2: 横断レビュー指摘是正 PR**（`Closes #Sub-issue` / 実機不具合追加是正 PR 含む）              | **🤖 AI（Orchestrator）** | §4.1 のエスカレーション条件に該当しないことを確認の上、自律マージし、直ちに `build-android.yml` を自動起動して「Android 実機検証試験項目表」＋ APK Artifact URL を提示する。                                                      |
-| **⑤ Milestone Step 3: 品質分析 Kaizen・ログアーカイブ・バージョン更新・最終承認 PR**（`Closes #MilestoneIssue`） |        **👤 人間**        | 横断レビュー是正と実機検証の完全収束後、品質分析レポート・再発防止 Kaizen・バグ＆HO アーカイブ・正本一括 `Approved` 化・`package.json` の `version` 更新（`X.Y.0`）を行い、Gate 1〜6 完了を報告して人間の最終承認・マージを待つ。 |
+| PR 種別                                                                                                          |        マージ権限         | 完了アクション                                                                                                                                                                                                                                                                                  |
+| :--------------------------------------------------------------------------------------------------------------- | :-----------------------: | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **① Step 2: 設計更新 PR**（`Refs #親Issue`）                                                                     |        **👤 人間**        | Gate 1〜6 完了を人間に報告し、人間の最終確認・マージを待つ（入口ゲート）。                                                                                                                                                                                                                      |
+| **② Step 3: MK Sub-issue PR**（`Closes #Sub-issue`）                                                             | **🤖 AI（Orchestrator）** | §4.1 のエスカレーション条件に該当しないことを確認の上、`gh pr merge --squash --delete-branch` で自律マージし、直ちに次の Sub-issue（または Step 4）へ進む。                                                                                                                                     |
+| **③ Step 4: 最終 IT PR / 親 Issue 完了 PR**（`Closes #親Issue`）                                                 |        **👤 人間**        | Gate 1〜6 完了を人間に報告（親 Issue 実機検証対象時は `build-android.yml` `debug` を自動起動して展開した `app-debug.apk` を Google Drive へ分離配置し、取得リンクと「Android 実機検証試験項目表」を併せて提示）し、人間の最終確認・マージを待つ（出口ゲート）。                                 |
+| **④ Milestone Step 2: 横断レビュー指摘是正 PR**（`Closes #Sub-issue` / 実機不具合追加是正 PR 含む）              | **🤖 AI（Orchestrator）** | §4.1 のエスカレーション条件に該当しないことを確認の上、自律マージし、直ちに `build-android.yml` `debug` を自動起動して Google Drive `app-debug.apk` へ分離配置の上「Android 実機検証試験項目表」＋取得リンクを提示する。                                                                        |
+| **⑤ Milestone Step 3: 品質分析 Kaizen・ログアーカイブ・バージョン更新・最終承認 PR**（`Closes #MilestoneIssue`） |        **👤 人間**        | 横断レビュー是正と実機検証の完全収束後、品質分析レポート・再発防止 Kaizen・バグ＆HO アーカイブ・正本一括 `Approved` 化・`package.json` の `version` 更新（`X.Y.0`）を行い、Gate 1〜6 完了を報告して人間の最終承認・マージ（および `release.yml` 完了後の Drive `app-release.apk` 配置）を待つ。 |
 
 ### 4.1 AI 自律マージの停止（人間エスカレーション）条件
 
@@ -156,7 +156,7 @@ Phase 4 以降は、直近の要望（親 Issue）を 3〜5 件程度束ねた *
    - マルチモデル並行起動時は、レビュー開始時の既存コメント閲覧を禁止し、**投稿直前のフェッチ採番＋投稿直後の衝突検知 PATCH リナンバー**（[review-comment-format.md §5.1](review-comment-format.md#5-節目横断レビューphase--ミニmilestone-完了レビューの集約形式)）を厳守する。
 2. **Step 2: 横断レビュー指摘是正 PR ＆ Android 実機検証【🤖 指摘是正 PR は AI 自律マージ → 📱 クラウド APK による人間実機検証】**:
    - Sub-issue を起票して全 `R1-xx` を是正・台帳記録し、Gate 1〜6 完遂後に AI が自律マージする。
-   - 直後に `build-android.yml` を実行し、「Android 実機検証試験項目表」＋ APK Artifact URL を提示する。実機不具合があれば追加是正 PR（AI 自律マージ）で未解決 `HO-xx` が 0 件となるまで収束させる。
+   - 直後に `build-android.yml` (`debug`) を実行し、展開した `app-debug.apk` を Google Drive 上の検証用ファイル（`app-release.apk` とは分離）へ自動配置（[android-apk-distribution スキル](../../.agents/skills/android-apk-distribution/SKILL.md) 準拠）した上で「Android 実機検証試験項目表」＋取得リンク（必要時は [test/fixtures/manual/](../../test/fixtures/manual/README.md) 併記）を提示する。実機不具合があれば追加是正 PR（AI 自律マージ＋APK 再配置）で未解決 `HO-xx` が 0 件となるまで収束させる。
 3. **Step 3: 品質分析レポート（Kaizen）・バグ記録アーカイブ・正本仕様一括 `Approved` 化・バージョン更新と Milestone 最終承認【👤 人間承認・マージ】**:
    - 最終 PR（`Closes #Milestone承認Issue`）で、①品質分析レポート（`docs/quality/reports/<milestone>.md`）作成とサマリー追記、②`docs/guidelines/testing.md` や `.agents/skills/*/SKILL.md` への Kaizen 反映、③完了バグ・解決済み `HO-xx` の `docs/quality/archive/<milestone>-log.md` アーカイブ化、④正本仕様の一括 `Approved` 化、⑤`package.json` の `version` 更新（`X.Y.0`）を一括実施し、人間のマージをもって完了する。
 
@@ -168,5 +168,6 @@ Phase 4 以降は、直近の要望（親 Issue）を 3〜5 件程度束ねた *
    - メタデータ値（`package.json` `version` / `APP_VERSION` / Android `versionName`）は `v` なし（例: `0.1.0`）、UI 表示（`ExLibris v0.1.0`）・Git Tag・GitHub Release は `v` あり（例: `v0.1.0`）とする。
 2. **`package.json` への SSOT 一本化**:
    - アプリバージョンの正本は `package.json` の `"version"` 1箇所のみとし、Web 定数（`src/shared/constants/app.ts`）および Android Gradle（`android/app/build.gradle`）が動的参照する。
-3. **Git Tag / 署名済み APK 付き GitHub Release の自動発行**:
+3. **Git Tag / 署名済み APK 付き GitHub Release の自動発行と Google Drive リリース配置**:
    - `.github/workflows/release.yml` により、`main` ブランチへ `package.json` の変更がマージされた際、署名済み APK（`ex-libris-vX.Y.Z.apk`）をビルドした上で、タグ `vX.Y.Z` と APK 添付済み GitHub Release（品質レポートへのリンクおよび `--generate-notes` 付き）を自動発行する。
+   - リリース発行完了後、AI は [android-apk-distribution スキル](../../.agents/skills/android-apk-distribution/SKILL.md) に従って `ex-libris-vX.Y.Z.apk` を取得し、Google Drive 上の **リリース専用 `app-release.apk`**（開発用の `app-debug.apk` とは別ファイル）へ上書き配置する。
