@@ -2,7 +2,7 @@
 type: spec-feature
 title: "WebGL2 ストリーミングリーダー画面仕様書（SCR-03: Reader）"
 description: "SCR-03（/read/local）のインテリジェント見開き（auto/single/spread）、1ページずらし、右開き/左開き双方向操作、2段HUD、Fast-Path＋L1 5頁窓連携、片側エラー表示、およびTR-08/TR-10リソース解放仕様の正本"
-status: "Review (#21)"
+status: "Approved (#21)"
 updated: "2026-11-21"
 tags:
   [
@@ -31,6 +31,7 @@ related_specs:
 related_tests:
   - scripts/android-build-config.test.ts
   - src/App.test.tsx
+  - src/diagnostics/diagnosticLogger.test.ts
   - src/features/reader/spreadLayout.test.ts
   - src/features/reader/ReaderPage.test.tsx
   - src/features/reader/ReaderHudOverlay.test.tsx

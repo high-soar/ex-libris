@@ -2,7 +2,7 @@
 type: spec-delta
 title: "Issue #21 差分仕様: インテリジェント見開き・1ページずらし・右/左開き・MAX_TEXTURE_SIZE ガード"
 description: "SpreadMode（auto/single/spread）画面向き連動、動的アンカー見開きペアリングと1ページずらし、右開き/左開き入力・HUD反転、片側ページエラー時スロット表示、およびWebGLRendererCoreのMAX_TEXTURE_SIZEタイル分割・安全リサイズフォールバックを定義する差分仕様"
-status: "Review (#21)"
+status: "Completed (Archived)"
 updated: "2026-11-21"
 issue: "#21"
 tags:
@@ -43,8 +43,8 @@ related_tests:
 
 ## 1. 背景・目的（Why）
 
-- Phase 3 PoC では右開き（`rtl`）・単ページ表示（`single`）固定であった `SCR-03` リーダーを `v0.1` 完成版コアリーダー要件（[requirements.md §4](../requirements.md#4-全機能カタログとマイルストーン割当マトリクス)）へ進化させ、タブレット横向き環境での **インテリジェント2ページ見開き制御**、見開きずれを即座に修正する **「1ページずらし」**、および **右開き（`rtl`）／左開き（`ltr`）切替** を実装する。
-- Android WebView 端末の `gl.MAX_TEXTURE_SIZE`（例: 4096px）を超える高解像度・大判見開きスキャン画像が `gl.texImage2D` 時にエラー・黒画面化するのを防ぐため、`WebGLRendererCore` に **`MAX_TEXTURE_SIZE` 上限検知・タイル分割／安全リサイズフォールバック**（[architecture.md §3.2](../architecture.md#32-gpu-テクスチャmax_texture_size-ガードl1-解放規律)）を実装する。
+- Phase 3 PoC では右開き（`rtl`）・単ページ表示（`single`）固定であった `SCR-03` リーダーを `v0.1` 完成版コアリーダー要件（[requirements.md §4](../../requirements.md#4-全機能カタログとマイルストーン割当マトリクス)）へ進化させ、タブレット横向き環境での **インテリジェント2ページ見開き制御**、見開きずれを即座に修正する **「1ページずらし」**、および **右開き（`rtl`）／左開き（`ltr`）切替** を実装する。
+- Android WebView 端末の `gl.MAX_TEXTURE_SIZE`（例: 4096px）を超える高解像度・大判見開きスキャン画像が `gl.texImage2D` 時にエラー・黒画面化するのを防ぐため、`WebGLRendererCore` に **`MAX_TEXTURE_SIZE` 上限検知・タイル分割／安全リサイズフォールバック**（[architecture.md §3.2](../../architecture.md#32-gpu-テクスチャmax_texture_size-ガードl1-解放規律)）を実装する。
 
 ### 1.1 Step 1 合意事項（`/grill-me` 確定内容：Q1〜Q7）
 
@@ -66,7 +66,7 @@ related_tests:
 6. **左開き（`ltr`）入力操作の完全反転（Q6）**:
    - `ltr` 時は `rtl` の完全反転とし、**右端 30% タップ・右→左スワイプ（`dx < 0`）・`ArrowRight`** で次頁、**左端 30% タップ・左→右スワイプ（`dx > 0`）・`ArrowLeft`** で前頁へ移動し、下部 HUD 上段の配置も左「`← 前へ`」・右「`次へ →`」へ入れ替える（最終見開き表示中は「次へ」ボタン・タップ・スワイプ・キーすべてを無効化する）。
 7. **Android 実機検証タイミング（Q7）**:
-   - [workflow.md §2.2](../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット) の **区分 A（親 Issue #21 完了前実施）** とし、`HO-07`（完了ゲート: `親 Issue #21 完了前`）を登録する。
+   - [workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット) の **区分 A（親 Issue #21 完了前実施）** とし、`HO-07`（完了ゲート: `親 Issue #21 完了前`）を登録する。
 
 ### 1.2 対象外スコープ
 
@@ -77,13 +77,13 @@ related_tests:
 
 ## 2. 変更対象の App 全体正本一覧
 
-|   種別   | 正本ファイル                                                     | 変更概要                                                                                                                                                                               |
-| :------: | :--------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **更新** | [architecture.md](../architecture.md)                            | `SpreadMode` (`"auto" \| "single" \| "spread"`), `ViewportSlotLayout` / `RenderSlotFrame` 型契約、動的アンカー見開きルール、`MAX_TEXTURE_SIZE` タイル分割＆安全リサイズ設計を反映      |
-| **更新** | [webgl2-renderer.md](../engine/webgl2-renderer.md)               | `src/webgl/types.ts`、`u_offset` 頂点シェーダー、`WebGLRendererCore.renderSlots`（2スロット背表紙密着＋`MAX_TEXTURE_SIZE` 非同期分割）、`ReaderCanvas` DOM 属性・`AC-GL-07`〜`08` 追加 |
-| **更新** | [reader.md](../features/reader.md)                               | `spreadLayout.ts` 契約、見開き Fast-Path/L1 窓、`rtl`/`ltr` 双方向操作、2段下部 HUD、片側エラー `ReaderErrorView`、`AC-RD-10`〜`12` 追加                                               |
-| **更新** | [screen-transitions.md](../screen-transitions.md)                | `SCR-03` `v0.1` 概要および `SCN-02` トレーサビリティ対応表へ見開き・1ページずらし・`rtl`/`ltr`・`MAX_TEXTURE_SIZE` 検証観点を追記                                                      |
-| **更新** | [bug-and-handover-log.md](../../quality/bug-and-handover-log.md) | 区分 A 実機検証申し送り事項 **`HO-07`**（完了ゲート: `親 Issue #21 完了前`）および PR #44 Round 1 指摘是正記録（`No. 21`〜`26`）を登録                                                 |
+|   種別   | 正本ファイル                                                        | 変更概要                                                                                                                                                                               |
+| :------: | :------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **更新** | [architecture.md](../../architecture.md)                            | `SpreadMode` (`"auto" \| "single" \| "spread"`), `ViewportSlotLayout` / `RenderSlotFrame` 型契約、動的アンカー見開きルール、`MAX_TEXTURE_SIZE` タイル分割＆安全リサイズ設計を反映      |
+| **更新** | [webgl2-renderer.md](../../engine/webgl2-renderer.md)               | `src/webgl/types.ts`、`u_offset` 頂点シェーダー、`WebGLRendererCore.renderSlots`（2スロット背表紙密着＋`MAX_TEXTURE_SIZE` 非同期分割）、`ReaderCanvas` DOM 属性・`AC-GL-07`〜`08` 追加 |
+| **更新** | [reader.md](../../features/reader.md)                               | `spreadLayout.ts` 契約、見開き Fast-Path/L1 窓、`rtl`/`ltr` 双方向操作、2段下部 HUD、片側エラー `ReaderErrorView`、`AC-RD-10`〜`12` 追加                                               |
+| **更新** | [screen-transitions.md](../../screen-transitions.md)                | `SCR-03` `v0.1` 概要および `SCN-02` トレーサビリティ対応表へ見開き・1ページずらし・`rtl`/`ltr`・`MAX_TEXTURE_SIZE` 検証観点を追記                                                      |
+| **更新** | [bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) | 区分 A 実機検証申し送り事項 **`HO-07`**（完了ゲート: `親 Issue #21 完了前`）および PR #44 Round 1 指摘是正記録（`No. 21`〜`26`）を登録                                                 |
 
 ---
 
@@ -141,38 +141,38 @@ related_tests:
 
 ## 4. テスト計画（UT / VRT / IT）
 
-| 層                                                   | テスト手法・対象                                                                                                                                                                                                                                                                                                                                                                                                                                              | 合格基準                                                           |
-| :--------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :----------------------------------------------------------------- |
-| **MK-1: レイアウト＆WebGL2 コア Engine UT**          | `spreadLayout.test.ts`（`auto`/`single`/`spread` 向き切替・正方形境界・表紙単独・自他 `width > height` 単独・動的再ペアリング・`spreadPageOffset` ±1 シフト・`prev` 推定・`rtl`/`ltr` 入力判定・L1 5枚窓・`2-3 / 24` 表記）、`shaders.test.ts`（`u_offset` 検証）、`WebGLRendererCore.test.ts`（`MAX_TEXTURE_SIZE` 分割グリッド・リサイズフォールバック・一時タイル `bitmap.close()`・キャンセル・複数タイル破棄・2スロット背表紙密着・片側欠損描画・異常系） | C0 / C1 / Functions / Lines **100%** PASS                          |
-| **MK-2: HUD・ErrorView UI コンポーネント UT/VRT**    | `ReaderHudOverlay.stories.tsx` / `ReaderHudOverlay.test.tsx`（単頁/見開き・`rtl`/`ltr` 順反転・`auto`/`spread`/`single` ラベル・`disabled` 境界・3ボタンコールバック・イベント遮断）、`ReaderErrorView.stories.tsx` / `ReaderErrorView.test.tsx`（`slotPosition: "center" \| "left" \| "right"`, `pageNumber`）、1280px/375px VRT 更新                                                                                                                        | C0 / C1 / Functions / Lines **100%** PASS ＆ VRT 1280px/375px PASS |
-| **MK-3: `ReaderCanvas` ＆ `ReaderPage` 統合 UT/VRT** | `ReaderCanvas.stories.tsx` / `ReaderCanvas.test.tsx`（2スロット描画・非同期 `MAX_TEXTURE_SIZE` 再描画・コンテキストロスト復帰・DOM 属性群）、`ReaderPage.stories.tsx` / `ReaderPage.test.tsx`（親子分離下での `auto` 向き追従・横長自動単独・動的遷移・`spreadPageOffset`・`rtl`/`ltr` 操作・見開き Fast-Path `[N,N+1]`・片側エラー描画）、VRT 更新                                                                                                           | C0 / C1 / Functions / Lines **100%** PASS ＆ VRT 1280px/375px PASS |
-| **Step 4: Playwright IT (`SCN-02`)**                 | `test/it/helpers.ts`（横長・縦長・`MAX_TEXTURE_SIZE + 100` 幅の合成 PNG/CBZ 生成ヘルパ追加）、`test/it/local-reader.spec.ts`（1280×800 見開き：表紙単独→1-2ペア→横長単独→次頁自動再ペアリング、1ページずらし、`rtl`↔`ltr` 全入力・HUD 反転、375×667 自動単頁、実 SwiftShader `MAX_TEXTURE_SIZE` 超過描画＋診断 WARN＋非黒ピクセル確認、片側エラー＋正常半面描画）                                                                                             | 全 `SCN-01` / `SCN-02` **100% PASS**                               |
+| 層                                                   | テスト手法・対象                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | 合格基準                                                           |
+| :--------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------- |
+| **MK-1: レイアウト＆WebGL2 コア Engine UT**          | `spreadLayout.test.ts`（`auto`/`single`/`spread` 向き切替・正方形境界・表紙単独・自他 `width > height` 単独・動的再ペアリング・`spreadPageOffset` ±1 シフト・`prev` 推定・`rtl`/`ltr` 入力判定・L1 5枚窓・`2-3 / 24` 表記）、`shaders.test.ts`（`u_offset` 検証）、`WebGLRendererCore.test.ts`（`MAX_TEXTURE_SIZE` 分割グリッド・リサイズフォールバック・一時タイル `bitmap.close()`・キャンセル・複数タイル破棄・2スロット背表紙密着・片側欠損描画・異常系）                                                                                  | C0 / C1 / Functions / Lines **100%** PASS                          |
+| **MK-2: HUD・ErrorView UI コンポーネント UT/VRT**    | `ReaderHudOverlay.stories.tsx` / `ReaderHudOverlay.test.tsx`（単頁/見開き・`rtl`/`ltr` 順反転・`auto`/`spread`/`single` ラベル・`disabled` 境界・3ボタンコールバック・イベント遮断）、`ReaderErrorView.stories.tsx` / `ReaderErrorView.test.tsx`（`slotPosition: "center" \| "left" \| "right"`, `pageNumber`）、1280px/375px VRT 更新                                                                                                                                                                                                         | C0 / C1 / Functions / Lines **100%** PASS ＆ VRT 1280px/375px PASS |
+| **MK-3: `ReaderCanvas` ＆ `ReaderPage` 統合 UT/VRT** | `ReaderCanvas.stories.tsx` / `ReaderCanvas.test.tsx`（2スロット描画・非同期 `MAX_TEXTURE_SIZE` 再描画・コンテキストロスト復帰・DOM 属性群）、`ReaderPage.stories.tsx` / `ReaderPage.test.tsx`（親子分離下での `auto` 向き追従・横長自動単独・動的遷移・`spreadPageOffset`・`rtl`/`ltr` 操作・見開き Fast-Path `[N,N+1]`・片側エラー描画）、VRT 更新                                                                                                                                                                                            | C0 / C1 / Functions / Lines **100%** PASS ＆ VRT 1280px/375px PASS |
+| **Step 4: Playwright IT (`SCN-02`)**                 | `test/it/helpers.ts`（`readPngPixelAtRatio`・`createSplitColorPng`・見開き/超過テクスチャ/片側・両側破損アーカイブビルダー追加）、`test/it/local-reader.spec.ts`（1280×800 見開き：表紙単独→1-2ペア→横長単独→次頁自動再ペアリング→最終頁全入力 no-op→`spreadHistory` 逆戻り、1ページずらし、`rtl`↔`ltr` 全入力・HUD 反転・L1 即時再配置、375×667 自動単頁・モード循環・リロードなし動的リサイズ切替、実 SwiftShader `MAX_TEXTURE_SIZE + 128` 超過タイル分割描画＋診断 WARN＋非黒ピクセル確認、片側エラー正常半面描画＋両側エラー中央代表表示） | 全 `SCN-01` / `SCN-02` **22/22 PASS**                              |
 
 ---
 
-## 5. 実装 Sub-issue 分割計画（MK 3分割 ＋ 最終 IT）
+## 5. 実装 Sub-issue 分割計画・完了結果（MK 3分割 ＋ 最終 IT）
 
-1. **MK-1（Logic & WebGL2 Core 層）**:
+1. **MK-1（`#45` / PR #49 @ `815e97a` マージ完了）: Logic & WebGL2 Core 層**:
    - 対象: `src/webgl/types.ts`, `src/features/reader/spreadLayout.ts`, `src/features/reader/spreadLayout.test.ts`, `src/webgl/shaders.ts`, `src/webgl/shaders.test.ts`, `src/webgl/WebGLRendererCore.ts`, `src/webgl/WebGLRendererCore.test.ts`（および関連正本 `related_tests` 追記）
-   - 目安規模: 約 350 行（製品コード）＋ 単体テスト（C0/C1/Functions/Lines 100%）
-2. **MK-2（HUD・ErrorView UI コンポーネント ＆ Storybook/VRT 層）**:
+   - 実績: C0/C1/Functions/Lines 100% PASS、AI 自律マージ完了（`Closes #45`）
+2. **MK-2（`#46` / PR #50 @ `536f18e` マージ完了）: HUD・ErrorView UI コンポーネント ＆ Storybook/VRT 層**:
    - 対象: `src/features/reader/ReaderHudOverlay.tsx`, `.stories.tsx`, `.test.tsx`, `src/features/reader/ReaderErrorView.tsx`, `.stories.tsx`, `.test.tsx`, `test/vrt/snapshots/*`
-   - 目安規模: 約 200 行（製品コード）＋ Story/Portable Stories UT/VRT 1280px & 375px
-3. **MK-3（`ReaderCanvas` ＆ `ReaderPage` 統合 ＆ Storybook/VRT 層）**:
-   - 対象: `src/webgl/ReaderCanvas.tsx`, `.stories.tsx`, `.test.tsx`, `src/features/reader/ReaderPage.tsx`, `.stories.tsx`, `.test.tsx`, `test/vrt/snapshots/*`
-   - 目安規模: 約 350 行（製品コード）＋ 親子完全分離 UT/VRT 1280px & 375px
-4. **Step 4（IT 結合テスト・実機検証・差分仕様アーカイブ PR `Closes #21`）**:
-   - 対象: `test/it/helpers.ts`, `test/it/local-reader.spec.ts`, `docs/quality/bug-and-handover-log.md`（`HO-07` 実機確認精算）, 本差分仕様の `Completed (Archived)` 化＆`docs/specs/changes/archive/` 移動、関連 App 全体正本の `Approved (#21)` 化
-   - Gate 1〜6 通過後に `build-android.yml` を起動し、Android 実機検証項目表＋APK Artifact URL を提示して人間レビュー・マージにより `#21` クローズ。
+   - 実績: C0/C1/Functions/Lines 100% PASS ＆ VRT 1280px/375px PASS、AI 自律マージ完了（`Closes #46`）
+3. **MK-3（`#47` / PR #51 @ `8b253c1` マージ完了）: `ReaderCanvas` ＆ `ReaderPage` 統合 ＆ Storybook/VRT 層**:
+   - 対象: `src/webgl/ReaderCanvas.tsx`, `.stories.tsx`, `.test.tsx`, `src/features/reader/ReaderPage.tsx`, `.stories.tsx`, `.test.tsx`, `test/vrt/snapshots/*`, `test/it/local-reader.spec.ts`（既存 5 ケース 375×667 明示）
+   - 実績: C0/C1/Functions/Lines 100% PASS ＆ VRT 1280px/375px PASS、AI 自律マージ完了（`Closes #47`）
+4. **Step 4（IT `#48` / 最終 PR `Closes #21`, `Closes #48`）: IT 結合テスト・実機検証・差分仕様アーカイブ**:
+   - 対象: `test/it/helpers.ts`, `test/it/local-reader.spec.ts`, `docs/quality/bug-and-handover-log.md`（No. 28〜29 PR #51 同期、`HO-07` は区分 A 実機検証前のため `Open` 維持）, 本差分仕様の `Completed (Archived)` 化＆`docs/specs/changes/archive/` 移動、関連 App 全体正本の `Approved (#21)` 化
+   - Gate 1〜6 通過後に `build-android.yml` を起動し、Android 実機検証項目表＋APK Artifact URL を提示して実機検証・`HO-07` 精算の上、人間レビュー・マージにより `#21` / `#48` をクローズ。
 
 ---
 
 ## 6. 申し送り事項・Android 実機検証計画
 
-- **判定（[workflow.md §2.2](../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 A（親 Issue #21 完了前に実施）**
+- **判定（[workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 A（親 Issue #21 完了前に実施）**
   - **根拠**: 生 WebGL2 2スロット見開き描画・`MAX_TEXTURE_SIZE` 超過画像のタイル分割/縮小フォールバック（実機 GPU での非黒画面描画および一時タイル `ImageBitmap.close()` VRAM 解放安全性）・スマホ縦/タブレット横回転時の自動追従・`rtl`/`ltr` 動的タッチスワイプ反転を含み、実機検証観点が 3 項目以上見込まれるため。
-- **申し送り事項登録（[bug-and-handover-log.md](../../quality/bug-and-handover-log.md)）**:
-  - **`HO-07`**（完了ゲート: **`親 Issue #21 完了前`**）: Step 4 IT PR の Gate 1〜6 通過後、`build-android.yml` で生成した署名済み検証 APK にて以下を確認する：
+- **申し送り事項管理（[bug-and-handover-log.md](../../../quality/bug-and-handover-log.md)）**:
+  - **`HO-07`**（状態: `Open`、完了ゲート: **`親 Issue #21 完了前`**）: Step 4 IT PR の Gate 1〜6 通過後、`build-android.yml` で生成した署名済み検証 APK にて以下を確認し `Resolved` へ精算する：
     1. タブレット横向き（またはスマホ横回転）時に `auto` モードで表紙 0P が中央単独、以降 1-2 / 3-4 が隙間ゼロの見開き描画となり、横長画像ページが自動で単枚中央表示され次頁から自動再ペアリングされること。
     2. スマホ縦向き時に `auto` モードで単ページ自動表示となり、下部 HUD の「1ページずらし」が `disabled`・2段レイアウトがはみ出しなく操作でき、横回転でシームレスに見開きへ切り替わること。
     3. 「1ページずらし」および「右開き (`rtl`) / 左開き (`ltr`)」切替時に左右タップ領域・スワイプ方向・HUD「次へ/前へ」配置・`2-3 / 24` 表記が即座に反転整合すること。
