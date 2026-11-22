@@ -35,7 +35,7 @@ Google Drive CLI（`gdrive`）の実行前には必ず以下を確認してく�
    - Debug ビルド時は対象 `name === "app-debug.apk"` であること（`app-release.apk` なら即中止）。
    - Release ビルド時は対象 `name === "app-release.apk"` であること（`app-debug.apk` なら即中止）。
 3. **ID 不在・再作成フォールバック**:
-   対象 ID が見つからない場合は `gdrive readonly ls 1yVyPgaJohZGoDg4s90aTUFi_S_0g6Tt7 --json` でフォルダ内を同名検索し、存在すればその ID を `mutate update`、存在しなければ `gdrive mutate upload ... --parent 1yVyPgaJohZGoDg4s90aTUFi_S_0g6Tt7 --mime-type application/vnd.android.package-archive` で新規配置する。
+   対象 ID が見つからない場合は `gdrive readonly ls 1yVyPgaJohZGoDg4s90aTUFi_S_0g6Tt7 --json` でフォルダ内を同名検索し、存在すればその ID を `mutate update` する。存在しない場合、`gdrive mutate upload` にはアップロード先ファイル名を指定するフラグがなくローカルファイル名がそのまま Drive 上のファイル名になるため、事前にローカルで契約ファイル名（`app-debug.apk` または `app-release.apk`）へコピー／リネームしてから `gdrive mutate upload <filepath> --parent 1yVyPgaJohZGoDg4s90aTUFi_S_0g6Tt7 --mime-type application/vnd.android.package-archive` で新規配置する。
 
 ---
 
@@ -61,7 +61,7 @@ Step 4（区分 A 親 Issue 完了前）または Milestone Step 2 の実機確�
    ```
 3. **検証サンプル（`test/fixtures/manual/`）の確認**:
    - 当該実機試験項目表に境界値（`MAX_TEXTURE_SIZE`・ZIP64・CP932 等）の検証が含まれる場合、リポジトリ内の [test/fixtures/manual/](../../../test/fixtures/manual/README.md) に既存テストアーカイブがあるか確認する（新規作成したテストアーカイブは必ず本ディレクトリと [scripts/generate-manual-test-archives.mjs](../../../scripts/generate-manual-test-archives.mjs) へ登録する）。
-   - 必要に応じ同アーカイブも `ExLibris` フォルダへ配置（既存同名ファイルがあれば `mutate update`、なければ `mutate upload`）する。
+   - 必要に応じ同アーカイブも `ExLibris` フォルダへ配置（既存同名ファイルがあれば `mutate update`、なければ `--mime-type application/vnd.comicbook+zip` を指定して `mutate upload`）する。
 4. **ブックマーク＆実機確認依頼の提示**:
    - 配置した Drive 上の `app-debug.apk`（および必要時の検証サンプル CBZ / Actions Run）を `UserFacing: true` の `.url.json` アーティファクトとして登録する。
    - **「Android 実機検証試験項目表（`HO-xx`）」** を提示し、対象 PR にも Run ID・Drive 配置 ID をコメント記録する。
@@ -78,12 +78,13 @@ Milestone Step 3（`package.json` の `version` 更新）または Hotfix の `m
    gh run watch <RELEASE_RUN_ID> --exit-status
    rm -rf /tmp/exlibris-release && mkdir -p /tmp/exlibris-release
    gh release download "v<X.Y.Z>" -p "ex-libris-v*.apk" -D /tmp/exlibris-release
+   cp /tmp/exlibris-release/ex-libris-v*.apk /tmp/exlibris-release/app-release.apk
    ```
 2. **Drive `app-release.apk` へ上書き配置**:
    ```sh
-   # 誤上書き防止: name === "app-release.apk" を確認後に更新
+   # 誤上書き防止: name === "app-release.apk" を確認後に更新（ID不在時も app-release.apk 名で upload 可）
    gdrive readonly info 1sjKB10fchri1kuMu01Lbr5PJmw6ksS6L --json
-   gdrive mutate update 1sjKB10fchri1kuMu01Lbr5PJmw6ksS6L /tmp/exlibris-release/ex-libris-v<X.Y.Z>.apk \
+   gdrive mutate update 1sjKB10fchri1kuMu01Lbr5PJmw6ksS6L /tmp/exlibris-release/app-release.apk \
      --mime-type application/vnd.android.package-archive --json
    rm -rf /tmp/exlibris-release
    ```
