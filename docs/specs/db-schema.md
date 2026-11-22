@@ -2,14 +2,17 @@
 type: spec-db-schema
 title: "Dexie.js（IndexedDB）ローカルDBスキーマ・インデックス定義"
 description: "仮想本棚、指定ルートフォルダ同期、ZIP目次キャッシュ、ローカル一時ZIP共用レジューム、および appDataFolder LWW 端末間同期を支える全9テーブル定義の正本"
-status: "Approved (#19)"
-updated: "2026-11-21"
-tags: [database, dexie, indexeddb, schema, bookshelf, lww-sync]
+status: "Review (#22)"
+updated: "2026-11-22"
+tags:
+  [database, dexie, indexeddb, schema, bookshelf, lww-sync, reading-progress]
 related_specs:
   - docs/index.md
   - docs/specs/requirements.md
   - docs/specs/architecture.md
   - docs/specs/screen-transitions.md
+  - docs/specs/features/bookshelf.md
+  - docs/specs/features/reader.md
   - docs/guidelines/testing.md
 related_tests:
   - src/storage/db.test.ts
@@ -75,6 +78,10 @@ erDiagram
 | `key`    | `string` | **PK**  | `'driveStartPageToken'` / `'lastDriveSyncAt'` / `'lastAppDataSyncAt'` / `'defaultReaderSettingsJson'` 等の識別キー |
 | `value`  | `string` |    -    | JSON 文字列またはトークン文字列                                                                                    |
 
+- **`'defaultReaderSettingsJson'` 保存・正規化契約（`ReaderSettingsRepository` / `v0.1`〜）**:
+  - 保存形式は `{ version: 1, shader: ShaderCorrectionParams }` の JSON 文字列とする（将来の `v0.4` 拡張を見据えたバージョン付き構造）。
+  - 取得時に未保存の場合は `DEFAULT_SHADER_CORRECTION_PARAMS`（`{ sharpness: 0, whitePoint: 1, blackPoint: 0, gamma: 1 }`）を返す。不正な JSON や非オブジェクト値が格納されていた場合は例外を送出せず該当レコードを削除して初期値へフォールバックし、部分欠落・範囲外数値は `normalizeShaderCorrectionParams` で許容範囲へクランプ・正規化する。
+
 ### 3.2 `zipIndexCache`（ZIP Central Directory 解析済み目次キャッシュ / `v0.1`〜）
 
 | カラム名    | 型               | Indexed | 説明                                                                                                                 |
@@ -99,6 +106,14 @@ erDiagram
 | `spreadPageOffset` | `0 \| 1`                               |    -    | 見開き「1ページずらし」補正状態                                                    |
 | `lastReadAt`       | `number`                               |   Yes   | 最終閲覧日時（UNIX ms）                                                            |
 | `updatedAt`        | `number`                               |   Yes   | LWW 同期調停用タイムスタンプ（UNIX ms）                                            |
+
+- **`local:*` 識別子の解析・容量上限ポリシー（`ReadingProgressRepository`）**:
+  - `local:${rawFileName}:${fileSize}` はファイル名自体に `:` が含まれるケースを安全に扱えるよう、接頭辞 `"local:"` と末尾の `lastIndexOf(":")` で `rawFileName`（非空文字列）と `fileSize`（0 以上の安全整数 `/^\d+$/`）へ分離する。
+  - ローカル一時 ZIP の進捗レコード（`targetKey` が `"local:"` で始まるもの）の最大保持件数は **100 件**（`LOCAL_READING_PROGRESS_MAX_ENTRIES = 100`）とし、`put` 保存時に `local:*` 件数が上限を超過した場合は `lastReadAt` 昇順（同値時は `targetKey` 昇順）で最古の `local:*` レコードのみを削除する。**`vol:*`（Google Drive 永続巻）レコードは LRU 退避の対象外とし一切削除しない**。
+  - `SCR-01` の「最近のローカル閲覧履歴」表示（`listRecentLocal(limit = 10)`）では、有効な `local:*` レコードのみを `lastReadAt` 降順で最大 10 件返す（`clearLocal()` 実行時も `local:*` のみを削除し `vol:*` は保護する）。
+- **破損／不整合レコードの自動修復と `readStatus` 判定**:
+  - `get(targetKey)` 時に `totalPageCount < 1`、`currentPageIndex < 0`、`currentPageIndex >= totalPageCount`、不正な `readStatus` / `spreadPageOffset`、または不正な `local:*` キー形式を検出した場合は、該当レコードを即時削除して `null` を返す。
+  - リーダー閲覧中の保存時は、現在画面に表示されているスロットの最大ページ番号 `maxDisplayedPageIndex >= totalPageCount - 1`（単ページの最終頁および最終頁を含む 2 ページ見開きの双方）であれば `'completed'`、それより手前であれば `'reading'` として記録し、再オープン時はステータスにかかわらず保存済み `currentPageIndex`（実ページ数でクランプ）と `spreadPageOffset` から忠実にレジュームする。
 
 ### 3.4 `driveSyncRoots`（Google Drive 同期対象ルートフォルダ / `v0.2`〜）
 

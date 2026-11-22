@@ -2,8 +2,8 @@
 type: spec-architecture
 title: "4層＋マルチスレッドアーキテクチャと共通インターフェース契約"
 description: "Streaming & Provider・Engine Worker・Storage・Viewer & Bridge の4層責務境界、Zero-Copy 転送、メモリ予算定数、および TypeScript コア契約の正本"
-status: "Approved (#21)"
-updated: "2026-11-21"
+status: "Review (#22)"
+updated: "2026-11-22"
 tags:
   [
     architecture,
@@ -15,6 +15,7 @@ tags:
     oauth,
     android,
     apk,
+    shader,
   ]
 related_specs:
   - docs/index.md
@@ -23,6 +24,7 @@ related_specs:
   - docs/specs/screen-transitions.md
   - docs/specs/engine/zip-streaming.md
   - docs/specs/engine/webgl2-renderer.md
+  - docs/specs/features/bookshelf.md
   - docs/specs/features/reader.md
   - docs/guidelines/workflow.md
   - docs/guidelines/testing.md
@@ -109,12 +111,12 @@ flowchart TB
 
 ### 1.1 標準ディレクトリ構成とレイヤー責務境界
 
-| レイヤー                                  | 配置ディレクトリ                                                                                                                                                                                                                           | 責務と依存ルール                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| :---------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **1. Streaming & Provider Layer**         | `src/engine/io/`<br>`src/providers/{gdrive,filename,metadata,sync}/`                                                                                                                                                                       | ・`RandomAccessReader` 実装（`GoogleDriveRangeReader`, `LocalFileReader`, 将来拡張用 `HttpRangeReader`）<br>・指定ルートフォルダ配下の Drive `files.list` / `changes.list` 同期、自炊ファイル名スマートパーサー、公開書誌 API クライアント（NDL / AniList / Google Books）、`appDataFolder` LWW 同期エンジン<br>・React / DOM / WebGL2 への依存を一切持たない純粋 TypeScript モジュールとする                                                                                                                                                                                                                                               |
-| **2. Engine Worker Layer**                | `src/engine/zip/`<br>`src/engine/cache/`<br>`src/engine/prefetch/`<br>`src/engine/workers/`<br>`src/engine/cover/`                                                                                                                         | ・ZIP / ZIP64 / Shift_JIS 解析、LFH 可変長 1 RTT ゼロコピー切り出し、Fast-Path ＋ 10MB バイト予算先読み、80MB L2 LRU キャッシュ、Decode Worker プール（2 Worker ラウンドロビン/空き優先制御）、2段優先度表紙 WebP 抽出スケジューラ<br>・**ロジック本体は Worker グローバル（`self`）非依存の `*Core.ts` に分離して Vitest で 100% 単体検証し、`*.worker.ts` は数行の `Comlink.expose(...)` ブートストラップのみとする**                                                                                                                                                                                                                     |
-| **3. Storage Layer**                      | `src/storage/`<br>`src/storage/repositories/`                                                                                                                                                                                              | ・Dexie.js インスタンス（`ExLibrisDatabase`：`version(1)` `syncMeta` ＋ `v0.1` `version(2)` `zipIndexCache` / `readingProgress`）とドメイン別 Repository インターフェース実装（`ZipIndexCacheRepository`：最大 500 件 LRU・不正キャッシュ自動削除フォールバック）<br>・`resetTestDb()` により UT / Storybook / Playwright IT で 100% 決定論的に初期化可能とする                                                                                                                                                                                                                                                                             |
-| **4. Viewer, Diagnostics & Bridge Layer** | `src/app/`（`ServiceProvider` / `serviceContext` / `coordinatorClient`）<br>`src/features/{bookshelf,series-detail,reader,settings}/`<br>`src/webgl/`<br>`src/bridges/{oauth,http,app,volume-key}/`<br>`src/diagnostics/`<br>`src/shared/` | ・アプリケーション DI コンテナ / Comlink Worker クライアント管理（`ServiceProvider` / `serviceContext` / `coordinatorClient`）<br>・画面別 Container / Presentational コンポーネント（1対1 Story/UT・親子 `vi.spyOn` 完全分離）<br>・History API ベースのカスタムルーター（`src/shared/router/`）およびオンメモリローカル ZIP セッションストア（`src/features/reader/`）<br>・生 WebGL2 レンダラ（`WebGLRendererCore` と `<ReaderCanvas>` の分離）および L1 `ImageBitmap` 管理（`L1PageCache`）<br>・Capacitor ネイティブブリッジの薄いアダプタ層（`AppBridge` 等、Web/テスト時はモック実装へ自動フォールバック）およびオンメモリ診断ロガー |
+| レイヤー                                  | 配置ディレクトリ                                                                                                                                                                                                                           | 責務と依存ルール                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| :---------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1. Streaming & Provider Layer**         | `src/engine/io/`<br>`src/providers/{gdrive,filename,metadata,sync}/`                                                                                                                                                                       | ・`RandomAccessReader` 実装（`GoogleDriveRangeReader`, `LocalFileReader`, 将来拡張用 `HttpRangeReader`）<br>・指定ルートフォルダ配下の Drive `files.list` / `changes.list` 同期、自炊ファイル名スマートパーサー、公開書誌 API クライアント（NDL / AniList / Google Books）、`appDataFolder` LWW 同期エンジン<br>・React / DOM / WebGL2 への依存を一切持たない純粋 TypeScript モジュールとする                                                                                                                                                                                                                                                                                        |
+| **2. Engine Worker Layer**                | `src/engine/zip/`<br>`src/engine/cache/`<br>`src/engine/prefetch/`<br>`src/engine/workers/`<br>`src/engine/cover/`                                                                                                                         | ・ZIP / ZIP64 / Shift_JIS 解析、LFH 可変長 1 RTT ゼロコピー切り出し、Fast-Path ＋ 10MB バイト予算先読み、80MB L2 LRU キャッシュ、Decode Worker プール（2 Worker ラウンドロビン/空き優先制御）、2段優先度表紙 WebP 抽出スケジューラ<br>・**ロジック本体は Worker グローバル（`self`）非依存の `*Core.ts` に分離して Vitest で 100% 単体検証し、`*.worker.ts` は数行の `Comlink.expose(...)` ブートストラップのみとする**                                                                                                                                                                                                                                                              |
+| **3. Storage Layer**                      | `src/storage/`<br>`src/storage/repositories/`                                                                                                                                                                                              | ・Dexie.js インスタンス（`ExLibrisDatabase`：`version(1)` `syncMeta` ＋ `v0.1` `version(2)` `zipIndexCache` / `readingProgress`）とドメイン別 Repository インターフェース実装（`ZipIndexCacheRepository`：最大 500 件 LRU・不正キャッシュ自動削除、`ReadingProgressRepository`：`local:*` 最大 100 件 LRU・`vol:*` 非退避保護・不正レコード自動削除、`ReaderSettingsRepository`：`syncMeta['defaultReaderSettingsJson']` 共通画質補正デフォルト保存・破損時安全フォールバック）<br>・`resetTestDb()` により UT / Storybook / Playwright IT で 100% 決定論的に初期化可能とする                                                                                                        |
+| **4. Viewer, Diagnostics & Bridge Layer** | `src/app/`（`ServiceProvider` / `serviceContext` / `coordinatorClient`）<br>`src/features/{bookshelf,series-detail,reader,settings}/`<br>`src/webgl/`<br>`src/bridges/{oauth,http,app,volume-key}/`<br>`src/diagnostics/`<br>`src/shared/` | ・アプリケーション DI コンテナ / Comlink Worker クライアント管理（`ServiceProvider` / `serviceContext` / `coordinatorClient`）<br>・画面別 Container / Presentational コンポーネント（1対1 Story/UT・親子 `vi.spyOn` 完全分離）<br>・History API ベースのカスタムルーター（`src/shared/router/`）およびオンメモリローカル ZIP セッションストア（`src/features/reader/`）<br>・生 WebGL2 レンダラ（`WebGLRendererCore` 1パス画質補正シェーダーと `<ReaderCanvas>` の分離）および L1 `ImageBitmap` 管理（`L1PageCache`）<br>・Capacitor ネイティブブリッジの薄いアダプタ層（`AppBridge` 優先度付き戻る制御等、Web/テスト時はモック実装へ自動フォールバック）およびオンメモリ診断ロガー |
 
 ---
 
@@ -303,16 +305,22 @@ export type SpreadPageOffset = 0 | 1;
 export type SlotPosition = "center" | "left" | "right";
 
 export interface ShaderCorrectionParams {
-  /** LOD バイアス / アンシャープマスク強度（0.0 = 無補正 〜 1.0 = 強） */
+  /** 画面空間偏微分 5タップ軽量アンシャープマスク強度（0.00 = 無補正 〜 1.00 = 強） */
   readonly sharpness: number;
-  /** 紙地肌の白飛ばし上限（0.80 〜 1.00、黄ばみ除去用） */
+  /** 紙地肌の白飛ばし上限（0.80 〜 1.00、初期値 1.00、黄ばみ除去用） */
   readonly whitePoint: number;
-  /** インク引き締め・裏写りカット下限（0.00 〜 0.25） */
+  /** インク引き締め・裏写りカット下限（0.00 〜 0.25、初期値 0.00） */
   readonly blackPoint: number;
-  /** 中間調ガンマ補正（0.60 〜 1.60、1.00 = 線形） */
+  /** 標準ガンマ補正 pow(rgb, 1.0 / gamma)（0.60 〜 1.60、初期値 1.00 = 線形、1.00 未満で薄墨濃化） */
   readonly gamma: number;
 }
+```
 
+- **画質補正パラメータ初期値・正規化契約**:
+  - 初期ニュートラル定数 `DEFAULT_SHADER_CORRECTION_PARAMS = { sharpness: 0, whitePoint: 1, blackPoint: 0, gamma: 1 }`。
+  - `normalizeShaderCorrectionParams(raw: unknown)` は `Object.prototype.hasOwnProperty.call` により自身のプロパティのみを抽出し、各有限数値を許容範囲へクランプ・小数第2位丸め（`Math.round(clamped * 100) / 100`）して返す（不正・欠落フィールドは個別に初期値へフォールバック）。
+
+```ts
 export interface ViewportSlot {
   readonly pageIndex: number;
   readonly position: SlotPosition;
@@ -337,7 +345,7 @@ export interface PageDimensions {
 - **インテリジェント見開き判定・動的アンカーペアリングルール**:
   - `SpreadMode === "auto"`（初期値）時は、ビューポートが横長（`viewportWidth > viewportHeight`）の場合に実効 `"spread"`、縦長・正方形の場合に実効 `"single"` へ自動追従する（`"single"` / `"spread"` 明示選択時は画面向きに依存せず固定表示）。
   - 実効 `"spread"` 状態であっても、①表紙先頭ページ（`pageIndex === 0 && spreadPageOffset === 0`）、②自身またはペア候補の次ページが横長スキャン（`width > height`、厳密不等号）、または ③末尾単独ページのいずれかに該当する場合は自動的に **1枚単独中央表示（`position: "center"`）** とする。
-  - 通常 2 ページ見開き時は `ReadingDirection` に従い、`rtl` は `[次: left, 現: right]`、`ltr` は `[現: left, 次: right]` に配置する。途中に横長画像（見開き結合済みスキャン等）が存在しても次頁へ `displayedSlots.length` 分だけ進行して後続ページから自動再ペアリングし、セッション内既知寸法＋遷移履歴（`spreadPageOffset` 変更および `effectiveSpreadMode === "single"` 遷移時にクリア）により前頁戻りも整合させる。
+  - 通常 2 ページ見開き時は `ReadingDirection` に従い、`rtl` は `[次: left, 現: right]`、`ltr` は `[現: left, 次: right]` に配置する。途中に横長画像（見開き結合済みスキャン等）が存在しても次頁へ `displayedSlots.length` 分だけ進行して後続ページから自動再ペアリングし、セッション内既知寸法＋遷移履歴（`spreadPageOffset` 変更・シークジャンプ・`effectiveSpreadMode === "single"` 遷移時にクリア）により前頁戻りも整合させる。
   - ユーザーが「1ページずらし」トグル（`spreadPageOffset: 0 | 1`）を切り替えた場合、`pageIndex === 0`（または `totalPages <= 1`）では基準 `0` を維持して `[0] ↔ [0, 1]` を切り替え、`pageIndex >= 1` では `nextOffset === 1` 時に原則 `+1`（最終頁時のみ `-1`）、`nextOffset === 0` 時に原則 `-1`（`pageIndex === 1` 時のみ 3 頁以上なら `2`、2 頁本なら `0`）へ基準ページをシフトして即座に再レイアウト・窓再同期を行う。
 
 ### 3.2 GPU テクスチャ・`MAX_TEXTURE_SIZE` ガード・L1 解放規律
@@ -346,8 +354,8 @@ export interface PageDimensions {
    - 背景クリア色は純黒（`#000000`）とし、単ページ時は中央内接フィット、2ページ見開き時は高さを揃えた背表紙密着フィット描画（片側エラー/欠損時は有効側のみ半画面背表紙寄せ描画）を行う。
    - 各ページテクスチャは `gl.texImage2D` 転送直後に `gl.generateMipmap(gl.TEXTURE_2D)` と `gl.LINEAR_MIPMAP_LINEAR` を設定し、縮小表示時のスクリーントーン干渉縞（モアレ）を GPU で除去する。
    - 描画バッファ解像度は `ResizeObserver` とネイティブ `devicePixelRatio`（`gl.MAX_VIEWPORT_DIMS` 上限でクランプ）に追従する。
-   - フラグメントシェーダー 1 パス内で `ShaderCorrectionParams` Uniform に基づくシャープネスおよび白黒レベル・ガンマ補正を実行する（Phase 3 PoC では等倍パススルー、補正パラメータは `#22` で追加）。
-   - `webglcontextlost` 発生時は `event.preventDefault()` を行い、`webglcontextrestored` 時に `L1PageCache` に保持中の `ImageBitmap` 群からテクスチャと Mipmap を自動再生成して描画復帰する。
+   - フラグメントシェーダー 1 パス内で `ShaderCorrectionParams` Uniform（`u_sharpness`, `u_whitePoint`, `u_blackPoint`, `u_gamma`）を適用する：`u_sharpness > 0.0` 時のみ画面空間偏微分 `max(vec2(abs(dFdx(v_texCoord.x)), abs(dFdy(v_texCoord.y))), 1.0 / vec2(textureSize(u_texture, 0)))` を用いた 5タップ軽量アンシャープマスクを実行し（Mipmap トリリニア補間を維持したまま縮小・等倍双方で輪郭強調）、続けて白黒レベル正規化 `clamp((rgb - vec3(u_blackPoint)) / max(u_whitePoint - u_blackPoint, 0.0001), 0.0, 1.0)` と標準ガンマ補正 `pow(rgb, vec3(1.0 / max(u_gamma, 0.0001)))` を実行する。パラメータ変更時はテクスチャ再転送や Worker 通信を行わず GPU Uniform 再描画のみで即時反映する。
+   - `webglcontextlost` 発生時は `event.preventDefault()` を行い、`webglcontextrestored` 時に保持中の `shaderParams` と `L1PageCache` の `ImageBitmap` 群からテクスチャ・Mipmap・Uniform を自動再生成して描画復帰する。
 2. **`MAX_TEXTURE_SIZE` 上限ガード**（`v0.1` で実装）:
    - WebGL2 初期化・復帰時に `gl.getParameter(gl.MAX_TEXTURE_SIZE)` を取得して保持する。
    - スロット画像の `bitmap.width > maxTextureSize || bitmap.height > maxTextureSize` を検知した場合、`diagnosticLogger.warn("webgl2", ...)` へ記録した上で、超過軸を `cols × rows` グリッド（最大 16 タイル）に `createImageBitmap(bitmap, sx, sy, sw, sh)` で非同期分割して複数 `WebGLTexture` へ転送・原寸描画する（16 タイル超過または分割失敗時は上限内安全リサイズ `createImageBitmap(..., { resizeWidth, resizeHeight })` へフォールバック）。一時生成したタイル用 `ImageBitmap` は `texImage2D` 転送直後（およびキャンセル/破棄時）に即 `close()` し、黒画面化・リーク双方を防ぐ。
