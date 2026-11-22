@@ -22,20 +22,51 @@ export const SHADER_PARAM_RANGES: Readonly<
   gamma: { min: 0.6, max: 1.6, step: 0.05 },
 };
 
-export function normalizeShaderCorrectionParams(
-  _raw: unknown,
-): ShaderCorrectionParams {
-  return { ...DEFAULT_SHADER_CORRECTION_PARAMS };
+function normalizeParamValue(
+  raw: Record<string, unknown>,
+  key: keyof ShaderCorrectionParams,
+): number {
+  if (!Object.prototype.hasOwnProperty.call(raw, key)) {
+    return DEFAULT_SHADER_CORRECTION_PARAMS[key];
+  }
+  const value = raw[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_SHADER_CORRECTION_PARAMS[key];
+  }
+  const { min, max } = SHADER_PARAM_RANGES[key];
+  const clamped = Math.min(max, Math.max(min, value));
+  const rounded = Math.round(clamped * 100) / 100;
+  return rounded === 0 ? 0 : rounded;
 }
 
-export function isDefaultShaderParams(
-  _params: ShaderCorrectionParams,
-): boolean {
-  return false;
+export function normalizeShaderCorrectionParams(
+  raw: unknown,
+): ShaderCorrectionParams {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { ...DEFAULT_SHADER_CORRECTION_PARAMS };
+  }
+  const candidate = raw as Record<string, unknown>;
+  return {
+    sharpness: normalizeParamValue(candidate, "sharpness"),
+    whitePoint: normalizeParamValue(candidate, "whitePoint"),
+    blackPoint: normalizeParamValue(candidate, "blackPoint"),
+    gamma: normalizeParamValue(candidate, "gamma"),
+  };
+}
+
+export function isDefaultShaderParams(params: ShaderCorrectionParams): boolean {
+  const normalized = normalizeShaderCorrectionParams(params);
+  return (
+    normalized.sharpness === DEFAULT_SHADER_CORRECTION_PARAMS.sharpness &&
+    normalized.whitePoint === DEFAULT_SHADER_CORRECTION_PARAMS.whitePoint &&
+    normalized.blackPoint === DEFAULT_SHADER_CORRECTION_PARAMS.blackPoint &&
+    normalized.gamma === DEFAULT_SHADER_CORRECTION_PARAMS.gamma
+  );
 }
 
 export function formatShaderParamsAttribute(
-  _params: ShaderCorrectionParams,
+  params: ShaderCorrectionParams,
 ): string {
-  return "";
+  const normalized = normalizeShaderCorrectionParams(params);
+  return `${normalized.sharpness.toFixed(2)},${normalized.whitePoint.toFixed(2)},${normalized.blackPoint.toFixed(2)},${normalized.gamma.toFixed(2)}`;
 }

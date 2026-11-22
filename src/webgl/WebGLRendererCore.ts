@@ -1,7 +1,10 @@
 import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
 import type { DecodedPageFrame } from "../engine/types";
 import type { ReadyPageFrame } from "./l1PageCache";
-import { DEFAULT_SHADER_CORRECTION_PARAMS } from "./shaderParams";
+import {
+  DEFAULT_SHADER_CORRECTION_PARAMS,
+  normalizeShaderCorrectionParams,
+} from "./shaderParams";
 import { FRAGMENT_SHADER_SOURCE, VERTEX_SHADER_SOURCE } from "./shaders";
 import type {
   RenderSlotFrame,
@@ -50,6 +53,10 @@ interface WebGLPipeline {
   readonly scaleLoc: WebGLUniformLocation;
   readonly offsetLoc: WebGLUniformLocation;
   readonly textureLoc: WebGLUniformLocation;
+  readonly sharpnessLoc: WebGLUniformLocation;
+  readonly whitePointLoc: WebGLUniformLocation;
+  readonly blackPointLoc: WebGLUniformLocation;
+  readonly gammaLoc: WebGLUniformLocation;
 }
 
 interface TileTexture {
@@ -408,6 +415,9 @@ export class WebGLRendererCore {
   private readonly textures = new Map<number, TextureEntry>();
   private readonly pendingBitmaps = new Map<number, ImageBitmap>();
   private readonly failedOversizedBitmaps = new Map<number, ImageBitmap>();
+  private shaderParams: ShaderCorrectionParams = {
+    ...DEFAULT_SHADER_CORRECTION_PARAMS,
+  };
 
   constructor(
     gl: WebGL2RenderingContext,
@@ -425,11 +435,21 @@ export class WebGLRendererCore {
   }
 
   getShaderParams(): ShaderCorrectionParams {
-    return { ...DEFAULT_SHADER_CORRECTION_PARAMS };
+    return { ...this.shaderParams };
   }
 
-  setShaderParams(_params: ShaderCorrectionParams): boolean {
-    return false;
+  setShaderParams(params: ShaderCorrectionParams): boolean {
+    const next = normalizeShaderCorrectionParams(params);
+    if (
+      this.shaderParams.sharpness === next.sharpness &&
+      this.shaderParams.whitePoint === next.whitePoint &&
+      this.shaderParams.blackPoint === next.blackPoint &&
+      this.shaderParams.gamma === next.gamma
+    ) {
+      return false;
+    }
+    this.shaderParams = next;
+    return true;
   }
 
   notifyContextLost(): void {
@@ -520,6 +540,16 @@ export class WebGLRendererCore {
     this.gl.bindVertexArray(this.pipeline.vao);
     this.gl.activeTexture(this.gl.TEXTURE0);
     this.gl.uniform1i(this.pipeline.textureLoc, 0);
+    this.gl.uniform1f(this.pipeline.sharpnessLoc, this.shaderParams.sharpness);
+    this.gl.uniform1f(
+      this.pipeline.whitePointLoc,
+      this.shaderParams.whitePoint,
+    );
+    this.gl.uniform1f(
+      this.pipeline.blackPointLoc,
+      this.shaderParams.blackPoint,
+    );
+    this.gl.uniform1f(this.pipeline.gammaLoc, this.shaderParams.gamma);
 
     const renderedSlots: ViewportSlot[] = [];
     for (const prepared of preparedJobs) {
@@ -1035,12 +1065,20 @@ export class WebGLRendererCore {
       const scaleLoc = this.gl.getUniformLocation(program, "u_scale");
       const offsetLoc = this.gl.getUniformLocation(program, "u_offset");
       const textureLoc = this.gl.getUniformLocation(program, "u_texture");
+      const sharpnessLoc = this.gl.getUniformLocation(program, "u_sharpness");
+      const whitePointLoc = this.gl.getUniformLocation(program, "u_whitePoint");
+      const blackPointLoc = this.gl.getUniformLocation(program, "u_blackPoint");
+      const gammaLoc = this.gl.getUniformLocation(program, "u_gamma");
       if (
         positionLoc < 0 ||
         texCoordLoc < 0 ||
         scaleLoc === null ||
         offsetLoc === null ||
-        textureLoc === null
+        textureLoc === null ||
+        sharpnessLoc === null ||
+        whitePointLoc === null ||
+        blackPointLoc === null ||
+        gammaLoc === null
       ) {
         throw new WebGLInitError(
           "シェーダーのattribute/uniformロケーション取得に失敗しました",
@@ -1059,6 +1097,10 @@ export class WebGLRendererCore {
         scaleLoc,
         offsetLoc,
         textureLoc,
+        sharpnessLoc,
+        whitePointLoc,
+        blackPointLoc,
+        gammaLoc,
       };
       this.maxViewportDims = this.gl.getParameter(
         this.gl.MAX_VIEWPORT_DIMS,
