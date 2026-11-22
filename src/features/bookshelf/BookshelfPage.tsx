@@ -169,48 +169,59 @@ export function BookshelfPage({
     }
   }, []);
 
-  const handleDeleteHistoryItem = useCallback(
-    async (targetKey: string) => {
+  const runMountedHistoryMutation = useCallback(
+    async (
+      operation: () => Promise<void>,
+      onSuccess: () => void,
+      warnMessage: string,
+      warnDetailPrefix?: string,
+    ) => {
       try {
-        await readingProgressRepo.delete(targetKey);
+        await operation();
         if (!isMountedRef.current) {
           return;
         }
-        setRecentHistory((prev) =>
-          prev.filter((item) => item.targetKey !== targetKey),
-        );
+        onSuccess();
       } catch (error) {
         if (!isMountedRef.current) {
           return;
         }
+        const message = formatErrorMessage(error);
         diagnosticLogger.warn(
           "bookshelf",
-          "閲覧履歴の削除に失敗しました",
-          `${targetKey}: ${formatErrorMessage(error)}`,
+          warnMessage,
+          warnDetailPrefix === undefined
+            ? message
+            : `${warnDetailPrefix}: ${message}`,
         );
       }
     },
-    [readingProgressRepo],
+    [],
   );
 
-  const handleClearHistory = useCallback(async () => {
-    try {
-      await readingProgressRepo.clearLocal();
-      if (!isMountedRef.current) {
-        return;
-      }
-      setRecentHistory([]);
-    } catch (error) {
-      if (!isMountedRef.current) {
-        return;
-      }
-      diagnosticLogger.warn(
-        "bookshelf",
+  const handleDeleteHistoryItem = useCallback(
+    (targetKey: string) =>
+      runMountedHistoryMutation(
+        () => readingProgressRepo.delete(targetKey),
+        () =>
+          setRecentHistory((prev) =>
+            prev.filter((item) => item.targetKey !== targetKey),
+          ),
+        "閲覧履歴の削除に失敗しました",
+        targetKey,
+      ),
+    [readingProgressRepo, runMountedHistoryMutation],
+  );
+
+  const handleClearHistory = useCallback(
+    () =>
+      runMountedHistoryMutation(
+        () => readingProgressRepo.clearLocal(),
+        () => setRecentHistory([]),
         "閲覧履歴のクリアに失敗しました",
-        formatErrorMessage(error),
-      );
-    }
-  }, [readingProgressRepo]);
+      ),
+    [readingProgressRepo, runMountedHistoryMutation],
+  );
 
   return (
     <div
