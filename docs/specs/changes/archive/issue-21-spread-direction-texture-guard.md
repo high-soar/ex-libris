@@ -161,9 +161,9 @@ related_tests:
 3. **MK-3（`#47` / PR #51 @ `8b253c1` マージ完了）: `ReaderCanvas` ＆ `ReaderPage` 統合 ＆ Storybook/VRT 層**:
    - 対象: `src/webgl/ReaderCanvas.tsx`, `.stories.tsx`, `.test.tsx`, `src/features/reader/ReaderPage.tsx`, `.stories.tsx`, `.test.tsx`, `test/vrt/snapshots/*`, `test/it/local-reader.spec.ts`（既存 5 ケース 375×667 明示）
    - 実績: C0/C1/Functions/Lines 100% PASS ＆ VRT 1280px/375px PASS、AI 自律マージ完了（`Closes #47`）
-4. **Step 4（IT `#48` / 最終 PR `Closes #21`, `Closes #48`）: IT 結合テスト・実機検証・差分仕様アーカイブ**:
-   - 対象: `test/it/helpers.ts`, `test/it/local-reader.spec.ts`, `docs/quality/bug-and-handover-log.md`（No. 28〜29 PR #51 同期、`HO-07` は区分 A 実機検証前のため `Open` 維持）, 本差分仕様の `Completed (Archived)` 化＆`docs/specs/changes/archive/` 移動、関連 App 全体正本の `Approved (#21)` 化
-   - Gate 1〜6 通過後に `build-android.yml` を起動し、Android 実機検証項目表＋APK Artifact URL を提示して実機検証・`HO-07` 精算の上、人間レビュー・マージにより `#21` / `#48` をクローズ。
+4. **Step 4（IT `#48` / 最終 PR #52 `Closes #21`, `Closes #48`）: IT 結合テスト・実機検証・差分仕様アーカイブ**:
+   - 対象: `test/it/helpers.ts`, `test/it/local-reader.spec.ts`, `docs/quality/bug-and-handover-log.md`（No. 28〜29 PR #51 同期、`HO-07` 実機確認精算）, 本差分仕様の `Completed (Archived)` 化＆`docs/specs/changes/archive/` 移動、関連 App 全体正本の `Approved (#21)` 化
+   - 実績: Gate 1〜6 通過後に `build-android.yml`（Run `#44967267212`）を実行し、実機項目 1〜6（`ho07-max-texture-test.cbz` による `maxTextureSize=8192` 下の `tile-split (2x1=2)` / `(3x1=3)` と `[WARN] [webgl2]`・`[ERROR]` ゼロ確認含む）をすべて確認して `HO-07` を `Resolved` へ精算。
 
 ---
 
@@ -172,7 +172,7 @@ related_tests:
 - **判定（[workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 A（親 Issue #21 完了前に実施）**
   - **根拠**: 生 WebGL2 2スロット見開き描画・`MAX_TEXTURE_SIZE` 超過画像のタイル分割/縮小フォールバック（実機 GPU での非黒画面描画および一時タイル `ImageBitmap.close()` VRAM 解放安全性）・スマホ縦/タブレット横回転時の自動追従・`rtl`/`ltr` 動的タッチスワイプ反転を含み、実機検証観点が 3 項目以上見込まれるため。
 - **申し送り事項管理（[bug-and-handover-log.md](../../../quality/bug-and-handover-log.md)）**:
-  - **`HO-07`**（状態: `Open`、完了ゲート: **`親 Issue #21 完了前`**）: Step 4 IT PR の Gate 1〜6 通過後、`build-android.yml` で生成した署名済み検証 APK にて以下を確認し `Resolved` へ精算する：
+  - **`HO-07`**（状態: `Resolved`、完了ゲート: **`親 Issue #21 完了前`**）: Run `#44967267212`（`debug` / `app-debug.apk`）による実機検証項目 1〜6 をすべて確認し、`Resolved` へ精算完了：
     1. タブレット横向き（またはスマホ横回転）時に `auto` モードで表紙 0P が中央単独、以降 1-2 / 3-4 が隙間ゼロの見開き描画となり、横長画像ページが自動で単枚中央表示され次頁から自動再ペアリングされること。
     2. スマホ縦向き時に `auto` モードで単ページ自動表示となり、下部 HUD の「1ページずらし」が `disabled`・2段レイアウトがはみ出しなく操作でき、横回転でシームレスに見開きへ切り替わること。
     3. 「1ページずらし」および「右開き (`rtl`) / 左開き (`ltr`)」切替時に左右タップ領域・スワイプ方向・HUD「次へ/前へ」配置・`2-3 / 24` 表記が即座に反転整合すること。
