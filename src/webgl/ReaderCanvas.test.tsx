@@ -1015,10 +1015,11 @@ describe("ReaderCanvas", () => {
       slot: { pageIndex: 0, position: "center" },
       frame: createReadyFrame(0, 1),
     };
+    const slots: readonly RenderSlotFrame[] = [slot0];
 
     const { rerender } = render(
       <ReaderCanvas
-        slots={[slot0]}
+        slots={slots}
         shaderParams={outOfRangeParams}
         getWebGL2Context={() => gl}
       />,
@@ -1042,7 +1043,7 @@ describe("ReaderCanvas", () => {
     mocks.drawArrays.mockClear();
     rerender(
       <ReaderCanvas
-        slots={[slot0]}
+        slots={slots}
         shaderParams={{
           sharpness: 2.5,
           whitePoint: 0.79,
@@ -1066,7 +1067,7 @@ describe("ReaderCanvas", () => {
     };
     rerender(
       <ReaderCanvas
-        slots={[slot0]}
+        slots={slots}
         shaderParams={updatedParams}
         getWebGL2Context={() => gl}
       />,
@@ -1102,7 +1103,7 @@ describe("ReaderCanvas", () => {
     };
     rerender(
       <ReaderCanvas
-        slots={[slot0]}
+        slots={slots}
         shaderParams={paramsWhileLost}
         getWebGL2Context={() => gl}
       />,
@@ -1126,7 +1127,7 @@ describe("ReaderCanvas", () => {
     mocks.drawArrays.mockClear();
     rerender(
       <ReaderCanvas
-        slots={[slot0]}
+        slots={slots}
         shaderParams={DEFAULT_SHADER_CORRECTION_PARAMS}
         getWebGL2Context={() => gl}
       />,
