@@ -52,9 +52,12 @@ related_tests:
   - src/shared/router/RouterProvider.test.tsx
   - src/storage/db.test.ts
   - src/storage/repositories/zipIndexCacheRepository.test.ts
+  - src/storage/repositories/readingProgressRepository.test.ts
+  - src/storage/repositories/readerSettingsRepository.test.ts
   - src/webgl/ReaderCanvas.test.tsx
   - src/webgl/WebGLRendererCore.test.ts
   - src/webgl/l1PageCache.test.ts
+  - src/webgl/shaderParams.test.ts
   - src/webgl/shaders.test.ts
   - scripts/android-build-config.test.ts
   - test/it/smoke.spec.ts

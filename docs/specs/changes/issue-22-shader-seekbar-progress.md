@@ -35,6 +35,9 @@ related_tests:
   - src/app/ServiceProvider.test.tsx
   - src/app/serviceContext.test.ts
   - src/storage/db.test.ts
+  - src/storage/repositories/readingProgressRepository.test.ts
+  - src/storage/repositories/readerSettingsRepository.test.ts
+  - src/webgl/shaderParams.test.ts
   - src/webgl/shaders.test.ts
   - src/webgl/WebGLRendererCore.test.ts
   - src/webgl/ReaderCanvas.test.tsx
