@@ -4,13 +4,18 @@ import { CapacitorAppBridge } from "../bridges/app/capacitorAppBridge";
 import { MockAppBridge } from "../bridges/app/mockAppBridge";
 import type { AppBridge } from "../bridges/app/types";
 import { db, resetTestDb } from "../storage/db";
-import type { ReaderSettingsRepository } from "../storage/repositories/readerSettingsRepository";
-import type { ReadingProgressRepository } from "../storage/repositories/readingProgressRepository";
+import {
+  DexieReaderSettingsRepository,
+  type ReaderSettingsRepository,
+} from "../storage/repositories/readerSettingsRepository";
+import {
+  DexieReadingProgressRepository,
+  type ReadingProgressRepository,
+} from "../storage/repositories/readingProgressRepository";
 import {
   DexieZipIndexCacheRepository,
   type ZipIndexCacheRepository,
 } from "../storage/repositories/zipIndexCacheRepository";
-import { DEFAULT_SHADER_CORRECTION_PARAMS } from "../webgl/shaderParams";
 import {
   createCoordinatorSession as defaultCreateCoordinatorSession,
   type CoordinatorSessionHandle,
@@ -32,27 +37,21 @@ function createDefaultAppBridge(): AppBridge {
     : new MockAppBridge();
 }
 
-const STUB_PROGRESS_REPO: ReadingProgressRepository = {
-  get: async () => null,
-  put: async () => {},
-  listRecentLocal: async () => [],
-  delete: async () => {},
-  clearLocal: async () => {},
-};
-
-const STUB_SETTINGS_REPO: ReaderSettingsRepository = {
-  getShaderDefaults: async () => ({ ...DEFAULT_SHADER_CORRECTION_PARAMS }),
-  saveShaderDefaults: async (params) => ({ ...params }),
-};
-
 export function ServiceProvider({
   children,
   appBridge,
   createCoordinatorSession,
   zipIndexCacheRepo,
+  readingProgressRepo,
+  readerSettingsRepo,
 }: ServiceProviderProps) {
   const fallbackAppBridgeRef = useRef<AppBridge | null>(null);
   const fallbackZipIndexCacheRepoRef = useRef<ZipIndexCacheRepository | null>(
+    null,
+  );
+  const fallbackReadingProgressRepoRef =
+    useRef<ReadingProgressRepository | null>(null);
+  const fallbackReaderSettingsRepoRef = useRef<ReaderSettingsRepository | null>(
     null,
   );
 
@@ -78,6 +77,29 @@ export function ServiceProvider({
     return fallbackZipIndexCacheRepoRef.current;
   }, [zipIndexCacheRepo]);
 
+  const resolvedReadingProgressRepo = useMemo(() => {
+    if (readingProgressRepo) {
+      return readingProgressRepo;
+    }
+    if (!fallbackReadingProgressRepoRef.current) {
+      fallbackReadingProgressRepoRef.current =
+        new DexieReadingProgressRepository(db);
+    }
+    return fallbackReadingProgressRepoRef.current;
+  }, [readingProgressRepo]);
+
+  const resolvedReaderSettingsRepo = useMemo(() => {
+    if (readerSettingsRepo) {
+      return readerSettingsRepo;
+    }
+    if (!fallbackReaderSettingsRepoRef.current) {
+      fallbackReaderSettingsRepoRef.current = new DexieReaderSettingsRepository(
+        db,
+      );
+    }
+    return fallbackReaderSettingsRepoRef.current;
+  }, [readerSettingsRepo]);
+
   const resolvedCreateCoordinatorSession =
     createCoordinatorSession ?? defaultCreateCoordinatorSession;
 
@@ -94,13 +116,15 @@ export function ServiceProvider({
       appBridge: resolvedAppBridge,
       createCoordinatorSession: resolvedCreateCoordinatorSession,
       zipIndexCacheRepo: resolvedZipIndexCacheRepo,
-      readingProgressRepo: STUB_PROGRESS_REPO,
-      readerSettingsRepo: STUB_SETTINGS_REPO,
+      readingProgressRepo: resolvedReadingProgressRepo,
+      readerSettingsRepo: resolvedReaderSettingsRepo,
     }),
     [
       resolvedAppBridge,
       resolvedCreateCoordinatorSession,
       resolvedZipIndexCacheRepo,
+      resolvedReadingProgressRepo,
+      resolvedReaderSettingsRepo,
     ],
   );
 
