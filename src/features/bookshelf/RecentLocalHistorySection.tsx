@@ -41,6 +41,91 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+function computeHistoryProgressPercent(item: LocalReadingHistoryItem): number {
+  if (item.readStatus === "completed") {
+    return 100;
+  }
+  return Math.min(
+    100,
+    Math.max(
+      0,
+      Math.round(((item.currentPageIndex + 1) / item.totalPageCount) * 100),
+    ),
+  );
+}
+
+function HistoryListItem({
+  item,
+  onReopenLocalFile,
+  onDeleteItem,
+}: {
+  readonly item: LocalReadingHistoryItem;
+  readonly onReopenLocalFile: () => void;
+  readonly onDeleteItem: (targetKey: string) => void;
+}): ReactNode {
+  const badge = READ_STATUS_BADGE[item.readStatus];
+  const progressPercent = computeHistoryProgressPercent(item);
+  const progressFillColor =
+    item.readStatus === "completed" ? "bg-emerald-400" : "bg-indigo-400";
+
+  return (
+    <li
+      data-testid="recent-local-history-item"
+      className="flex items-stretch gap-2 rounded-xl border border-slate-800 bg-slate-950/60 p-2.5 sm:p-3"
+    >
+      <button
+        type="button"
+        data-testid="reopen-local-history-button"
+        onClick={onReopenLocalFile}
+        className="min-w-0 flex-1 touch-manipulation rounded-lg p-1 text-left transition-colors hover:bg-slate-800/60"
+      >
+        <span className="flex items-center justify-between gap-2">
+          <span
+            title={item.rawFileName}
+            className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-100"
+          >
+            {item.rawFileName}
+          </span>
+          <span
+            className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${badge.className}`}
+          >
+            {badge.label}
+          </span>
+        </span>
+        <span className="mt-1 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+          <span>{formatFileSize(item.fileSize)}</span>
+          <span className="tabular-nums">
+            {`${item.currentPageIndex + 1} / ${item.totalPageCount} ページ`}
+          </span>
+        </span>
+        <span
+          role="progressbar"
+          aria-label={`${item.rawFileName} の読書進捗`}
+          aria-valuenow={progressPercent}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          className="mt-2 block h-1.5 w-full overflow-hidden rounded-full bg-slate-800"
+        >
+          <span
+            data-testid="local-history-progress-fill"
+            className={`block h-full rounded-full transition-all ${progressFillColor}`}
+            style={{ width: `${progressPercent}%` }}
+          />
+        </span>
+      </button>
+      <button
+        type="button"
+        data-testid="delete-local-history-button"
+        aria-label={`${item.rawFileName} の履歴を削除`}
+        onClick={() => onDeleteItem(item.targetKey)}
+        className="shrink-0 self-center touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-rose-500/50 hover:bg-rose-950/50 hover:text-rose-200"
+      >
+        削除
+      </button>
+    </li>
+  );
+}
+
 export function RecentLocalHistorySection({
   items,
   onReopenLocalFile,
@@ -77,79 +162,14 @@ export function RecentLocalHistorySection({
       </div>
 
       <ul data-testid="recent-local-history-list" className="mt-4 space-y-2.5">
-        {items.map((item) => {
-          const badge = READ_STATUS_BADGE[item.readStatus];
-          const progressPercent =
-            item.readStatus === "completed"
-              ? 100
-              : Math.min(
-                  100,
-                  Math.max(
-                    0,
-                    Math.round(
-                      ((item.currentPageIndex + 1) / item.totalPageCount) * 100,
-                    ),
-                  ),
-                );
-
-          return (
-            <li
-              key={item.targetKey}
-              data-testid="recent-local-history-item"
-              className="flex items-stretch gap-2 rounded-xl border border-slate-800 bg-slate-950/60 p-2.5 sm:p-3"
-            >
-              <button
-                type="button"
-                data-testid="reopen-local-history-button"
-                onClick={onReopenLocalFile}
-                className="min-w-0 flex-1 touch-manipulation rounded-lg p-1 text-left transition-colors hover:bg-slate-800/60"
-              >
-                <span className="flex items-center justify-between gap-2">
-                  <span
-                    title={item.rawFileName}
-                    className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-100"
-                  >
-                    {item.rawFileName}
-                  </span>
-                  <span
-                    className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${badge.className}`}
-                  >
-                    {badge.label}
-                  </span>
-                </span>
-                <span className="mt-1 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
-                  <span>{formatFileSize(item.fileSize)}</span>
-                  <span className="tabular-nums">
-                    {`${item.currentPageIndex + 1} / ${item.totalPageCount} ページ`}
-                  </span>
-                </span>
-                <span
-                  role="progressbar"
-                  aria-label={`${item.rawFileName} の読書進捗`}
-                  aria-valuenow={progressPercent}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  className="mt-2 block h-1.5 w-full overflow-hidden rounded-full bg-slate-800"
-                >
-                  <span
-                    data-testid="local-history-progress-fill"
-                    className="block h-full rounded-full bg-indigo-400 transition-all"
-                    style={{ width: `${progressPercent}%` }}
-                  />
-                </span>
-              </button>
-              <button
-                type="button"
-                data-testid="delete-local-history-button"
-                aria-label={`${item.rawFileName} の履歴を削除`}
-                onClick={() => onDeleteItem(item.targetKey)}
-                className="shrink-0 self-center touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-rose-500/50 hover:bg-rose-950/50 hover:text-rose-200"
-              >
-                削除
-              </button>
-            </li>
-          );
-        })}
+        {items.map((item) => (
+          <HistoryListItem
+            key={item.targetKey}
+            item={item}
+            onReopenLocalFile={onReopenLocalFile}
+            onDeleteItem={onDeleteItem}
+          />
+        ))}
       </ul>
     </section>
   );
