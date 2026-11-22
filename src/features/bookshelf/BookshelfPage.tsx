@@ -2,15 +2,21 @@ import {
   type ChangeEvent,
   type DragEvent,
   useCallback,
+  useEffect,
   useRef,
   useState,
 } from "react";
+import { useServices } from "../../app/serviceContext";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
 import { useRouter } from "../../shared/router/routerContext";
-import type { LocalReadingHistoryItem } from "../../storage/repositories/readingProgressRepository";
+import {
+  type LocalReadingHistoryItem,
+  RECENT_LOCAL_HISTORY_DEFAULT_LIMIT,
+} from "../../storage/repositories/readingProgressRepository";
 import { useLocalReaderSessionStore } from "../reader/localReaderSessionStore";
 import { BookshelfHeader, type CopyStatus } from "./BookshelfHeader";
 import { LocalArchiveEmptyState } from "./LocalArchiveEmptyState";
+import { RecentLocalHistorySection } from "./RecentLocalHistorySection";
 
 export interface BookshelfPageProps {
   readonly initialCopyStatus?: CopyStatus;
@@ -30,11 +36,17 @@ function isSupportedArchiveFile(fileName: string): boolean {
   return lower.endsWith(".zip") || lower.endsWith(".cbz");
 }
 
+function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function BookshelfPage({
   initialCopyStatus = "idle",
   initialErrorMessage = null,
   initialDragActive = false,
+  initialRecentHistory,
 }: BookshelfPageProps) {
+  const { readingProgressRepo } = useServices();
   const { navigate } = useRouter();
   const openLocalFile = useLocalReaderSessionStore(
     (state) => state.openLocalFile,
@@ -45,7 +57,46 @@ export function BookshelfPage({
     initialErrorMessage,
   );
   const [isDragActive, setIsDragActive] = useState<boolean>(initialDragActive);
+  const [recentHistory, setRecentHistory] = useState<
+    readonly LocalReadingHistoryItem[]
+  >(initialRecentHistory ?? []);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const isMountedRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (initialRecentHistory !== undefined) {
+      return;
+    }
+
+    let cancelled = false;
+    void readingProgressRepo
+      .listRecentLocal(RECENT_LOCAL_HISTORY_DEFAULT_LIMIT)
+      .then((items) => {
+        if (!cancelled) {
+          setRecentHistory(items);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          diagnosticLogger.warn(
+            "bookshelf",
+            "最近の閲覧履歴の取得に失敗しました",
+            formatErrorMessage(error),
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [initialRecentHistory, readingProgressRepo]);
 
   const handleOpenLocalZip = useCallback(() => {
     (fileInputRef.current as HTMLInputElement).click();
@@ -118,6 +169,49 @@ export function BookshelfPage({
     }
   }, []);
 
+  const handleDeleteHistoryItem = useCallback(
+    async (targetKey: string) => {
+      try {
+        await readingProgressRepo.delete(targetKey);
+        if (!isMountedRef.current) {
+          return;
+        }
+        setRecentHistory((prev) =>
+          prev.filter((item) => item.targetKey !== targetKey),
+        );
+      } catch (error) {
+        if (!isMountedRef.current) {
+          return;
+        }
+        diagnosticLogger.warn(
+          "bookshelf",
+          "閲覧履歴の削除に失敗しました",
+          `${targetKey}: ${formatErrorMessage(error)}`,
+        );
+      }
+    },
+    [readingProgressRepo],
+  );
+
+  const handleClearHistory = useCallback(async () => {
+    try {
+      await readingProgressRepo.clearLocal();
+      if (!isMountedRef.current) {
+        return;
+      }
+      setRecentHistory([]);
+    } catch (error) {
+      if (!isMountedRef.current) {
+        return;
+      }
+      diagnosticLogger.warn(
+        "bookshelf",
+        "閲覧履歴のクリアに失敗しました",
+        formatErrorMessage(error),
+      );
+    }
+  }, [readingProgressRepo]);
+
   return (
     <div
       data-testid="bookshelf-page"
@@ -129,7 +223,7 @@ export function BookshelfPage({
         onOpenLocalZip={handleOpenLocalZip}
       />
       <main
-        className="flex-1 flex items-center justify-center p-6"
+        className="flex-1 flex flex-col items-center justify-center gap-6 p-6"
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -138,6 +232,12 @@ export function BookshelfPage({
           isDragActive={isDragActive}
           errorMessage={errorMessage}
           onOpenLocalZip={handleOpenLocalZip}
+        />
+        <RecentLocalHistorySection
+          items={recentHistory}
+          onReopenLocalFile={handleOpenLocalZip}
+          onDeleteItem={handleDeleteHistoryItem}
+          onClearAll={handleClearHistory}
         />
         <input
           ref={fileInputRef}
