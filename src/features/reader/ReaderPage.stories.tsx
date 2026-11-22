@@ -435,3 +435,34 @@ export const PartialSpreadError: Story = {
     />
   ),
 };
+
+/** 画質補正ボトムシート表示状態（HUD非表示・シェーダー補正適用） */
+export const ShaderSheetOpen: Story = {
+  name: "画質補正シート表示状態",
+  args: {
+    initialSnapshot: {
+      totalPages: 24,
+      currentPageIndex: 1,
+      readingDirection: "rtl",
+      spreadMode: "spread",
+      spreadPageOffset: 0,
+      shaderParams: {
+        sharpness: 0.45,
+        whitePoint: 0.92,
+        blackPoint: 0.08,
+        gamma: 0.85,
+      },
+      isShaderSheetOpen: true,
+      shaderSaveStatus: "saved",
+      isOpening: false,
+      isHudOpen: false,
+    },
+  },
+  render: (args) => (
+    <StoryPageWithBitmaps
+      specs={SPREAD_RTL_SPECS}
+      snapshot={args.initialSnapshot!}
+      pageProps={args}
+    />
+  ),
+};

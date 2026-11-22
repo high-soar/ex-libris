@@ -1,8 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
 import { WebGLRendererCore } from "./WebGLRendererCore";
 import type { ReadyPageFrame } from "./l1PageCache";
-import type { RenderSlotFrame, ViewportSlot } from "./types";
+import {
+  formatShaderParamsAttribute,
+  normalizeShaderCorrectionParams,
+} from "./shaderParams";
+import type {
+  RenderSlotFrame,
+  ShaderCorrectionParams,
+  ViewportSlot,
+} from "./types";
 
 export type WebGLStatus = "initializing" | "ready" | "context-lost" | "error";
 export type WebGLFatalErrorCode = "WEBGL_UNSUPPORTED" | "WEBGL_INIT_FAILED";
@@ -14,6 +22,7 @@ export interface ReaderCanvasHandle {
 
 export interface ReaderCanvasProps {
   readonly slots: readonly RenderSlotFrame[];
+  readonly shaderParams?: ShaderCorrectionParams;
   readonly onRendererReady?: (handle: ReaderCanvasHandle | null) => void;
   readonly onFatalError?: (code: WebGLFatalErrorCode, message: string) => void;
   readonly getWebGL2Context?: (
@@ -111,8 +120,20 @@ function buildRenderedState(
   };
 }
 
+function useNormalizedShaderParams(
+  shaderParams: ShaderCorrectionParams | undefined,
+): ShaderCorrectionParams {
+  const { sharpness, whitePoint, blackPoint, gamma } =
+    normalizeShaderCorrectionParams(shaderParams);
+  return useMemo<ShaderCorrectionParams>(
+    () => ({ sharpness, whitePoint, blackPoint, gamma }),
+    [sharpness, whitePoint, blackPoint, gamma],
+  );
+}
+
 export function ReaderCanvas({
   slots,
+  shaderParams,
   onRendererReady,
   onFatalError,
   getWebGL2Context,
@@ -121,6 +142,10 @@ export function ReaderCanvas({
   const rendererRef = useRef<WebGLRendererCore | null>(null);
   const isContextLostRef = useRef(false);
   const lastRenderedKeyRef = useRef("");
+
+  const normalizedShaderParams = useNormalizedShaderParams(shaderParams);
+  const shaderParamsRef = useRef(normalizedShaderParams);
+  shaderParamsRef.current = normalizedShaderParams;
 
   const slotsRef = useRef(slots);
   slotsRef.current = slots;
@@ -208,6 +233,7 @@ export function ReaderCanvas({
       return;
     }
 
+    renderer.setShaderParams(shaderParamsRef.current);
     rendererRef.current = renderer;
     isContextLostRef.current = false;
 
@@ -309,17 +335,21 @@ export function ReaderCanvas({
 
   useEffect(() => {
     const renderer = rendererRef.current;
-    if (renderer === null || isContextLostRef.current) {
+    if (renderer === null) {
       return;
     }
-    applySlots(renderer, slots);
-  }, [applySlots, slots]);
+    renderer.setShaderParams(normalizedShaderParams);
+    if (!isContextLostRef.current) {
+      applySlots(renderer, slots);
+    }
+  }, [applySlots, normalizedShaderParams, slots]);
 
   return (
     <canvas
       ref={canvasRef}
       data-testid="reader-canvas"
       data-webgl-status={status}
+      data-shader-params={formatShaderParamsAttribute(normalizedShaderParams)}
       data-rendered-page={rendered.page}
       data-rendered-pages={rendered.pages}
       data-rendered-slots={rendered.slots}
