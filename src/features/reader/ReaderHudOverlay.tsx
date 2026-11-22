@@ -1,4 +1,12 @@
-import type { ReactNode, SyntheticEvent } from "react";
+import {
+  type ChangeEvent,
+  type ReactNode,
+  type SyntheticEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   EffectiveSpreadMode,
   ReadingDirection,
@@ -70,17 +78,103 @@ export function ReaderHudOverlay({
   onCycleSpreadMode,
   onToggleSpreadPageOffset,
   onToggleReadingDirection,
+  shaderModified = false,
+  onOpenShaderSheet,
+  onCommitSeek,
 }: ReaderHudOverlayProps): ReactNode {
+  const maxSeekIndex = Math.max(0, totalPages - 1);
+  const clampedCurrentPageIndex = Math.min(
+    maxSeekIndex,
+    Math.max(0, currentPageIndex),
+  );
+
+  const [seekPreviewIndex, setSeekPreviewIndex] = useState<number | null>(null);
+  const seekPreviewRef = useRef<number | null>(null);
+  const currentPageIndexRef = useRef(clampedCurrentPageIndex);
+  currentPageIndexRef.current = clampedCurrentPageIndex;
+  const onCommitSeekRef = useRef(onCommitSeek);
+  onCommitSeekRef.current = onCommitSeek;
+
+  const seekDragController = useMemo(() => {
+    const detach = () => {
+      window.removeEventListener("pointerup", onPointerEnd, true);
+      window.removeEventListener("pointercancel", onPointerEnd, true);
+    };
+
+    function onPointerEnd(event: { readonly type: string }) {
+      const targetIndex = seekPreviewRef.current;
+      if (targetIndex === null) {
+        return;
+      }
+      seekPreviewRef.current = null;
+      detach();
+      setSeekPreviewIndex(null);
+      if (
+        event.type === "pointerup" &&
+        targetIndex !== currentPageIndexRef.current
+      ) {
+        onCommitSeekRef.current?.(targetIndex);
+      }
+    }
+
+    const attach = () => {
+      window.addEventListener("pointerup", onPointerEnd, true);
+      window.addEventListener("pointercancel", onPointerEnd, true);
+    };
+
+    return { attach, detach, onPointerEnd };
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) {
+      seekPreviewRef.current = null;
+      seekDragController.detach();
+      setSeekPreviewIndex(null);
+    }
+  }, [isOpen, seekDragController]);
+
+  useEffect(() => {
+    return () => {
+      seekPreviewRef.current = null;
+      seekDragController.detach();
+    };
+  }, [seekDragController]);
+
   if (!isOpen) {
     return null;
   }
+
+  const handleSeekPointerDown = () => {
+    if (totalPages <= 1) {
+      return;
+    }
+    seekPreviewRef.current = clampedCurrentPageIndex;
+    setSeekPreviewIndex(clampedCurrentPageIndex);
+    seekDragController.attach();
+  };
+
+  const handleSeekChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const nextIndex = Number(event.currentTarget.value);
+    if (seekPreviewRef.current !== null) {
+      seekPreviewRef.current = nextIndex;
+      setSeekPreviewIndex(nextIndex);
+      return;
+    }
+    if (nextIndex !== clampedCurrentPageIndex) {
+      onCommitSeek?.(nextIndex);
+    }
+  };
 
   const isPrevDisabled = totalPages === 0 || currentPageIndex <= 0;
   const isNextDisabled =
     totalPages === 0 ||
     (maxDisplayedPageIndex ?? currentPageIndex) >= totalPages - 1;
   const displayPage = totalPages > 0 ? currentPageIndex + 1 : 0;
-  const indicatorText = pageIndicatorText ?? `${displayPage} / ${totalPages}`;
+  const isSeekPreview = seekPreviewIndex !== null;
+  const indicatorText = isSeekPreview
+    ? `${seekPreviewIndex + 1} / ${totalPages}`
+    : (pageIndicatorText ?? `${displayPage} / ${totalPages}`);
+  const activeSeekIndex = seekPreviewIndex ?? clampedCurrentPageIndex;
   const isOffsetToggleDisabled =
     totalPages <= 1 || effectiveSpreadMode === "single";
   const isOffsetActive = spreadPageOffset === 1;
@@ -118,7 +212,10 @@ export function ReaderHudOverlay({
     <span
       key="indicator"
       data-testid="reader-page-indicator"
-      className="whitespace-nowrap font-mono text-xs font-medium tabular-nums text-slate-200 sm:text-sm"
+      data-seek-preview={String(isSeekPreview)}
+      className={`whitespace-nowrap font-mono text-xs font-medium tabular-nums sm:text-sm ${
+        isSeekPreview ? "text-indigo-300" : "text-slate-200"
+      }`}
     >
       {indicatorText}
     </span>
@@ -149,6 +246,19 @@ export function ReaderHudOverlay({
         >
           {fileName}
         </p>
+        <button
+          type="button"
+          data-testid="reader-shader-button"
+          data-shader-modified={String(shaderModified)}
+          onClick={onOpenShaderSheet}
+          className={`${CONTROL_BUTTON_BASE_CLASS} ${
+            shaderModified
+              ? ACTIVE_OFFSET_BUTTON_COLOR_CLASS
+              : DEFAULT_BUTTON_COLOR_CLASS
+          }`}
+        >
+          画質補正
+        </button>
       </header>
 
       <footer
@@ -161,6 +271,29 @@ export function ReaderHudOverlay({
         }}
         className="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-2 border-t border-slate-800/80 bg-slate-950/90 px-3 py-2.5 text-slate-100 backdrop-blur-sm sm:px-4 sm:py-3"
       >
+        <div
+          data-testid="reader-hud-seek-row"
+          className="flex w-full items-center"
+        >
+          <input
+            type="range"
+            data-testid="reader-seekbar"
+            aria-label="ページシークバー"
+            min={0}
+            max={maxSeekIndex}
+            step={1}
+            value={activeSeekIndex}
+            dir={readingDirection}
+            data-reading-direction={readingDirection}
+            disabled={totalPages <= 1}
+            onPointerDown={handleSeekPointerDown}
+            onPointerUp={seekDragController.onPointerEnd}
+            onPointerCancel={seekDragController.onPointerEnd}
+            onChange={handleSeekChange}
+            className="w-full cursor-pointer accent-indigo-400 touch-manipulation disabled:cursor-not-allowed disabled:opacity-40"
+          />
+        </div>
+
         <div
           data-testid="reader-hud-nav-row"
           className="flex w-full items-center justify-between gap-2 sm:gap-3"
