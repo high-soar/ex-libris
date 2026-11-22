@@ -19,13 +19,20 @@ import type {
 import { ZipArchiveError, isAbortError } from "../../engine/zip/errors";
 import { matchRoute } from "../../shared/router/routeMatcher";
 import { useRouter } from "../../shared/router/routerContext";
+import type { ReadingProgressRepository } from "../../storage/repositories/readingProgressRepository";
 import type { ZipIndexCacheRepository } from "../../storage/repositories/zipIndexCacheRepository";
+import type { ReadStatus, ReadingProgressRecord } from "../../storage/types";
 import {
   ReaderCanvas,
   type ReaderCanvasHandle,
   type WebGLFatalErrorCode,
 } from "../../webgl/ReaderCanvas";
 import { L1PageCache } from "../../webgl/l1PageCache";
+import {
+  DEFAULT_SHADER_CORRECTION_PARAMS,
+  isDefaultShaderParams,
+  normalizeShaderCorrectionParams,
+} from "../../webgl/shaderParams";
 import type {
   EffectiveSpreadMode,
   PageDimensions,
@@ -39,7 +46,7 @@ import type {
 } from "../../webgl/types";
 import { ReaderErrorView } from "./ReaderErrorView";
 import { ReaderHudOverlay } from "./ReaderHudOverlay";
-import type { ShaderSaveStatus } from "./ReaderShaderSheet";
+import { ReaderShaderSheet, type ShaderSaveStatus } from "./ReaderShaderSheet";
 import {
   type LocalReaderSession,
   useLocalReaderSessionStore,
@@ -274,11 +281,61 @@ async function readZipIndexCacheSafely(
   }
 }
 
+async function readReadingProgressSafely(
+  repo: ReadingProgressRepository,
+  targetKey: string,
+  isCurrentAttempt: () => boolean,
+): Promise<ReadingProgressRecord | null> {
+  try {
+    return await repo.get(targetKey);
+  } catch (progressError) {
+    if (isCurrentAttempt()) {
+      diagnosticLogger.warn(
+        "reader",
+        "読書進捗の取得に失敗しました",
+        `${targetKey}: ${formatErrorMessage(progressError)}`,
+      );
+    }
+    return null;
+  }
+}
+
+function isConfirmedNonLandscape(dims: PageDimensions | undefined): boolean {
+  return dims !== undefined && dims.width <= dims.height;
+}
+
+function computeConfirmedMaxDisplayedPageIndex(input: {
+  readonly currentPageIndex: number;
+  readonly totalPages: number;
+  readonly effectiveSpreadMode: EffectiveSpreadMode;
+  readonly spreadPageOffset: SpreadPageOffset;
+  readonly knownDimensions: ReadonlyMap<number, PageDimensions>;
+}): number {
+  const hasConfirmedTwoPageSpread =
+    input.effectiveSpreadMode === "spread" &&
+    !(input.currentPageIndex === 0 && input.spreadPageOffset === 0) &&
+    input.currentPageIndex + 1 < input.totalPages &&
+    isConfirmedNonLandscape(
+      input.knownDimensions.get(input.currentPageIndex),
+    ) &&
+    isConfirmedNonLandscape(
+      input.knownDimensions.get(input.currentPageIndex + 1),
+    );
+  return hasConfirmedTwoPageSpread
+    ? input.currentPageIndex + 1
+    : input.currentPageIndex;
+}
+
 export function ReaderPage({
   onRegisterExit,
   initialSnapshot,
 }: ReaderPageProps): ReactNode {
-  const { createCoordinatorSession, zipIndexCacheRepo } = useServices();
+  const {
+    createCoordinatorSession,
+    zipIndexCacheRepo,
+    readingProgressRepo,
+    readerSettingsRepo,
+  } = useServices();
   const { replace, back } = useRouter();
   const session = useLocalReaderSessionStore((state) => state.session);
   const clearSession = useLocalReaderSessionStore(
@@ -324,6 +381,17 @@ export function ReaderPage({
   const [knownDimensions, setKnownDimensions] = useState<
     ReadonlyMap<number, PageDimensions>
   >(() => extractDimensionsFromFrames(initialSnapshot?.framesByPage));
+  const [shaderParams, setShaderParams] = useState<ShaderCorrectionParams>(() =>
+    normalizeShaderCorrectionParams(
+      initialSnapshot?.shaderParams ?? DEFAULT_SHADER_CORRECTION_PARAMS,
+    ),
+  );
+  const [isShaderSheetOpen, setIsShaderSheetOpen] = useState<boolean>(
+    initialSnapshot?.isShaderSheetOpen ?? false,
+  );
+  const [shaderSaveStatus, setShaderSaveStatus] = useState<ShaderSaveStatus>(
+    initialSnapshot?.shaderSaveStatus ?? "idle",
+  );
 
   const effectiveSpreadMode = resolveEffectiveSpreadMode(
     spreadMode,
@@ -336,13 +404,17 @@ export function ReaderPage({
   const rendererHandleRef = useRef<ReaderCanvasHandle | null>(null);
   const epochRef = useRef(0);
   const isClosingRef = useRef(false);
+  const isMountedRef = useRef(true);
   const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
   const suppressNextClickRef = useRef(false);
   const spreadHistoryRef = useRef<number[]>([]);
   const knownDimensionsRef = useRef<Map<number, PageDimensions>>(
     extractDimensionsFromFrames(initialSnapshot?.framesByPage),
   );
+  const hasUserModifiedShaderRef = useRef(false);
 
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
   const totalPagesRef = useRef(totalPages);
   totalPagesRef.current = totalPages;
   const currentPageIndexRef = useRef(currentPageIndex);
@@ -362,6 +434,17 @@ export function ReaderPage({
   viewportSizeRef.current = viewportSize;
   const effectiveSpreadModeRef = useRef(effectiveSpreadMode);
   effectiveSpreadModeRef.current = effectiveSpreadMode;
+  const shaderParamsRef = useRef(shaderParams);
+  shaderParamsRef.current = shaderParams;
+  const isShaderSheetOpenRef = useRef(isShaderSheetOpen);
+  isShaderSheetOpenRef.current = isShaderSheetOpen;
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const canNavigatePages = useCallback((): boolean => {
     return (
@@ -371,6 +454,50 @@ export function ReaderPage({
       totalPagesRef.current > 0
     );
   }, []);
+
+  const persistCurrentProgress = useCallback(() => {
+    const currentSession = sessionRef.current;
+    const total = totalPagesRef.current;
+    if (
+      initialSnapshot !== undefined ||
+      currentSession === null ||
+      isOpeningRef.current ||
+      total <= 0 ||
+      archiveErrorRef.current !== null ||
+      webglFatalErrorRef.current !== null
+    ) {
+      return;
+    }
+
+    const current = currentPageIndexRef.current;
+    const offset = spreadPageOffsetRef.current;
+    const confirmedMax = computeConfirmedMaxDisplayedPageIndex({
+      currentPageIndex: current,
+      totalPages: total,
+      effectiveSpreadMode: effectiveSpreadModeRef.current,
+      spreadPageOffset: offset,
+      knownDimensions: knownDimensionsRef.current,
+    });
+    const readStatus: ReadStatus =
+      confirmedMax >= total - 1 ? "completed" : "reading";
+
+    void readingProgressRepo
+      .put({
+        targetKey: `local:${currentSession.fileName}:${currentSession.fileSize}`,
+        volumeId: null,
+        currentPageIndex: current,
+        totalPageCount: total,
+        readStatus,
+        spreadPageOffset: offset,
+      })
+      .catch((progressError: unknown) => {
+        diagnosticLogger.warn(
+          "reader",
+          "読書進捗の保存に失敗しました",
+          `${currentSession.fileName}: ${formatErrorMessage(progressError)}`,
+        );
+      });
+  }, [initialSnapshot, readingProgressRepo]);
 
   const releaseRuntime = useCallback((runtime: ReaderRuntime) => {
     epochRef.current += 1;
@@ -401,6 +528,9 @@ export function ReaderPage({
       setArchiveError(errorState);
       isOpeningRef.current = false;
       setIsOpening(false);
+      setIsHudOpen(false);
+      isShaderSheetOpenRef.current = false;
+      setIsShaderSheetOpen(false);
     },
     [],
   );
@@ -410,17 +540,87 @@ export function ReaderPage({
       return;
     }
     isClosingRef.current = true;
+    persistCurrentProgress();
     releaseResources();
     clearSession();
     back();
-  }, [back, clearSession, releaseResources]);
+  }, [back, clearSession, persistCurrentProgress, releaseResources]);
+
+  const handleCloseShaderSheet = useCallback(() => {
+    isShaderSheetOpenRef.current = false;
+    setIsShaderSheetOpen(false);
+  }, []);
+
+  const handleExitRequest = useCallback(() => {
+    if (
+      webglFatalErrorRef.current === null &&
+      archiveErrorRef.current === null &&
+      isShaderSheetOpenRef.current
+    ) {
+      handleCloseShaderSheet();
+      return;
+    }
+    handleClose();
+  }, [handleClose, handleCloseShaderSheet]);
+
+  const handleOpenShaderSheet = useCallback(() => {
+    setIsHudOpen(false);
+    setShaderSaveStatus("idle");
+    isShaderSheetOpenRef.current = true;
+    setIsShaderSheetOpen(true);
+  }, []);
+
+  const handleChangeShaderParams = useCallback(
+    (next: ShaderCorrectionParams) => {
+      hasUserModifiedShaderRef.current = true;
+      setShaderSaveStatus("idle");
+      const normalized = normalizeShaderCorrectionParams(next);
+      shaderParamsRef.current = normalized;
+      setShaderParams(normalized);
+    },
+    [],
+  );
+
+  const handleResetShaderParams = useCallback(() => {
+    hasUserModifiedShaderRef.current = true;
+    setShaderSaveStatus("idle");
+    const resetParams = { ...DEFAULT_SHADER_CORRECTION_PARAMS };
+    shaderParamsRef.current = resetParams;
+    setShaderParams(resetParams);
+  }, []);
+
+  const handleSaveDefaultShaderParams = useCallback(async () => {
+    hasUserModifiedShaderRef.current = true;
+    try {
+      const saved = await readerSettingsRepo.saveShaderDefaults(
+        shaderParamsRef.current,
+      );
+      if (!isMountedRef.current) {
+        return;
+      }
+      const normalized = normalizeShaderCorrectionParams(saved);
+      shaderParamsRef.current = normalized;
+      setShaderParams(normalized);
+      setShaderSaveStatus("saved");
+    } catch (error) {
+      if (!isMountedRef.current) {
+        return;
+      }
+      diagnosticLogger.warn(
+        "reader",
+        "画質補正デフォルト設定の保存に失敗しました",
+        formatErrorMessage(error),
+      );
+      setShaderSaveStatus("error");
+    }
+  }, [readerSettingsRepo]);
 
   useEffect(() => {
-    onRegisterExit?.(handleClose);
+    onRegisterExit?.(handleExitRequest);
     return () => {
       onRegisterExit?.(null);
     };
-  }, [onRegisterExit, handleClose]);
+  }, [onRegisterExit, handleExitRequest]);
 
   const fetchAndStorePages = useCallback(
     async (
@@ -595,6 +795,7 @@ export function ReaderPage({
           true,
           (targetPageIndex) => cachedFrames[targetPageIndex],
         );
+        persistCurrentProgress();
         return;
       }
 
@@ -623,8 +824,9 @@ export function ReaderPage({
       scheduleVisibleWindowAndNeighbors(false, (targetPageIndex) =>
         runtime.l1Cache.peek(targetPageIndex),
       );
+      persistCurrentProgress();
     },
-    [fetchAndStorePages],
+    [fetchAndStorePages, persistCurrentProgress],
   );
 
   const resyncCurrentWindow = useCallback(
@@ -751,10 +953,19 @@ export function ReaderPage({
     setIsOpening(true);
     archiveErrorRef.current = null;
     setArchiveError(null);
+    isShaderSheetOpenRef.current = false;
+    setIsShaderSheetOpen(false);
+    setShaderSaveStatus("idle");
+    hasUserModifiedShaderRef.current = false;
+    const initialShader = { ...DEFAULT_SHADER_CORRECTION_PARAMS };
+    shaderParamsRef.current = initialShader;
+    setShaderParams(initialShader);
     spreadHistoryRef.current = [];
     knownDimensionsRef.current = new Map();
     setKnownDimensions(new Map());
     setFramesByPage({});
+    spreadPageOffsetRef.current = 0;
+    setSpreadPageOffset(0);
     currentPageIndexRef.current = 0;
     setCurrentPageIndex(0);
     totalPagesRef.current = 0;
@@ -763,6 +974,25 @@ export function ReaderPage({
     const source = buildLocalArchiveSource(session);
     const isCurrentAttempt = () =>
       runtimeRef.current === runtime && epochRef.current === openEpoch;
+
+    void (async () => {
+      try {
+        const defaults = await readerSettingsRepo.getShaderDefaults();
+        if (isCurrentAttempt() && !hasUserModifiedShaderRef.current) {
+          const normalized = normalizeShaderCorrectionParams(defaults);
+          shaderParamsRef.current = normalized;
+          setShaderParams(normalized);
+        }
+      } catch (settingsError) {
+        if (isCurrentAttempt()) {
+          diagnosticLogger.warn(
+            "reader",
+            "画質補正デフォルト設定の取得に失敗しました",
+            formatErrorMessage(settingsError),
+          );
+        }
+      }
+    })();
 
     void (async () => {
       try {
@@ -775,6 +1005,11 @@ export function ReaderPage({
           return;
         }
 
+        const progressPromise = readReadingProgressSafely(
+          readingProgressRepo,
+          source.progressTargetKey,
+          isCurrentAttempt,
+        );
         const result = await coordinator.api.openArchive(
           source,
           cachedEntries,
@@ -810,17 +1045,38 @@ export function ReaderPage({
             });
         }
 
+        const savedProgress = await progressPromise;
+        if (!isCurrentAttempt()) {
+          return;
+        }
+
+        const restoredOffset: SpreadPageOffset =
+          savedProgress !== null && result.pageCount > 1
+            ? savedProgress.spreadPageOffset
+            : 0;
+        const restoredPage =
+          savedProgress !== null
+            ? Math.min(
+                result.pageCount - 1,
+                Math.max(0, savedProgress.currentPageIndex),
+              )
+            : 0;
+
+        spreadPageOffsetRef.current = restoredOffset;
+        setSpreadPageOffset(restoredOffset);
+        currentPageIndexRef.current = restoredPage;
+        setCurrentPageIndex(restoredPage);
         totalPagesRef.current = result.pageCount;
         setTotalPages(result.pageCount);
         isOpeningRef.current = false;
         setIsOpening(false);
         await loadPageWindow(
           runtime,
-          0,
+          restoredPage,
           result.pageCount,
           openEpoch,
           effectiveSpreadModeRef.current,
-          spreadPageOffsetRef.current,
+          restoredOffset,
         );
       } catch (error) {
         if (isAbortError(error) || !isCurrentAttempt()) {
@@ -841,6 +1097,8 @@ export function ReaderPage({
     initialSnapshot,
     createCoordinatorSession,
     zipIndexCacheRepo,
+    readingProgressRepo,
+    readerSettingsRepo,
     loadPageWindow,
     releaseRuntime,
     replace,
@@ -859,6 +1117,7 @@ export function ReaderPage({
         !isClosingRef.current
       ) {
         isClosingRef.current = true;
+        persistCurrentProgress();
         releaseResources();
         clearSession();
       }
@@ -869,7 +1128,35 @@ export function ReaderPage({
       window.removeEventListener("popstate", cleanupIfLeftReaderRoute);
       cleanupIfLeftReaderRoute();
     };
-  }, [clearSession, initialSnapshot, releaseResources, session]);
+  }, [
+    clearSession,
+    initialSnapshot,
+    persistCurrentProgress,
+    releaseResources,
+    session,
+  ]);
+
+  useEffect(() => {
+    if (initialSnapshot !== undefined || session === null) {
+      return;
+    }
+
+    const handlePageHide = () => {
+      persistCurrentProgress();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        persistCurrentProgress();
+      }
+    };
+
+    window.addEventListener("pagehide", handlePageHide);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [initialSnapshot, persistCurrentProgress, session]);
 
   const moveToPage = useCallback(
     (requestedIndex: number) => {
@@ -877,13 +1164,14 @@ export function ReaderPage({
       const clamped = Math.min(total - 1, Math.max(0, requestedIndex));
       currentPageIndexRef.current = clamped;
       setCurrentPageIndex(clamped);
+      persistCurrentProgress();
       resyncCurrentWindow(
         clamped,
         effectiveSpreadModeRef.current,
         spreadPageOffsetRef.current,
       );
     },
-    [resyncCurrentWindow],
+    [persistCurrentProgress, resyncCurrentWindow],
   );
 
   const goNextPage = useCallback(() => {
@@ -978,8 +1266,20 @@ export function ReaderPage({
     setSpreadPageOffset(nextOffset);
     currentPageIndexRef.current = nextAnchor;
     setCurrentPageIndex(nextAnchor);
+    persistCurrentProgress();
     resyncCurrentWindow(nextAnchor, effectiveSpreadModeRef.current, nextOffset);
-  }, [canNavigatePages, resyncCurrentWindow]);
+  }, [canNavigatePages, persistCurrentProgress, resyncCurrentWindow]);
+
+  const handleCommitSeek = useCallback(
+    (targetIndex: number) => {
+      if (!canNavigatePages()) {
+        return;
+      }
+      spreadHistoryRef.current = [];
+      moveToPage(targetIndex);
+    },
+    [canNavigatePages, moveToPage],
+  );
 
   const handleToggleReadingDirection = useCallback(() => {
     const nextDirection: ReadingDirection =
@@ -996,17 +1296,22 @@ export function ReaderPage({
       );
       if (action === "close") {
         event.preventDefault();
-        handleClose();
+        handleExitRequest();
         return;
       }
-      if (action === "next") {
+      if (action === "next" || action === "prev") {
+        if (
+          event.target instanceof HTMLInputElement ||
+          isShaderSheetOpenRef.current
+        ) {
+          return;
+        }
         event.preventDefault();
-        goNextPage();
-        return;
-      }
-      if (action === "prev") {
-        event.preventDefault();
-        goPrevPage();
+        if (action === "next") {
+          goNextPage();
+        } else {
+          goPrevPage();
+        }
       }
     };
 
@@ -1014,7 +1319,7 @@ export function ReaderPage({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [goNextPage, goPrevPage, handleClose]);
+  }, [goNextPage, goPrevPage, handleExitRequest]);
 
   const handleTapAt = useCallback(
     (clientX: number, rect: DOMRect) => {
@@ -1117,6 +1422,9 @@ export function ReaderPage({
       setWebglFatalError(errorState);
       isOpeningRef.current = false;
       setIsOpening(false);
+      setIsHudOpen(false);
+      isShaderSheetOpenRef.current = false;
+      setIsShaderSheetOpen(false);
       const runtime = runtimeRef.current;
       if (runtime !== null) {
         releaseRuntime(runtime);
@@ -1178,6 +1486,7 @@ export function ReaderPage({
       >
         <ReaderCanvas
           slots={renderSlots}
+          shaderParams={shaderParams}
           onRendererReady={handleRendererReady}
           onFatalError={handleWebGLFatalError}
         />
@@ -1225,6 +1534,19 @@ export function ReaderPage({
           onCycleSpreadMode={handleCycleSpreadMode}
           onToggleSpreadPageOffset={handleToggleSpreadPageOffset}
           onToggleReadingDirection={handleToggleReadingDirection}
+          shaderModified={!isDefaultShaderParams(shaderParams)}
+          onOpenShaderSheet={handleOpenShaderSheet}
+          onCommitSeek={handleCommitSeek}
+        />
+
+        <ReaderShaderSheet
+          isOpen={activeFatalError === null && isShaderSheetOpen}
+          shaderParams={shaderParams}
+          saveStatus={shaderSaveStatus}
+          onChangeShaderParams={handleChangeShaderParams}
+          onReset={handleResetShaderParams}
+          onSaveDefault={handleSaveDefaultShaderParams}
+          onClose={handleCloseShaderSheet}
         />
       </div>
 

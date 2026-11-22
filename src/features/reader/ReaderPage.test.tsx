@@ -36,6 +36,7 @@ import type {
 } from "../../engine/types";
 import { ZipArchiveError } from "../../engine/zip/errors";
 import { RouterProvider } from "../../shared/router/RouterProvider";
+import { useRouter } from "../../shared/router/routerContext";
 import { resetTestDb } from "../../storage/db";
 import type { ReaderSettingsRepository } from "../../storage/repositories/readerSettingsRepository";
 import type { ReadingProgressRepository } from "../../storage/repositories/readingProgressRepository";
@@ -342,8 +343,8 @@ describe("ReaderPage", () => {
       type: "application/x-cbz",
     }),
     zipIndexCacheRepo?: ZipIndexCacheRepository,
-    readingProgressRepo?: ReadingProgressRepository,
-    readerSettingsRepo?: ReaderSettingsRepository,
+    readingProgressRepo: ReadingProgressRepository = createMockReadingProgressRepo(),
+    readerSettingsRepo: ReaderSettingsRepository = createMockReaderSettingsRepo(),
   ) => {
     useLocalReaderSessionStore.getState().openLocalFile(file);
     return render(
@@ -2994,6 +2995,7 @@ describe("ReaderPage", () => {
     await waitFor(() => {
       expect(session3.api.openArchive).toHaveBeenCalledTimes(1);
     });
+    diagnosticLogger.clear();
     act(() => {
       void getLatestShaderSheetProps().onSaveDefault();
     });
@@ -3054,6 +3056,7 @@ describe("ReaderPage", () => {
       expect(settingsRepo5.getShaderDefaults).toHaveBeenCalledTimes(1);
     });
     unmount5();
+    diagnosticLogger.clear();
     await act(async () => {
       staleSettingsDeferred.reject(new Error("late settings reject"));
       await flushMicrotasks();
@@ -3153,6 +3156,9 @@ describe("ReaderPage", () => {
       {},
       () => failArchiveSession.handle,
     );
+    await waitFor(() => {
+      expect(failArchiveSession.api.openArchive).toHaveBeenCalledTimes(1);
+    });
     act(() => {
       getLatestHudProps().onOpenShaderSheet?.();
     });
@@ -3424,7 +3430,6 @@ describe("ReaderPage", () => {
     unmount4();
 
     // 5. openArchive 完了後・readingProgressRepo.get 待機中にアンマウントされた場合は loadPageWindow や warn を行わない
-    diagnosticLogger.clear();
     const progressDeferred = createDeferred<ReadingProgressRecord | null>();
     const progressRepo5 = createMockReadingProgressRepo({
       get: vi.fn(() => progressDeferred.promise),
@@ -3440,6 +3445,7 @@ describe("ReaderPage", () => {
     await waitFor(() => {
       expect(session5.api.openArchive).toHaveBeenCalledTimes(1);
     });
+    diagnosticLogger.clear();
     unmount5();
     await act(async () => {
       progressDeferred.reject(new Error("late progress err"));
@@ -3739,6 +3745,7 @@ describe("ReaderPage", () => {
     const roundtripFile = new File(["dexie-resume"], "dexie-resume.cbz", {
       type: "application/x-cbz",
     });
+    let sessionCallCount = 0;
     const roundtripSession1 = createMockCoordinatorSession({
       openArchive: vi.fn(async () => ({
         pageCount: 6,
@@ -3746,11 +3753,48 @@ describe("ReaderPage", () => {
         fromIndexCache: false,
       })),
     });
-    const { unmount: unmountRt1 } = renderWithSession(
-      {},
-      () => roundtripSession1.handle,
-      roundtripFile,
+    const roundtripSession2 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 6,
+        entries: [],
+        fromIndexCache: false,
+      })),
+    });
+
+    function DexieRoundtripHost() {
+      const { route, navigate } = useRouter();
+      return route.name === "reader-local" ? (
+        <ReaderPage />
+      ) : (
+        <button
+          type="button"
+          data-testid="reopen-roundtrip"
+          onClick={() => {
+            useLocalReaderSessionStore.getState().openLocalFile(roundtripFile);
+            navigate("/read/local");
+          }}
+        >
+          reopen
+        </button>
+      );
+    }
+
+    useLocalReaderSessionStore.getState().openLocalFile(roundtripFile);
+    const { unmount: unmountRoundtrip } = render(
+      <ServiceProvider
+        createCoordinatorSession={() => {
+          sessionCallCount += 1;
+          return sessionCallCount === 1
+            ? roundtripSession1.handle
+            : roundtripSession2.handle;
+        }}
+      >
+        <RouterProvider initialPath="/read/local">
+          <DexieRoundtripHost />
+        </RouterProvider>
+      </ServiceProvider>,
     );
+
     await waitFor(() => {
       expect(getLatestCanvasProps().slots).toHaveLength(1);
     });
@@ -3762,24 +3806,25 @@ describe("ReaderPage", () => {
     });
     expect(getLatestHudProps().currentPageIndex).toBe(2);
     expect(getLatestHudProps().spreadPageOffset).toBe(1);
-    await act(async () => {
-      getLatestHudProps().onClose();
-      await flushMicrotasks();
-    });
-    unmountRt1();
 
-    window.history.replaceState(null, "", "/read/local");
-    const roundtripSession2 = createMockCoordinatorSession({
-      openArchive: vi.fn(async () => ({
-        pageCount: 6,
-        entries: [],
-        fromIndexCache: false,
-      })),
+    // onClose -> "/" へ戻り、同一 ServiceProvider (FIFO 直列化済み DexieReadingProgressRepository) 上で再オープン
+    act(() => {
+      getLatestHudProps().onClose();
     });
-    renderWithSession({}, () => roundtripSession2.handle, roundtripFile);
     await waitFor(() => {
+      expect(screen.getByTestId("reopen-roundtrip")).toBeVisible();
+    });
+
+    // 同 ServiceProvider 上で同じファイルを再オープン -> page=2, offset=1 が自動レジュームされる
+    fireEvent.click(screen.getByTestId("reopen-roundtrip"));
+    await waitFor(() => {
+      expect(getLatestCanvasProps().slots).toHaveLength(2);
       expect(getLatestHudProps().currentPageIndex).toBe(2);
       expect(getLatestHudProps().spreadPageOffset).toBe(1);
+    });
+    unmountRoundtrip();
+    await act(async () => {
+      await flushMicrotasks();
     });
   });
 });
