@@ -6,11 +6,13 @@ import type { DecodedPageFrame } from "../engine/types";
 import { ReaderCanvas, type ReaderCanvasHandle } from "./ReaderCanvas";
 import * as stories from "./ReaderCanvas.stories";
 import * as WebGLRendererCoreModule from "./WebGLRendererCore";
-import type { RenderSlotFrame } from "./types";
+import { DEFAULT_SHADER_CORRECTION_PARAMS } from "./shaderParams";
+import type { RenderSlotFrame, ShaderCorrectionParams } from "./types";
 
 const {
   Default,
   SingleSlot,
+  WithShaderCorrection,
   SpreadSlots,
   AsyncOversizedPending,
   ContextLost,
@@ -209,6 +211,10 @@ describe("ReaderCanvas", () => {
     const { unmount: unmountDefault } = render(<Default />);
     const defaultCanvas = screen.getByTestId("reader-canvas");
     expect(defaultCanvas).toHaveAttribute("data-webgl-status", "error");
+    expect(defaultCanvas).toHaveAttribute(
+      "data-shader-params",
+      "0.00,1.00,0.00,1.00",
+    );
     expect(defaultCanvas).toHaveAttribute("data-rendered-page", "");
     expect(defaultCanvas).toHaveAttribute("data-rendered-pages", "");
     expect(defaultCanvas).toHaveAttribute("data-rendered-slots", "");
@@ -225,11 +231,44 @@ describe("ReaderCanvas", () => {
     );
     const singleCanvas = screen.getByTestId("reader-canvas");
     expect(singleCanvas).toHaveAttribute("data-webgl-status", "ready");
+    expect(singleCanvas).toHaveAttribute(
+      "data-shader-params",
+      "0.00,1.00,0.00,1.00",
+    );
     expect(singleCanvas).toHaveAttribute("data-rendered-page", "0");
     expect(singleCanvas).toHaveAttribute("data-rendered-pages", "0");
     expect(singleCanvas).toHaveAttribute("data-rendered-slots", "center:0");
     expect(singleCanvas).toHaveAttribute("data-rendered-epoch", "1");
     unmountSingle();
+
+    const { gl: glShader, mocks: mocksShader } = createMockWebGL2Context();
+    const { unmount: unmountShader } = render(
+      <WithShaderCorrection getWebGL2Context={() => glShader} />,
+    );
+    const shaderCanvas = screen.getByTestId("reader-canvas");
+    expect(shaderCanvas).toHaveAttribute("data-webgl-status", "ready");
+    expect(shaderCanvas).toHaveAttribute(
+      "data-shader-params",
+      "0.60,0.88,0.12,0.80",
+    );
+    expect(shaderCanvas).toHaveAttribute("data-rendered-slots", "center:0");
+    expect(mocksShader.uniform1f).toHaveBeenCalledWith(
+      { name: "u_sharpness" },
+      0.6,
+    );
+    expect(mocksShader.uniform1f).toHaveBeenCalledWith(
+      { name: "u_whitePoint" },
+      0.88,
+    );
+    expect(mocksShader.uniform1f).toHaveBeenCalledWith(
+      { name: "u_blackPoint" },
+      0.12,
+    );
+    expect(mocksShader.uniform1f).toHaveBeenCalledWith(
+      { name: "u_gamma" },
+      0.8,
+    );
+    unmountShader();
 
     const { gl: glSpread } = createMockWebGL2Context();
     const { unmount: unmountSpread } = render(
@@ -957,5 +996,142 @@ describe("ReaderCanvas", () => {
       expect.any(Function),
     );
     expect(dpr15Entry?.listeners.size).toBe(0);
+  });
+
+  it("shaderParamsの初期化正規化・テクスチャ再転送なしの即時Uniform再描画・同値スキップ・ロスト中常時同期と復帰描画を行うこと (AC-GL-05, AC-GL-09)", () => {
+    const setShaderParamsSpy = vi.spyOn(
+      WebGLRendererCoreModule.WebGLRendererCore.prototype,
+      "setShaderParams",
+    );
+
+    const { gl, mocks } = createMockWebGL2Context();
+    const outOfRangeParams: ShaderCorrectionParams = {
+      sharpness: 1.8,
+      whitePoint: 0.5,
+      blackPoint: -0.2,
+      gamma: 3.0,
+    };
+    const slot0: RenderSlotFrame = {
+      slot: { pageIndex: 0, position: "center" },
+      frame: createReadyFrame(0, 1),
+    };
+
+    const { rerender } = render(
+      <ReaderCanvas
+        slots={[slot0]}
+        shaderParams={outOfRangeParams}
+        getWebGL2Context={() => gl}
+      />,
+    );
+
+    const canvas = screen.getByTestId("reader-canvas");
+    expect(canvas).toHaveAttribute("data-shader-params", "1.00,0.80,0.00,1.60");
+    expect(setShaderParamsSpy).toHaveBeenCalledWith({
+      sharpness: 1,
+      whitePoint: 0.8,
+      blackPoint: 0,
+      gamma: 1.6,
+    });
+    expect(mocks.uniform1f).toHaveBeenCalledWith({ name: "u_sharpness" }, 1);
+    expect(mocks.uniform1f).toHaveBeenCalledWith({ name: "u_whitePoint" }, 0.8);
+    expect(mocks.uniform1f).toHaveBeenCalledWith({ name: "u_blackPoint" }, 0);
+    expect(mocks.uniform1f).toHaveBeenCalledWith({ name: "u_gamma" }, 1.6);
+
+    // 同一正規化値への再レンダーでは再描画を発生させない
+    mocks.texImage2D.mockClear();
+    mocks.drawArrays.mockClear();
+    rerender(
+      <ReaderCanvas
+        slots={[slot0]}
+        shaderParams={{
+          sharpness: 2.5,
+          whitePoint: 0.79,
+          blackPoint: -1,
+          gamma: 2.0,
+        }}
+        getWebGL2Context={() => gl}
+      />,
+    );
+    expect(mocks.drawArrays).not.toHaveBeenCalled();
+
+    // 有効な shaderParams 変更時はテクスチャ再転送(texImage2D)なしで即時に uniform1f と drawArrays を再実行する
+    mocks.texImage2D.mockClear();
+    mocks.uniform1f.mockClear();
+    mocks.drawArrays.mockClear();
+    const updatedParams: ShaderCorrectionParams = {
+      sharpness: 0.35,
+      whitePoint: 0.94,
+      blackPoint: 0.05,
+      gamma: 0.9,
+    };
+    rerender(
+      <ReaderCanvas
+        slots={[slot0]}
+        shaderParams={updatedParams}
+        getWebGL2Context={() => gl}
+      />,
+    );
+    expect(canvas).toHaveAttribute("data-shader-params", "0.35,0.94,0.05,0.90");
+    expect(mocks.texImage2D).not.toHaveBeenCalled();
+    expect(mocks.drawArrays).toHaveBeenCalledTimes(1);
+    expect(mocks.uniform1f).toHaveBeenCalledWith({ name: "u_sharpness" }, 0.35);
+    expect(mocks.uniform1f).toHaveBeenCalledWith(
+      { name: "u_whitePoint" },
+      0.94,
+    );
+    expect(mocks.uniform1f).toHaveBeenCalledWith(
+      { name: "u_blackPoint" },
+      0.05,
+    );
+    expect(mocks.uniform1f).toHaveBeenCalledWith({ name: "u_gamma" }, 0.9);
+
+    // コンテキストロスト中も data-shader-params と renderer.setShaderParams を常時同期し、drawArrays はスキップする
+    act(() => {
+      canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    });
+    expect(canvas).toHaveAttribute("data-webgl-status", "context-lost");
+
+    setShaderParamsSpy.mockClear();
+    mocks.drawArrays.mockClear();
+    mocks.uniform1f.mockClear();
+    const paramsWhileLost: ShaderCorrectionParams = {
+      sharpness: 0.55,
+      whitePoint: 0.9,
+      blackPoint: 0.1,
+      gamma: 0.75,
+    };
+    rerender(
+      <ReaderCanvas
+        slots={[slot0]}
+        shaderParams={paramsWhileLost}
+        getWebGL2Context={() => gl}
+      />,
+    );
+    expect(canvas).toHaveAttribute("data-shader-params", "0.55,0.90,0.10,0.75");
+    expect(setShaderParamsSpy).toHaveBeenCalledWith(paramsWhileLost);
+    expect(mocks.drawArrays).not.toHaveBeenCalled();
+
+    // webglcontextrestored 復帰時にロスト中に更新された最新パラメータで再描画される
+    act(() => {
+      canvas.dispatchEvent(new Event("webglcontextrestored"));
+    });
+    expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    expect(mocks.drawArrays).toHaveBeenCalledTimes(1);
+    expect(mocks.uniform1f).toHaveBeenCalledWith({ name: "u_sharpness" }, 0.55);
+    expect(mocks.uniform1f).toHaveBeenCalledWith({ name: "u_whitePoint" }, 0.9);
+    expect(mocks.uniform1f).toHaveBeenCalledWith({ name: "u_blackPoint" }, 0.1);
+    expect(mocks.uniform1f).toHaveBeenCalledWith({ name: "u_gamma" }, 0.75);
+
+    // 初期値へ戻す場合も即時反映される
+    mocks.drawArrays.mockClear();
+    rerender(
+      <ReaderCanvas
+        slots={[slot0]}
+        shaderParams={DEFAULT_SHADER_CORRECTION_PARAMS}
+        getWebGL2Context={() => gl}
+      />,
+    );
+    expect(canvas).toHaveAttribute("data-shader-params", "0.00,1.00,0.00,1.00");
+    expect(mocks.drawArrays).toHaveBeenCalledTimes(1);
   });
 });

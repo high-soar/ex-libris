@@ -299,6 +299,23 @@ export const SingleSlot: Story = {
   ),
 };
 
+/** 1パス画質補正シェーダー適用状態 */
+export const WithShaderCorrection: Story = {
+  name: "画質補正シェーダー適用状態",
+  args: {
+    slots: [],
+    shaderParams: {
+      sharpness: 0.6,
+      whitePoint: 0.88,
+      blackPoint: 0.12,
+      gamma: 0.8,
+    },
+  },
+  render: (args) => (
+    <StorySlotsCanvas specs={SINGLE_SLOT_SPECS} canvasProps={args} />
+  ),
+};
+
 /** 見開き2スロット（左・右）背表紙密着描画状態 */
 export const SpreadSlots: Story = {
   name: "見開き2スロット描画状態",

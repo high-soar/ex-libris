@@ -2,7 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
 import { WebGLRendererCore } from "./WebGLRendererCore";
 import type { ReadyPageFrame } from "./l1PageCache";
-import type { RenderSlotFrame, ViewportSlot } from "./types";
+import type {
+  RenderSlotFrame,
+  ShaderCorrectionParams,
+  ViewportSlot,
+} from "./types";
 
 export type WebGLStatus = "initializing" | "ready" | "context-lost" | "error";
 export type WebGLFatalErrorCode = "WEBGL_UNSUPPORTED" | "WEBGL_INIT_FAILED";
@@ -14,6 +18,7 @@ export interface ReaderCanvasHandle {
 
 export interface ReaderCanvasProps {
   readonly slots: readonly RenderSlotFrame[];
+  readonly shaderParams?: ShaderCorrectionParams;
   readonly onRendererReady?: (handle: ReaderCanvasHandle | null) => void;
   readonly onFatalError?: (code: WebGLFatalErrorCode, message: string) => void;
   readonly getWebGL2Context?: (
@@ -113,6 +118,7 @@ function buildRenderedState(
 
 export function ReaderCanvas({
   slots,
+  shaderParams: _shaderParams,
   onRendererReady,
   onFatalError,
   getWebGL2Context,
