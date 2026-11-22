@@ -1,14 +1,17 @@
 ---
 type: spec-engine
 title: "生 WebGL2 レンダラー＆L1キャッシュ仕様書"
-description: "WebGLRendererCore のハードウェア Mipmap 2スロット見開き描画、MAX_TEXTURE_SIZE タイル分割・安全リサイズガード、DPR 追従、webglcontextlost 復帰、および L1PageCache の ImageBitmap.close() 厳格解放規約の正本"
-status: "Approved (#21)"
-updated: "2026-11-21"
+description: "WebGLRendererCore のハードウェア Mipmap 2スロット見開き描画、1パス画質補正シェーダー（画面微分5タップUSM＋白黒レベル＋標準ガンマ）、MAX_TEXTURE_SIZE タイル分割・安全リサイズガード、DPR 追従、webglcontextlost 復帰、および L1PageCache の ImageBitmap.close() 厳格解放規約の正本"
+status: "Review (#22)"
+updated: "2026-11-22"
 tags:
   [
     engine,
     webgl2,
     mipmap,
+    shader,
+    unsharp-mask,
+    gamma,
     l1-cache,
     imagebitmap,
     vram,
@@ -35,7 +38,7 @@ related_tests:
 
 # 生 WebGL2 レンダラー＆L1 キャッシュ仕様書
 
-本ドキュメントは、ExLibris の **Layer 4（Viewer Engine）** における `L1PageCache`（UI/GPU 側 `ImageBitmap` 窓管理）および `WebGLRendererCore` / `<ReaderCanvas>`（生 WebGL2 ハードウェア Mipmap 単ページ／2スロット見開き描画・`MAX_TEXTURE_SIZE` ガード）の正本（Single Source of Truth）です。
+本ドキュメントは、ExLibris の **Layer 4（Viewer Engine）** における `L1PageCache`（UI/GPU 側 `ImageBitmap` 窓管理）および `WebGLRendererCore` / `<ReaderCanvas>`（生 WebGL2 ハードウェア Mipmap 単ページ／2スロット見開き描画・1パス画質補正シェーダー・`MAX_TEXTURE_SIZE` ガード）の正本（Single Source of Truth）です。
 
 ---
 
@@ -43,13 +46,14 @@ related_tests:
 
 WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React DOM から分離し、Vitest 上でモック `WebGL2RenderingContext` と `FakeImageBitmap`（`close()` スパイ）を用いて C0/C1/Functions/Lines 100% で検証します。
 
-| モジュールパス                   | 責務                                                                                                                               |
-| :------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------- |
-| `src/webgl/types.ts`             | `ReadingDirection`, `SpreadMode`, `EffectiveSpreadMode`, `SpreadPageOffset`, `ViewportSlotLayout`, `RenderSlotFrame` 等の共有型    |
-| `src/webgl/l1PageCache.ts`       | `L1_MAX_PAGES = 5` 上限の L1 `ImageBitmap` ＋ ページ状態（`ready` / `error`）管理と即時 `close()`                                  |
-| `src/webgl/shaders.ts`           | 生 WebGL2 頂点シェーダー（`u_scale` + `u_offset`）・フラグメントシェーダー GLSL ソース定数（Mipmap 等倍パススルー）                |
-| `src/webgl/WebGLRendererCore.ts` | WebGL2 パイプライン本体（`MAX_TEXTURE_SIZE` タイル分割/安全リサイズ、Mipmap 転送、単頁/2スロット背表紙密着フィット描画、復帰解放） |
-| `src/webgl/ReaderCanvas.tsx`     | `<canvas>` マウント、`ResizeObserver` DPR 追従、非同期テクスチャ準備再描画、`webglcontextlost`/`restored` 配線、決定論的 DOM 属性  |
+| モジュールパス                   | 責務                                                                                                                                                              |
+| :------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/webgl/types.ts`             | `ReadingDirection`, `SpreadMode`, `EffectiveSpreadMode`, `SpreadPageOffset`, `ViewportSlotLayout`, `RenderSlotFrame`, `ShaderCorrectionParams` 等の純粋共有型定義 |
+| `src/webgl/shaderParams.ts`      | `DEFAULT_SHADER_CORRECTION_PARAMS`, `SHADER_PARAM_RANGES`, `normalizeShaderCorrectionParams`, `isDefaultShaderParams`, `formatShaderParamsAttribute` 実行時純関数 |
+| `src/webgl/l1PageCache.ts`       | `L1_MAX_PAGES = 5` 上限の L1 `ImageBitmap` ＋ ページ状態（`ready` / `error`）管理と即時 `close()`                                                                 |
+| `src/webgl/shaders.ts`           | 生 WebGL2 頂点シェーダー（`u_scale` + `u_offset`）・1パス画質補正フラグメントシェーダー（画面微分 5タップ USM ＋ 白黒レベル ＋ 標準ガンマ）GLSL ソース定数        |
+| `src/webgl/WebGLRendererCore.ts` | WebGL2 パイプライン本体（`MAX_TEXTURE_SIZE` 分割/リサイズ、Mipmap 転送、4補正 Uniform バインド、単頁/2スロット背表紙密着フィット描画、復帰解放）                  |
+| `src/webgl/ReaderCanvas.tsx`     | `<canvas>` マウント、`ResizeObserver` DPR 追従、`shaderParams` 状態常時同期＆再描画、非同期テクスチャ準備再描画、`webglcontextlost`/`restored` 配線、DOM 属性     |
 
 ---
 
@@ -114,10 +118,35 @@ WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React D
 4. **戻り値契約と `renderFrame`**:
    - `renderSlots(slots: readonly RenderSlotFrame[]): readonly ViewportSlot[]` は、当該呼び出しで実際に WebGL2 描画を完了したスロット配列を返す（`MAX_TEXTURE_SIZE` 非同期準備待機中のスロットは完了通知まで含めない）。既存 `renderFrame(frame)` は `renderSlots` への単一 `"center"` 委譲ラッパーとして維持・提供する。
 
-### 3.4 `webglcontextlost` / `webglcontextrestored` 耐性
+### 3.4 1 パス自炊画質補正シェーダー仕様（`ShaderCorrectionParams`）
 
-1. `<ReaderCanvas>` は `canvas` 要素で `webglcontextlost` リスナーを登録し、必ず **`event.preventDefault()`** を実行してコンテキスト復元を許可した上で、即座に **`renderer.notifyContextLost()`**（`contextGeneration` インクリメント・進行中非同期分割無効化・ロスト済み `textures`／`failedOversizedBitmaps` クリア）を呼び出してロスト〜リストア間の非同期完了レースを遮断し、`diagnosticLogger.warn("webgl2", ...)` へ記録する。
-2. `webglcontextrestored` 発火時、`WebGLRendererCore.reinitializeAfterContextLost()` を呼び出して `contextGeneration` を進め、シェーダープログラム・VAO/VBO・`MAX_TEXTURE_SIZE` を再構築した上で、**`L1PageCache` に残存している `ImageBitmap` 群から現在スロットのテクスチャと Mipmap（必要時は `MAX_TEXTURE_SIZE` ガード含む）を自動再生成して再描画** する。
+1. **パラメータ許容範囲・初期値・正規化（`src/webgl/shaderParams.ts`）**:
+   - `DEFAULT_SHADER_CORRECTION_PARAMS = { sharpness: 0, whitePoint: 1, blackPoint: 0, gamma: 1 }`
+   - 各項目の許容範囲・刻み幅（`SHADER_PARAM_RANGES`）：
+     - `sharpness`: `0.00 〜 1.00`（step `0.05`）
+     - `whitePoint`: `0.80 〜 1.00`（step `0.01`）
+     - `blackPoint`: `0.00 〜 0.25`（step `0.01`）
+     - `gamma`: `0.60 〜 1.60`（step `0.05`）
+   - `normalizeShaderCorrectionParams(raw: unknown)` はプレーンオブジェクト（`typeof raw === "object" && raw !== null && !Array.isArray(raw)`）上の自前プロパティ（`Object.prototype.hasOwnProperty.call`）のみを参照し、有限数値を許容範囲へクランプ・小数第2位丸め（`Math.round(clamped * 100) / 100`）して返す（欠落・不正値は項目単位で初期値へフォールバック）。
+2. **フラグメントシェーダー演算式（`src/webgl/shaders.ts`）**:
+   - `#version 300 es` / `precision highp float;` 上で、`u_texture` に加え `u_sharpness`, `u_whitePoint`, `u_blackPoint`, `u_gamma` の 4 つの `float` Uniform を受け取る（`initPipeline()` で全 Uniform ロケーションが非 `null` であることを検証し、欠落時は `WebGLInitError` を送出）。
+   - **Step 1（画面空間偏微分 5タップ軽量アンシャープマスク）**:
+     - `vec4 baseSample = texture(u_texture, v_texCoord);`
+     - `vec2 derivStep = max(vec2(abs(dFdx(v_texCoord.x)), abs(dFdy(v_texCoord.y))), 1.0 / vec2(textureSize(u_texture, 0)));`
+     - `u_sharpness > 0.0` の場合のみ上下左右 4 近傍 `(0, ±derivStep.y)`, `(±derivStep.x, 0)` をフェッチし、`rgb = clamp(rgb + u_sharpness * (4.0 * rgb - (n + s + w + e)), 0.0, 1.0)` を適用する（`u_sharpness <= 0.0` 時は追加フェッチ 0 回の高速パスとし、ハードウェア Mipmap トリリニア補間によるモアレ除去を維持したまま縮小・等倍の双方で輪郭を強調する）。
+   - **Step 2（白黒レベル正規化）**:
+     - `float levelRange = max(u_whitePoint - u_blackPoint, 0.0001);`
+     - `rgb = clamp((rgb - vec3(u_blackPoint)) / levelRange, 0.0, 1.0);`（`whitePoint` 以上の黄ばみ紙面を `#FFFFFF` へ白飛ばしし、`blackPoint` 以下の裏写りを `#000000` へ引き締める）。
+   - **Step 3（標準ガンマ補正）**:
+     - `rgb = pow(rgb, vec3(1.0 / max(u_gamma, 0.0001)));`（`gamma > 1.0` で中間調を明るく、`gamma < 1.0` で薄墨文字を濃く補正する）。
+3. **Uniform 更新と再描画境界**:
+   - `WebGLRendererCore.setShaderParams(params)` は正規化後の値が変化したときのみ内部状態を更新して `true` を返し、`getShaderParams()` で現在の正規化済み値を返す。
+   - `renderSlots` 実行時に `gl.uniform1f` で 4 つの Uniform を適用する。パラメータ変更時は `gl.texImage2D` 再アップロードや Worker デコードを一切伴わず、既存の GPU テクスチャに対する再描画のみで即時反映する。
+
+### 3.5 `webglcontextlost` / `webglcontextrestored` 耐性
+
+1. `<ReaderCanvas>` は `canvas` 要素で `webglcontextlost` リスナーを登録し、必ず **`event.preventDefault()`** を実行してコンテキスト復元を許可した上で、即座に **`renderer.notifyContextLost()`**（`contextGeneration` インクリメント・進行中非同期分割無効化・ロスト済み `textures`／`failedOversizedBitmaps` クリア）を呼び出してロスト〜リストア間の非同期完了レースを遮断し、`diagnosticLogger.warn("webgl2", ...)` へ記録する。この際、インスタンス上の `shaderParams` は破棄せず保持する。
+2. `webglcontextrestored` 発火時、`WebGLRendererCore.reinitializeAfterContextLost()` を呼び出して `contextGeneration` を進め、シェーダープログラム・VAO/VBO・Uniform ロケーション・`MAX_TEXTURE_SIZE` を再構築した上で、**保持中の最新 `shaderParams` と `L1PageCache` に残存している `ImageBitmap` 群から現在スロットのテクスチャ・Mipmap・画質補正描画（必要時は `MAX_TEXTURE_SIZE` ガード含む）を自動再生成して再描画** する。
 3. WebGL2 コンテキスト自体が取得不可、またはシェーダーのコンパイル/リンクに失敗した場合は、致命的エラーコールバック（`WEBGL_UNSUPPORTED` / `WEBGL_INIT_FAILED`）を発火する。
 
 ---
@@ -127,14 +156,17 @@ WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React D
 - **役割**: 純粋な WebGL2 描画ホスト（ページ送りビジネスロジックや HUD UI は持たない）。
 - **主要 Props**:
   - `slots: readonly RenderSlotFrame[]`（現在表示対象のスロット＋フレーム配列）
+  - `shaderParams?: ShaderCorrectionParams`（未指定時は `DEFAULT_SHADER_CORRECTION_PARAMS`）
   - `onRendererReady?: (handle: ReaderCanvasHandle | null) => void`
   - `onFatalError?: (code: WebGLFatalErrorCode, message: string) => void`
   - `getWebGL2Context?: (canvas: HTMLCanvasElement) => WebGL2RenderingContext | null`
-- **非同期分割準備時の自動再描画**:
+- **`shaderParams` 常時状態同期および非同期分割準備時の自動再描画**:
+  - マウント初期化時、および `shaderParams` Prop が変化した際は、**`isContextLostRef.current` が `true` の間であっても必ず `renderer.setShaderParams(shaderParams)` による内部状態同期と `data-shader-params` 属性反映を実行** し、`!isContextLostRef.current` のときに `applySlots` で WebGL 再描画する（これによりコンテキストロスト中のデフォルト設定読込完了やスライダー変更も `webglcontextrestored` 復帰描画へ確実に反映される）。
   - `WebGLRendererCore` の `onAsyncTextureReady` を受け取り、`!isContextLostRef.current` のときに最新の `slotsRef.current` を再適用して決定論的 DOM 属性を更新する。
 - **決定論的テスト用 DOM 属性**:
   - `data-testid="reader-canvas"`
   - `data-webgl-status`: `"initializing" | "ready" | "context-lost" | "error"`
+  - `data-shader-params`: 正規化後の補正値を小数第2位カンマ区切りで表す文字列（`${sharpness.toFixed(2)},${whitePoint.toFixed(2)},${blackPoint.toFixed(2)},${gamma.toFixed(2)}`、初期値 `"0.00,1.00,0.00,1.00"`）
   - `data-rendered-page`: 描画完了済み全スロットに含まれるページの **昇順最小 0 始まり `pageIndex`**（例: `rtl` 見開き `"left:2,right:1"` では `"1"`、単ページ `"center:0"` では `"0"`、未描画時は `""`）
   - `data-rendered-pages`: 描画完了済み全スロットの 0 始まり `pageIndex` を昇順カンマ区切り（例: `"1,2"`、未描画時は `""`）
   - `data-rendered-slots`: 描画完了済みスロット配列順の `position:pageIndex` カンマ区切り（例: `"left:2,right:1"` / `"center:0"`、未描画時は `""`）
@@ -145,13 +177,14 @@ WebGL2 コンテキスト API と `ImageBitmap` ライフサイクルを React D
 
 ## 5. 受け入れ条件（`AC-GL-xx`）
 
-|   AC ID    | 受け入れ条件                                                                                                                                                                                                   |
-| :--------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AC-GL-01` | `L1PageCache` は最大 5 ページを保持し、上限超過退避・古い `requestEpoch` 拒否・`clear()` 時に必ず `bitmap.close()` とテクスチャ破棄を実行する。                                                                |
-| `AC-GL-02` | `WebGLRendererCore` は純黒（`#000000`）背景で、画像アスペクト比を維持した中央内接フィット単ページ描画を行う。                                                                                                  |
-| `AC-GL-03` | テクスチャ生成直後に `gl.generateMipmap(gl.TEXTURE_2D)` と `gl.LINEAR_MIPMAP_LINEAR` が必ず設定される。                                                                                                        |
-| `AC-GL-04` | `ResizeObserver` と `devicePixelRatio`（`MAX_VIEWPORT_DIMS` クランプ付き）の変化に追従してバッファサイズと描画が更新される。                                                                                   |
-| `AC-GL-05` | `webglcontextlost` で `preventDefault()` が呼ばれ、`webglcontextrestored` で保持中の `ImageBitmap` から自動再描画復帰する。                                                                                    |
-| `AC-GL-06` | `src/webgl/` 配下の全モジュールおよび Story/UT が C0/C1/Functions/Lines 100% カバレッジを達成する。                                                                                                            |
-| `AC-GL-07` | `MAX_TEXTURE_SIZE` を超える画像入力時、`diagnosticLogger.warn("webgl2", ...)` を記録し、タイル分割（最大 16 枚）または上限内安全リサイズで黒画面化せず描画し、生成した一時 `ImageBitmap` を即 `close()` する。 |
-| `AC-GL-08` | 2 スロット見開き時は背表紙密着の高さ揃え結合フィットで左右同時描画し、片側欠損/エラー時は有効側スロットを半面背表紙寄りで描画する。                                                                            |
+|   AC ID    | 受け入れ条件                                                                                                                                                                                                    |
+| :--------: | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AC-GL-01` | `L1PageCache` は最大 5 ページを保持し、上限超過退避・古い `requestEpoch` 拒否・`clear()` 時に必ず `bitmap.close()` とテクスチャ破棄を実行する。                                                                 |
+| `AC-GL-02` | `WebGLRendererCore` は純黒（`#000000`）背景で、画像アスペクト比を維持した中央内接フィット単ページ描画を行う。                                                                                                   |
+| `AC-GL-03` | テクスチャ生成直後に `gl.generateMipmap(gl.TEXTURE_2D)` と `gl.LINEAR_MIPMAP_LINEAR` が必ず設定される。                                                                                                         |
+| `AC-GL-04` | `ResizeObserver` と `devicePixelRatio`（`MAX_VIEWPORT_DIMS` クランプ付き）の変化に追従してバッファサイズと描画が更新される。                                                                                    |
+| `AC-GL-05` | `webglcontextlost` で `preventDefault()` が呼ばれ、`webglcontextrestored` で保持中の `ImageBitmap` と `shaderParams` から自動再描画復帰する。                                                                   |
+| `AC-GL-06` | `src/webgl/` 配下の全モジュールおよび Story/UT が C0/C1/Functions/Lines 100% カバレッジを達成する。                                                                                                             |
+| `AC-GL-07` | `MAX_TEXTURE_SIZE` を超える画像入力時、`diagnosticLogger.warn("webgl2", ...)` を記録し、タイル分割（最大 16 枚）または上限内安全リサイズで黒画面化せず描画し、生成した一時 `ImageBitmap` を即 `close()` する。  |
+| `AC-GL-08` | 2 スロット見開き時は背表紙密着の高さ揃え結合フィットで左右同時描画し、片側欠損/エラー時は有効側スロットを半面背表紙寄りで描画する。                                                                             |
+| `AC-GL-09` | フラグメントシェーダー 1 パス内で `sharpness`（画面微分 5タップ USM）・`whitePoint`・`blackPoint`・`gamma`（`pow(rgb, 1.0 / gamma)`）Uniform 補正がテクスチャ再転送なしに即時反映され、ピクセル描画へ作用する。 |
