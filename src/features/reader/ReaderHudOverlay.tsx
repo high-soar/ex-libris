@@ -39,7 +39,7 @@ export interface ReaderHudOverlayProps {
 const DEFAULT_BUTTON_COLOR_CLASS =
   "border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700";
 
-const ACTIVE_OFFSET_BUTTON_COLOR_CLASS =
+const ACTIVE_BUTTON_COLOR_CLASS =
   "border-indigo-400 bg-indigo-500/30 text-indigo-100 hover:bg-indigo-500/40";
 
 const NAV_BUTTON_CLASS = `shrink-0 whitespace-nowrap touch-manipulation rounded-lg border ${DEFAULT_BUTTON_COLOR_CLASS} px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:px-3.5 sm:text-sm`;
@@ -61,41 +61,37 @@ function getSpreadModeLabel(
   return spreadMode === "spread" ? "見開き" : "単ページ";
 }
 
-export function ReaderHudOverlay({
-  isOpen,
-  fileName,
-  currentPageIndex,
-  totalPages,
-  onClose,
-  onNextPage,
-  onPrevPage,
-  readingDirection = "rtl",
-  spreadMode = "auto",
-  effectiveSpreadMode = "single",
-  spreadPageOffset = 0,
-  pageIndicatorText,
-  maxDisplayedPageIndex,
-  onCycleSpreadMode,
-  onToggleSpreadPageOffset,
-  onToggleReadingDirection,
-  shaderModified = false,
-  onOpenShaderSheet,
-  onCommitSeek,
-}: ReaderHudOverlayProps): ReactNode {
-  const maxSeekIndex = Math.max(0, totalPages - 1);
-  const clampedCurrentPageIndex = Math.min(
-    maxSeekIndex,
-    Math.max(0, currentPageIndex),
-  );
+function clampSeekPageIndex(pageIndex: number, maxSeekIndex: number): number {
+  return Math.min(maxSeekIndex, Math.max(0, pageIndex));
+}
 
+function formatHudIndicatorText(input: {
+  readonly seekPreviewIndex: number | null;
+  readonly currentPageIndex: number;
+  readonly totalPages: number;
+  readonly pageIndicatorText?: string;
+}): string {
+  if (input.seekPreviewIndex !== null) {
+    return `${input.seekPreviewIndex + 1} / ${input.totalPages}`;
+  }
+  const displayPage = input.totalPages > 0 ? input.currentPageIndex + 1 : 0;
+  return input.pageIndicatorText ?? `${displayPage} / ${input.totalPages}`;
+}
+
+function useSeekbarDrag(input: {
+  readonly isOpen: boolean;
+  readonly totalPages: number;
+  readonly clampedCurrentPageIndex: number;
+  readonly onCommitSeek?: (targetPageIndex: number) => void;
+}) {
   const [seekPreviewIndex, setSeekPreviewIndex] = useState<number | null>(null);
   const seekPreviewRef = useRef<number | null>(null);
-  const currentPageIndexRef = useRef(clampedCurrentPageIndex);
-  currentPageIndexRef.current = clampedCurrentPageIndex;
-  const onCommitSeekRef = useRef(onCommitSeek);
-  onCommitSeekRef.current = onCommitSeek;
+  const currentPageIndexRef = useRef(input.clampedCurrentPageIndex);
+  currentPageIndexRef.current = input.clampedCurrentPageIndex;
+  const onCommitSeekRef = useRef(input.onCommitSeek);
+  onCommitSeekRef.current = input.onCommitSeek;
 
-  const seekDragController = useMemo(() => {
+  const controller = useMemo(() => {
     const detach = () => {
       window.removeEventListener("pointerup", onPointerEnd, true);
       window.removeEventListener("pointercancel", onPointerEnd, true);
@@ -126,54 +122,102 @@ export function ReaderHudOverlay({
   }, []);
 
   useEffect(() => {
-    if (!isOpen) {
+    if (!input.isOpen || input.totalPages <= 1) {
       seekPreviewRef.current = null;
-      seekDragController.detach();
+      controller.detach();
       setSeekPreviewIndex(null);
     }
-  }, [isOpen, seekDragController]);
+  }, [controller, input.isOpen, input.totalPages]);
 
   useEffect(() => {
     return () => {
       seekPreviewRef.current = null;
-      seekDragController.detach();
+      controller.detach();
     };
-  }, [seekDragController]);
+  }, [controller]);
 
-  if (!isOpen) {
-    return null;
-  }
-
-  const handleSeekPointerDown = () => {
-    if (totalPages <= 1) {
+  const handlePointerDown = () => {
+    if (input.totalPages <= 1) {
       return;
     }
-    seekPreviewRef.current = clampedCurrentPageIndex;
-    setSeekPreviewIndex(clampedCurrentPageIndex);
-    seekDragController.attach();
+    seekPreviewRef.current = input.clampedCurrentPageIndex;
+    setSeekPreviewIndex(input.clampedCurrentPageIndex);
+    controller.attach();
   };
 
-  const handleSeekChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
     const nextIndex = Number(event.currentTarget.value);
     if (seekPreviewRef.current !== null) {
       seekPreviewRef.current = nextIndex;
       setSeekPreviewIndex(nextIndex);
       return;
     }
-    if (nextIndex !== clampedCurrentPageIndex) {
-      onCommitSeek?.(nextIndex);
+    if (nextIndex !== input.clampedCurrentPageIndex) {
+      input.onCommitSeek?.(nextIndex);
     }
   };
+
+  return {
+    seekPreviewIndex,
+    handlePointerDown,
+    handlePointerEnd: controller.onPointerEnd,
+    handleChange,
+  };
+}
+
+export function ReaderHudOverlay({
+  isOpen,
+  fileName,
+  currentPageIndex,
+  totalPages,
+  onClose,
+  onNextPage,
+  onPrevPage,
+  readingDirection = "rtl",
+  spreadMode = "auto",
+  effectiveSpreadMode = "single",
+  spreadPageOffset = 0,
+  pageIndicatorText,
+  maxDisplayedPageIndex,
+  onCycleSpreadMode,
+  onToggleSpreadPageOffset,
+  onToggleReadingDirection,
+  shaderModified = false,
+  onOpenShaderSheet,
+  onCommitSeek,
+}: ReaderHudOverlayProps): ReactNode {
+  const maxSeekIndex = Math.max(0, totalPages - 1);
+  const clampedCurrentPageIndex = clampSeekPageIndex(
+    currentPageIndex,
+    maxSeekIndex,
+  );
+  const {
+    seekPreviewIndex,
+    handlePointerDown,
+    handlePointerEnd,
+    handleChange,
+  } = useSeekbarDrag({
+    isOpen,
+    totalPages,
+    clampedCurrentPageIndex,
+    onCommitSeek,
+  });
+
+  if (!isOpen) {
+    return null;
+  }
 
   const isPrevDisabled = totalPages === 0 || currentPageIndex <= 0;
   const isNextDisabled =
     totalPages === 0 ||
     (maxDisplayedPageIndex ?? currentPageIndex) >= totalPages - 1;
-  const displayPage = totalPages > 0 ? currentPageIndex + 1 : 0;
   const isSeekPreview = seekPreviewIndex !== null;
-  const indicatorText = isSeekPreview
-    ? `${seekPreviewIndex + 1} / ${totalPages}`
-    : (pageIndicatorText ?? `${displayPage} / ${totalPages}`);
+  const indicatorText = formatHudIndicatorText({
+    seekPreviewIndex,
+    currentPageIndex,
+    totalPages,
+    pageIndicatorText,
+  });
   const activeSeekIndex = seekPreviewIndex ?? clampedCurrentPageIndex;
   const isOffsetToggleDisabled =
     totalPages <= 1 || effectiveSpreadMode === "single";
@@ -229,7 +273,7 @@ export function ReaderHudOverlay({
         onPointerDown={stopEventPropagation}
         onPointerUp={stopEventPropagation}
         style={{ paddingTop: "calc(0.75rem + env(safe-area-inset-top, 0px))" }}
-        className="absolute inset-x-0 top-0 z-20 flex items-center gap-3 border-b border-slate-800/80 bg-slate-950/90 px-4 py-3 text-slate-100 backdrop-blur-sm"
+        className="absolute inset-x-0 top-0 z-20 flex items-center gap-2 border-b border-slate-800/80 bg-slate-950/90 px-4 py-3 text-slate-100 backdrop-blur-sm sm:gap-3"
       >
         <button
           type="button"
@@ -253,7 +297,7 @@ export function ReaderHudOverlay({
           onClick={onOpenShaderSheet}
           className={`${CONTROL_BUTTON_BASE_CLASS} ${
             shaderModified
-              ? ACTIVE_OFFSET_BUTTON_COLOR_CLASS
+              ? ACTIVE_BUTTON_COLOR_CLASS
               : DEFAULT_BUTTON_COLOR_CLASS
           }`}
         >
@@ -273,7 +317,7 @@ export function ReaderHudOverlay({
       >
         <div
           data-testid="reader-hud-seek-row"
-          className="flex w-full items-center"
+          className="flex w-full items-center px-0.5"
         >
           <input
             type="range"
@@ -286,10 +330,10 @@ export function ReaderHudOverlay({
             dir={readingDirection}
             data-reading-direction={readingDirection}
             disabled={totalPages <= 1}
-            onPointerDown={handleSeekPointerDown}
-            onPointerUp={seekDragController.onPointerEnd}
-            onPointerCancel={seekDragController.onPointerEnd}
-            onChange={handleSeekChange}
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerEnd}
+            onPointerCancel={handlePointerEnd}
+            onChange={handleChange}
             className="w-full cursor-pointer accent-indigo-400 touch-manipulation disabled:cursor-not-allowed disabled:opacity-40"
           />
         </div>
@@ -325,7 +369,7 @@ export function ReaderHudOverlay({
             onClick={onToggleSpreadPageOffset}
             className={`${CONTROL_BUTTON_BASE_CLASS} ${
               isOffsetActive
-                ? ACTIVE_OFFSET_BUTTON_COLOR_CLASS
+                ? ACTIVE_BUTTON_COLOR_CLASS
                 : DEFAULT_BUTTON_COLOR_CLASS
             }`}
           >
