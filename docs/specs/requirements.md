@@ -2,7 +2,7 @@
 type: spec-requirements
 title: "全体要件定義・機能一覧・ミニMilestoneロードマップ"
 description: "ExLibris のプロダクトゴール、前提制約、非機能要件（TTFP・メモリ予算）、全機能カタログ割当、および Phase 3〜v1.0 マイルストーン計画の正本"
-status: "Review (#22)"
+status: "Approved (#22)"
 updated: "2026-11-22"
 tags: [requirements, roadmap, mvp, non-functional, ex-libris, android]
 related_specs:
@@ -14,14 +14,21 @@ related_specs:
   - docs/guidelines/testing.md
 related_tests:
   - scripts/android-build-config.test.ts
+  - scripts/generate-manual-test-archives.test.ts
   - src/shared/constants/app.test.ts
   - src/App.test.tsx
   - src/diagnostics/diagnosticLogger.test.ts
   - src/engine/zip/zipParser.test.ts
   - src/engine/workers/CoordinatorCore.test.ts
+  - src/storage/repositories/readingProgressRepository.test.ts
+  - src/storage/repositories/readerSettingsRepository.test.ts
   - src/webgl/l1PageCache.test.ts
+  - src/webgl/shaderParams.test.ts
   - src/webgl/WebGLRendererCore.test.ts
   - src/features/bookshelf/BookshelfPage.test.tsx
+  - src/features/bookshelf/RecentLocalHistorySection.test.tsx
+  - src/features/reader/ReaderHudOverlay.test.tsx
+  - src/features/reader/ReaderShaderSheet.test.tsx
   - src/features/reader/ReaderPage.test.tsx
   - test/vrt/vrt.spec.ts
   - test/it/smoke.spec.ts

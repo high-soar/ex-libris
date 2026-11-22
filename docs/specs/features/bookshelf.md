@@ -2,7 +2,7 @@
 type: spec-feature
 title: "仮想本棚ホーム画面仕様書（SCR-01: Bookshelf）"
 description: "SCR-01（/）のダークテーマシェル、ローカルZIP/CBZ選択導線（Web D&D・Android SAF互換）、最近のローカル閲覧履歴（readingProgress連携・削除対応）、診断ログコピー、およびTR-02a遷移仕様の正本"
-status: "Review (#22)"
+status: "Approved (#22)"
 updated: "2026-11-22"
 tags:
   [
@@ -31,6 +31,7 @@ related_tests:
   - src/features/bookshelf/LocalArchiveEmptyState.test.tsx
   - src/features/bookshelf/RecentLocalHistorySection.test.tsx
   - src/features/reader/localReaderSessionStore.test.ts
+  - src/storage/repositories/readingProgressRepository.test.ts
   - src/diagnostics/diagnosticLogger.test.ts
   - test/vrt/vrt.spec.ts
   - test/it/smoke.spec.ts

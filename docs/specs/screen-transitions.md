@@ -2,7 +2,7 @@
 type: spec-screen-transition
 title: "主要画面一覧（SCR-xx）と画面遷移（TR-xx）の全体マップ"
 description: "ダークテーマ標準シェル、4画面ルート設計（ローカル一時ZIP対応含む）、ハードウェア戻るボタン制御、およびリソース解放遷移契約の正本"
-status: "Review (#22)"
+status: "Approved (#22)"
 updated: "2026-11-22"
 tags: [screen-transition, navigation, routing, back-button, dark-theme, ui]
 related_specs:
@@ -22,14 +22,18 @@ related_tests:
   - src/bridges/app/mockAppBridge.test.ts
   - src/features/bookshelf/BookshelfHeader.test.tsx
   - src/features/bookshelf/BookshelfPage.test.tsx
+  - src/features/bookshelf/RecentLocalHistorySection.test.tsx
   - src/features/reader/spreadLayout.test.ts
   - src/features/reader/ReaderErrorView.test.tsx
   - src/features/reader/ReaderHudOverlay.test.tsx
+  - src/features/reader/ReaderShaderSheet.test.tsx
   - src/features/reader/ReaderPage.test.tsx
   - src/features/reader/localReaderSessionStore.test.ts
   - src/shared/router/RouterProvider.test.tsx
   - src/shared/router/routeMatcher.test.ts
   - src/shared/router/routerContext.test.ts
+  - src/storage/repositories/readingProgressRepository.test.ts
+  - src/storage/repositories/readerSettingsRepository.test.ts
   - src/webgl/ReaderCanvas.test.tsx
   - src/webgl/WebGLRendererCore.test.ts
   - test/it/smoke.spec.ts
