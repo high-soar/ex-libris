@@ -1,6 +1,41 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { ServiceProvider } from "../../app/ServiceProvider";
 import { RouterProvider } from "../../shared/router/RouterProvider";
+import type { LocalReadingHistoryItem } from "../../storage/repositories/readingProgressRepository";
 import { BookshelfPage } from "./BookshelfPage";
+
+const RECENT_HISTORY_SAMPLE_ITEMS: readonly LocalReadingHistoryItem[] = [
+  {
+    targetKey: "local:sample-comic-vol01.cbz:15728640",
+    rawFileName: "sample-comic-vol01.cbz",
+    fileSize: 15_728_640,
+    currentPageIndex: 11,
+    totalPageCount: 24,
+    readStatus: "reading",
+    spreadPageOffset: 0,
+    lastReadAt: 1_730_000_300_000,
+  },
+  {
+    targetKey: "local:completed-oneshot.zip:524288",
+    rawFileName: "completed-oneshot.zip",
+    fileSize: 524_288,
+    currentPageIndex: 19,
+    totalPageCount: 20,
+    readStatus: "completed",
+    spreadPageOffset: 0,
+    lastReadAt: 1_730_000_200_000,
+  },
+  {
+    targetKey: "local:unread-short.cbz:512",
+    rawFileName: "unread-short.cbz",
+    fileSize: 512,
+    currentPageIndex: 0,
+    totalPageCount: 10,
+    readStatus: "unread",
+    spreadPageOffset: 0,
+    lastReadAt: 1_730_000_100_000,
+  },
+];
 
 const meta: Meta<typeof BookshelfPage> = {
   title: "Bookshelf/BookshelfPage",
@@ -10,9 +45,11 @@ const meta: Meta<typeof BookshelfPage> = {
   },
   decorators: [
     (Story) => (
-      <RouterProvider initialPath="/">
-        <Story />
-      </RouterProvider>
+      <ServiceProvider>
+        <RouterProvider initialPath="/">
+          <Story />
+        </RouterProvider>
+      </ServiceProvider>
     ),
   ],
 };
@@ -46,5 +83,13 @@ export const CopiedFeedback: Story = {
   name: "診断ログコピー完了状態",
   args: {
     initialCopyStatus: "copied",
+  },
+};
+
+/** ローカル閲覧履歴ありの本棚状態 */
+export const WithRecentHistory: Story = {
+  name: "閲覧履歴あり状態",
+  args: {
+    initialRecentHistory: RECENT_HISTORY_SAMPLE_ITEMS,
   },
 };

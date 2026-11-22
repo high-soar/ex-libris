@@ -1,5 +1,6 @@
 import { composeStories } from "@storybook/react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
 import {
   afterEach,
   beforeEach,
@@ -9,14 +10,80 @@ import {
   type MockInstance,
   vi,
 } from "vitest";
+import { ServiceProvider } from "../../app/ServiceProvider";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
-import { useLocalReaderSessionStore } from "../reader/localReaderSessionStore";
+import { RouterProvider } from "../../shared/router/RouterProvider";
+import { resetTestDb } from "../../storage/db";
+import {
+  type LocalReadingHistoryItem,
+  RECENT_LOCAL_HISTORY_DEFAULT_LIMIT,
+  type ReadingProgressRepository,
+} from "../../storage/repositories/readingProgressRepository";
 import * as BookshelfHeaderModule from "./BookshelfHeader";
+import { BookshelfPage, type BookshelfPageProps } from "./BookshelfPage";
 import * as stories from "./BookshelfPage.stories";
 import * as LocalArchiveEmptyStateModule from "./LocalArchiveEmptyState";
+import * as RecentLocalHistorySectionModule from "./RecentLocalHistorySection";
+import { useLocalReaderSessionStore } from "../reader/localReaderSessionStore";
 
-const { Default, DragActive, UnsupportedExtensionError, CopiedFeedback } =
-  composeStories(stories);
+const {
+  Default,
+  DragActive,
+  UnsupportedExtensionError,
+  CopiedFeedback,
+  WithRecentHistory,
+} = composeStories(stories);
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (reason?: unknown) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
+function createSampleHistoryItem(
+  overrides: Partial<LocalReadingHistoryItem> = {},
+): LocalReadingHistoryItem {
+  return {
+    targetKey: "local:sample-comic.cbz:1024",
+    rawFileName: "sample-comic.cbz",
+    fileSize: 1024,
+    currentPageIndex: 3,
+    totalPageCount: 20,
+    readStatus: "reading",
+    spreadPageOffset: 0,
+    lastReadAt: 1_730_000_000_000,
+    ...overrides,
+  };
+}
+
+function createMockReadingProgressRepo(
+  overrides: Partial<ReadingProgressRepository> = {},
+): ReadingProgressRepository {
+  return {
+    get: vi.fn(async () => null),
+    put: vi.fn(async () => undefined),
+    delete: vi.fn(async () => undefined),
+    listRecentLocal: vi.fn(async () => []),
+    clearLocal: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
 
 describe("BookshelfPage", () => {
   const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
@@ -29,8 +96,12 @@ describe("BookshelfPage", () => {
   let emptyStateSpy: MockInstance<
     typeof LocalArchiveEmptyStateModule.LocalArchiveEmptyState
   >;
+  let recentHistorySpy: MockInstance<
+    typeof RecentLocalHistorySectionModule.RecentLocalHistorySection
+  >;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await resetTestDb();
     diagnosticLogger.clear();
     useLocalReaderSessionStore.setState({ session: null });
     window.history.replaceState(null, "", "/");
@@ -41,10 +112,14 @@ describe("BookshelfPage", () => {
     emptyStateSpy = vi
       .spyOn(LocalArchiveEmptyStateModule, "LocalArchiveEmptyState")
       .mockImplementation(() => null);
+    recentHistorySpy = vi
+      .spyOn(RecentLocalHistorySectionModule, "RecentLocalHistorySection")
+      .mockImplementation(() => null);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks();
+    await resetTestDb();
     window.history.replaceState(null, "", originalUrl || "/");
     if (originalClipboardDescriptor) {
       Object.defineProperty(
@@ -71,8 +146,37 @@ describe("BookshelfPage", () => {
       return lastCall![0] as LocalArchiveEmptyStateModule.LocalArchiveEmptyStateProps;
     };
 
-  it("全ストーリーを描画し直下の子コンポーネントへ初期Propsを正しく渡すこと", () => {
-    const { unmount: unmountDefault } = render(<Default />);
+  const getLatestRecentHistoryProps =
+    (): RecentLocalHistorySectionModule.RecentLocalHistorySectionProps => {
+      const lastCall = recentHistorySpy.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      return lastCall![0] as RecentLocalHistorySectionModule.RecentLocalHistorySectionProps;
+    };
+
+  async function renderAndFlush(element: ReactElement) {
+    const rendered = render(element);
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    return rendered;
+  }
+
+  async function renderWithProgressRepo(
+    readingProgressRepo: ReadingProgressRepository,
+    props: BookshelfPageProps = {},
+  ) {
+    return renderAndFlush(
+      <ServiceProvider readingProgressRepo={readingProgressRepo}>
+        <RouterProvider initialPath="/">
+          <BookshelfPage {...props} />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+  }
+
+  it("全ストーリーを描画し直下の子コンポーネントへ初期Propsを正しく渡すこと", async () => {
+    const { unmount: unmountDefault } = await renderAndFlush(<Default />);
+    expect(screen.getByRole("main")).toHaveClass("flex-col", "gap-6");
     expect(getLatestHeaderProps()).toEqual({
       copyStatus: "idle",
       onCopyDiagnostics: expect.any(Function),
@@ -83,24 +187,36 @@ describe("BookshelfPage", () => {
       errorMessage: null,
       onOpenLocalZip: expect.any(Function),
     });
+    expect(getLatestRecentHistoryProps()).toEqual({
+      items: [],
+      onReopenLocalFile: expect.any(Function),
+      onDeleteItem: expect.any(Function),
+      onClearAll: expect.any(Function),
+    });
     unmountDefault();
 
-    const { unmount: unmountDrag } = render(<DragActive />);
+    const { unmount: unmountDrag } = await renderAndFlush(<DragActive />);
     expect(getLatestEmptyStateProps().isDragActive).toBe(true);
     unmountDrag();
 
-    const { unmount: unmountError } = render(<UnsupportedExtensionError />);
+    const { unmount: unmountError } = await renderAndFlush(
+      <UnsupportedExtensionError />,
+    );
     expect(getLatestEmptyStateProps().errorMessage).toBe(
       "対応形式は .zip または .cbz ファイルのみです",
     );
     unmountError();
 
-    render(<CopiedFeedback />);
+    const { unmount: unmountCopied } = await renderAndFlush(<CopiedFeedback />);
     expect(getLatestHeaderProps().copyStatus).toBe("copied");
+    unmountCopied();
+
+    await renderAndFlush(<WithRecentHistory />);
+    expect(getLatestRecentHistoryProps().items).toHaveLength(3);
   });
 
-  it("ヘッダーおよび空本棚カードのonOpenLocalZipからSAF互換input要素のclickが呼ばれること (AC-BS-01)", () => {
-    render(<Default />);
+  it("ヘッダーおよび空本棚カードのonOpenLocalZipからSAF互換input要素のclickが呼ばれること (AC-BS-01)", async () => {
+    await renderAndFlush(<Default />);
 
     const input = screen.getByTestId(
       "local-zip-file-input",
@@ -125,8 +241,8 @@ describe("BookshelfPage", () => {
     expect(clickSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("有効な.zip/.cbzファイル選択でセッション格納・エラー解除・/read/local遷移とinput値リセットを行うこと (AC-BS-01, AC-BS-04)", () => {
-    render(<UnsupportedExtensionError />);
+  it("有効な.zip/.cbzファイル選択でセッション格納・エラー解除・/read/local遷移とinput値リセットを行うこと (AC-BS-01, AC-BS-04)", async () => {
+    await renderAndFlush(<UnsupportedExtensionError />);
     expect(getLatestEmptyStateProps().errorMessage).not.toBeNull();
 
     const input = screen.getByTestId(
@@ -150,8 +266,8 @@ describe("BookshelfPage", () => {
     expect(window.location.pathname).toBe("/read/local");
   });
 
-  it("大文字小文字を問わず.zipファイルでも有効として/read/localへ遷移し、空選択では何もしないこと (AC-BS-04)", () => {
-    render(<Default />);
+  it("大文字小文字を問わず.zipファイルでも有効として/read/localへ遷移し、空選択では何もしないこと (AC-BS-04)", async () => {
+    await renderAndFlush(<Default />);
     const input = screen.getByTestId(
       "local-zip-file-input",
     ) as HTMLInputElement;
@@ -173,8 +289,8 @@ describe("BookshelfPage", () => {
     expect(window.location.pathname).toBe("/read/local");
   });
 
-  it("非対応拡張子のファイル選択時は遷移せずエラーメッセージ設定と警告ログ記録を行うこと (AC-BS-03)", () => {
-    render(<Default />);
+  it("非対応拡張子のファイル選択時は遷移せずエラーメッセージ設定と警告ログ記録を行うこと (AC-BS-03)", async () => {
+    await renderAndFlush(<Default />);
     const input = screen.getByTestId("local-zip-file-input");
 
     const pdfFile = new File(["pdf"], "document.pdf", {
@@ -198,8 +314,8 @@ describe("BookshelfPage", () => {
     );
   });
 
-  it("ドラッグ＆ドロップ操作でisDragActive制御・関連ターゲット判定・ファイル検証を行うこと (AC-BS-02, AC-BS-03, AC-BS-04)", () => {
-    render(<Default />);
+  it("ドラッグ＆ドロップ操作でisDragActive制御・関連ターゲット判定・ファイル検証を行うこと (AC-BS-02, AC-BS-03, AC-BS-04)", async () => {
+    await renderAndFlush(<Default />);
     const main = screen.getByRole("main");
     const innerInput = screen.getByTestId("local-zip-file-input");
 
@@ -301,7 +417,7 @@ describe("BookshelfPage", () => {
     });
     diagnosticLogger.warn("oauth", "テスト", "Bearer secret123");
 
-    const { unmount } = render(<Default />);
+    const { unmount } = await renderAndFlush(<Default />);
     await act(async () => {
       await getLatestHeaderProps().onCopyDiagnostics();
     });
@@ -315,7 +431,7 @@ describe("BookshelfPage", () => {
       configurable: true,
       value: undefined,
     });
-    const { unmount: unmountMissing } = render(<Default />);
+    const { unmount: unmountMissing } = await renderAndFlush(<Default />);
     await act(async () => {
       await getLatestHeaderProps().onCopyDiagnostics();
     });
@@ -329,10 +445,261 @@ describe("BookshelfPage", () => {
         writeText: vi.fn().mockRejectedValue(new Error("Denied")),
       },
     });
-    render(<Default />);
+    await renderAndFlush(<Default />);
     await act(async () => {
       await getLatestHeaderProps().onCopyDiagnostics();
     });
     expect(getLatestHeaderProps().copyStatus).toBe("failed");
+  });
+
+  it("マウント時にlistRecentLocal(10)で閲覧履歴を読み込み、initialRecentHistory指定時スキップ・失敗時warn・アンマウント時無視すること (AC-BS-06)", async () => {
+    // 1. 通常マウント成功
+    const loadedItems = [
+      createSampleHistoryItem({
+        targetKey: "local:book1.cbz:100",
+        rawFileName: "book1.cbz",
+      }),
+      createSampleHistoryItem({
+        targetKey: "local:book2.zip:200",
+        rawFileName: "book2.zip",
+        readStatus: "completed",
+      }),
+    ];
+    const repoOk = createMockReadingProgressRepo({
+      listRecentLocal: vi.fn(async () => loadedItems),
+    });
+    const { unmount: unmountOk } = await renderWithProgressRepo(repoOk);
+    expect(repoOk.listRecentLocal).toHaveBeenCalledWith(
+      RECENT_LOCAL_HISTORY_DEFAULT_LIMIT,
+    );
+    expect(getLatestRecentHistoryProps().items).toEqual(loadedItems);
+    unmountOk();
+
+    // 2. initialRecentHistory 指定時は listRecentLocal を呼ばず即反映
+    const snapshotItems = [
+      createSampleHistoryItem({ targetKey: "local:snap.cbz:50" }),
+    ];
+    const repoSkipped = createMockReadingProgressRepo();
+    const { unmount: unmountSnap } = await renderWithProgressRepo(repoSkipped, {
+      initialRecentHistory: snapshotItems,
+    });
+    expect(repoSkipped.listRecentLocal).not.toHaveBeenCalled();
+    expect(getLatestRecentHistoryProps().items).toEqual(snapshotItems);
+    unmountSnap();
+
+    // 3. listRecentLocal 失敗時 (Error & non-Error): warn ログのみ記録し空維持
+    const repoErr1 = createMockReadingProgressRepo({
+      listRecentLocal: vi.fn(async () => {
+        throw new Error("load failed error");
+      }),
+    });
+    const { unmount: unmountErr1 } = await renderWithProgressRepo(repoErr1);
+    expect(getLatestRecentHistoryProps().items).toEqual([]);
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "warn",
+          scope: "bookshelf",
+          detail: "load failed error",
+        }),
+      ]),
+    );
+    unmountErr1();
+
+    diagnosticLogger.clear();
+    const repoErr2 = createMockReadingProgressRepo({
+      listRecentLocal: vi.fn(async () => {
+        throw "raw load failure";
+      }),
+    });
+    const { unmount: unmountErr2 } = await renderWithProgressRepo(repoErr2);
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "warn",
+          scope: "bookshelf",
+          detail: "raw load failure",
+        }),
+      ]),
+    );
+    unmountErr2();
+
+    // 4. アンマウント後の resolve / reject を無視する
+    diagnosticLogger.clear();
+    const staleResolve = createDeferred<readonly LocalReadingHistoryItem[]>();
+    const repoStale1 = createMockReadingProgressRepo({
+      listRecentLocal: vi.fn(() => staleResolve.promise),
+    });
+    const { unmount: unmountStale1 } = render(
+      <ServiceProvider readingProgressRepo={repoStale1}>
+        <RouterProvider initialPath="/">
+          <BookshelfPage />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    unmountStale1();
+    await act(async () => {
+      staleResolve.resolve(loadedItems);
+      await flushMicrotasks();
+    });
+    expect(diagnosticLogger.getEntries()).toEqual([]);
+
+    const staleReject = createDeferred<readonly LocalReadingHistoryItem[]>();
+    const repoStale2 = createMockReadingProgressRepo({
+      listRecentLocal: vi.fn(() => staleReject.promise),
+    });
+    const { unmount: unmountStale2 } = render(
+      <ServiceProvider readingProgressRepo={repoStale2}>
+        <RouterProvider initialPath="/">
+          <BookshelfPage />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    unmountStale2();
+    await act(async () => {
+      staleReject.reject(new Error("late load reject"));
+      await flushMicrotasks();
+    });
+    expect(diagnosticLogger.getEntries()).toEqual([]);
+  });
+
+  it("履歴再選択・個別削除・一括クリアが動作し、失敗時warnおよびアンマウント後完了無視を行うこと (AC-BS-06)", async () => {
+    const itemA = createSampleHistoryItem({
+      targetKey: "local:book-a.cbz:100",
+      rawFileName: "book-a.cbz",
+    });
+    const itemB = createSampleHistoryItem({
+      targetKey: "local:book-b.zip:200",
+      rawFileName: "book-b.zip",
+    });
+    const repo = createMockReadingProgressRepo();
+    const { unmount: unmountMain } = await renderWithProgressRepo(repo, {
+      initialRecentHistory: [itemA, itemB],
+    });
+
+    // onReopenLocalFile -> ファイルピッカー起動
+    const input = screen.getByTestId(
+      "local-zip-file-input",
+    ) as HTMLInputElement;
+    const clickSpy = vi.spyOn(input, "click").mockImplementation(() => {});
+    act(() => {
+      getLatestRecentHistoryProps().onReopenLocalFile();
+    });
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+
+    // onDeleteItem 成功 -> 対象アイテムのみ除外
+    await act(async () => {
+      await getLatestRecentHistoryProps().onDeleteItem(itemA.targetKey);
+    });
+    expect(repo.delete).toHaveBeenCalledWith(itemA.targetKey);
+    expect(getLatestRecentHistoryProps().items).toEqual([itemB]);
+
+    // onDeleteItem 失敗 (Error / non-Error) -> 項目維持 + warn
+    vi.mocked(repo.delete).mockRejectedValueOnce(new Error("delete err"));
+    await act(async () => {
+      await getLatestRecentHistoryProps().onDeleteItem(itemB.targetKey);
+    });
+    expect(getLatestRecentHistoryProps().items).toEqual([itemB]);
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "warn",
+          scope: "bookshelf",
+          detail: expect.stringContaining("delete err"),
+        }),
+      ]),
+    );
+
+    vi.mocked(repo.delete).mockRejectedValueOnce("raw delete failure");
+    await act(async () => {
+      await getLatestRecentHistoryProps().onDeleteItem(itemB.targetKey);
+    });
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "warn",
+          scope: "bookshelf",
+          detail: expect.stringContaining("raw delete failure"),
+        }),
+      ]),
+    );
+
+    // onClearAll 失敗 (Error / non-Error) -> 項目維持 + warn
+    vi.mocked(repo.clearLocal).mockRejectedValueOnce(new Error("clear err"));
+    await act(async () => {
+      await getLatestRecentHistoryProps().onClearAll();
+    });
+    expect(getLatestRecentHistoryProps().items).toEqual([itemB]);
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "warn",
+          scope: "bookshelf",
+          detail: expect.stringContaining("clear err"),
+        }),
+      ]),
+    );
+
+    vi.mocked(repo.clearLocal).mockRejectedValueOnce("raw clear failure");
+    await act(async () => {
+      await getLatestRecentHistoryProps().onClearAll();
+    });
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "warn",
+          scope: "bookshelf",
+          detail: expect.stringContaining("raw clear failure"),
+        }),
+      ]),
+    );
+
+    // onClearAll 成功 -> []
+    await act(async () => {
+      await getLatestRecentHistoryProps().onClearAll();
+    });
+    expect(repo.clearLocal).toHaveBeenCalled();
+    expect(getLatestRecentHistoryProps().items).toEqual([]);
+    unmountMain();
+
+    // delete / clearLocal のアンマウント後 resolve / reject 無視
+    diagnosticLogger.clear();
+    const deleteResolve = createDeferred<void>();
+    const deleteReject = createDeferred<void>();
+    const clearResolve = createDeferred<void>();
+    const clearReject = createDeferred<void>();
+    const staleRepo = createMockReadingProgressRepo({
+      delete: vi
+        .fn()
+        .mockImplementationOnce(() => deleteResolve.promise)
+        .mockImplementationOnce(() => deleteReject.promise),
+      clearLocal: vi
+        .fn()
+        .mockImplementationOnce(() => clearResolve.promise)
+        .mockImplementationOnce(() => clearReject.promise),
+    });
+    const { unmount: unmountStaleOps } = await renderWithProgressRepo(
+      staleRepo,
+      { initialRecentHistory: [itemA] },
+    );
+    const ops = getLatestRecentHistoryProps();
+    const pendingDelete1 = ops.onDeleteItem(itemA.targetKey);
+    const pendingDelete2 = ops.onDeleteItem(itemA.targetKey);
+    const pendingClear1 = ops.onClearAll();
+    const pendingClear2 = ops.onClearAll();
+    unmountStaleOps();
+    await act(async () => {
+      deleteResolve.resolve(undefined);
+      deleteReject.reject(new Error("late delete fail"));
+      clearResolve.resolve(undefined);
+      clearReject.reject(new Error("late clear fail"));
+      await Promise.all([
+        pendingDelete1,
+        pendingDelete2,
+        pendingClear1,
+        pendingClear2,
+      ]);
+    });
+    expect(diagnosticLogger.getEntries()).toEqual([]);
   });
 });

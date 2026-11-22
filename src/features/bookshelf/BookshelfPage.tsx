@@ -7,6 +7,7 @@ import {
 } from "react";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
 import { useRouter } from "../../shared/router/routerContext";
+import type { LocalReadingHistoryItem } from "../../storage/repositories/readingProgressRepository";
 import { useLocalReaderSessionStore } from "../reader/localReaderSessionStore";
 import { BookshelfHeader, type CopyStatus } from "./BookshelfHeader";
 import { LocalArchiveEmptyState } from "./LocalArchiveEmptyState";
@@ -15,6 +16,7 @@ export interface BookshelfPageProps {
   readonly initialCopyStatus?: CopyStatus;
   readonly initialErrorMessage?: string | null;
   readonly initialDragActive?: boolean;
+  readonly initialRecentHistory?: readonly LocalReadingHistoryItem[];
 }
 
 const LOCAL_ARCHIVE_INPUT_ACCEPT =
