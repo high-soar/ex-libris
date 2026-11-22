@@ -29,6 +29,9 @@ test.describe("SCN-01: 初期シェル起動・WebGL2環境・診断ログ・ロ
       "data-drag-active",
       "false",
     );
+    await expect(page.getByTestId("recent-local-history-section")).toHaveCount(
+      0,
+    );
     await expect(
       page.getByTestId("header-open-local-zip-button"),
     ).toBeVisible();
