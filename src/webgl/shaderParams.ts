@@ -54,14 +54,21 @@ export function normalizeShaderCorrectionParams(
   };
 }
 
+export function areShaderParamsEqual(
+  a: ShaderCorrectionParams,
+  b: ShaderCorrectionParams,
+): boolean {
+  return (
+    a.sharpness === b.sharpness &&
+    a.whitePoint === b.whitePoint &&
+    a.blackPoint === b.blackPoint &&
+    a.gamma === b.gamma
+  );
+}
+
 export function isDefaultShaderParams(params: ShaderCorrectionParams): boolean {
   const normalized = normalizeShaderCorrectionParams(params);
-  return (
-    normalized.sharpness === DEFAULT_SHADER_CORRECTION_PARAMS.sharpness &&
-    normalized.whitePoint === DEFAULT_SHADER_CORRECTION_PARAMS.whitePoint &&
-    normalized.blackPoint === DEFAULT_SHADER_CORRECTION_PARAMS.blackPoint &&
-    normalized.gamma === DEFAULT_SHADER_CORRECTION_PARAMS.gamma
-  );
+  return areShaderParamsEqual(normalized, DEFAULT_SHADER_CORRECTION_PARAMS);
 }
 
 export function formatShaderParamsAttribute(

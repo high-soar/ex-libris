@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SHADER_CORRECTION_PARAMS,
   SHADER_PARAM_RANGES,
+  areShaderParamsEqual,
   formatShaderParamsAttribute,
   isDefaultShaderParams,
   normalizeShaderCorrectionParams,
@@ -193,5 +194,23 @@ describe("shaderParams", () => {
         gamma: 0.8,
       }),
     ).toBe("0.30,1.00,0.06,0.80");
+  });
+
+  it("areShaderParamsEqualが4パラメータの等価性を厳密判定すること (AC-GL-09)", () => {
+    const base = {
+      sharpness: 0.2,
+      whitePoint: 0.95,
+      blackPoint: 0.05,
+      gamma: 1.1,
+    };
+    expect(areShaderParamsEqual(base, { ...base })).toBe(true);
+    expect(areShaderParamsEqual(base, { ...base, sharpness: 0.3 })).toBe(false);
+    expect(areShaderParamsEqual(base, { ...base, whitePoint: 0.9 })).toBe(
+      false,
+    );
+    expect(areShaderParamsEqual(base, { ...base, blackPoint: 0.1 })).toBe(
+      false,
+    );
+    expect(areShaderParamsEqual(base, { ...base, gamma: 1.2 })).toBe(false);
   });
 });

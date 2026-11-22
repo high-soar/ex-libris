@@ -3,6 +3,7 @@ import type { DecodedPageFrame } from "../engine/types";
 import type { ReadyPageFrame } from "./l1PageCache";
 import {
   DEFAULT_SHADER_CORRECTION_PARAMS,
+  areShaderParamsEqual,
   normalizeShaderCorrectionParams,
 } from "./shaderParams";
 import { FRAGMENT_SHADER_SOURCE, VERTEX_SHADER_SOURCE } from "./shaders";
@@ -440,12 +441,7 @@ export class WebGLRendererCore {
 
   setShaderParams(params: ShaderCorrectionParams): boolean {
     const next = normalizeShaderCorrectionParams(params);
-    if (
-      this.shaderParams.sharpness === next.sharpness &&
-      this.shaderParams.whitePoint === next.whitePoint &&
-      this.shaderParams.blackPoint === next.blackPoint &&
-      this.shaderParams.gamma === next.gamma
-    ) {
+    if (areShaderParamsEqual(this.shaderParams, next)) {
       return false;
     }
     this.shaderParams = next;
@@ -540,16 +536,7 @@ export class WebGLRendererCore {
     this.gl.bindVertexArray(this.pipeline.vao);
     this.gl.activeTexture(this.gl.TEXTURE0);
     this.gl.uniform1i(this.pipeline.textureLoc, 0);
-    this.gl.uniform1f(this.pipeline.sharpnessLoc, this.shaderParams.sharpness);
-    this.gl.uniform1f(
-      this.pipeline.whitePointLoc,
-      this.shaderParams.whitePoint,
-    );
-    this.gl.uniform1f(
-      this.pipeline.blackPointLoc,
-      this.shaderParams.blackPoint,
-    );
-    this.gl.uniform1f(this.pipeline.gammaLoc, this.shaderParams.gamma);
+    this.bindShaderUniforms(this.pipeline);
 
     const renderedSlots: ViewportSlot[] = [];
     for (const prepared of preparedJobs) {
@@ -622,6 +609,13 @@ export class WebGLRendererCore {
       this.gl.deleteProgram(this.pipeline.program);
       this.pipeline = null;
     }
+  }
+
+  private bindShaderUniforms(pipeline: WebGLPipeline): void {
+    this.gl.uniform1f(pipeline.sharpnessLoc, this.shaderParams.sharpness);
+    this.gl.uniform1f(pipeline.whitePointLoc, this.shaderParams.whitePoint);
+    this.gl.uniform1f(pipeline.blackPointLoc, this.shaderParams.blackPoint);
+    this.gl.uniform1f(pipeline.gammaLoc, this.shaderParams.gamma);
   }
 
   private drawTilesInRect(
