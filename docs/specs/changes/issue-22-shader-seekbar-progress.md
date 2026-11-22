@@ -42,8 +42,10 @@ related_tests:
   - src/webgl/WebGLRendererCore.test.ts
   - src/webgl/ReaderCanvas.test.tsx
   - src/features/reader/ReaderHudOverlay.test.tsx
+  - src/features/reader/ReaderShaderSheet.test.tsx
   - src/features/reader/ReaderPage.test.tsx
   - src/features/bookshelf/BookshelfPage.test.tsx
+  - src/features/bookshelf/RecentLocalHistorySection.test.tsx
   - test/vrt/vrt.spec.ts
   - test/it/smoke.spec.ts
   - test/it/local-reader.spec.ts

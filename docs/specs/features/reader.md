@@ -38,6 +38,7 @@ related_tests:
   - src/features/reader/spreadLayout.test.ts
   - src/features/reader/ReaderPage.test.tsx
   - src/features/reader/ReaderHudOverlay.test.tsx
+  - src/features/reader/ReaderShaderSheet.test.tsx
   - src/features/reader/ReaderErrorView.test.tsx
   - src/features/reader/localReaderSessionStore.test.ts
   - src/features/reader/readerErrors.test.ts
