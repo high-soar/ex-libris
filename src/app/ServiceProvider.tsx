@@ -37,6 +37,34 @@ function createDefaultAppBridge(): AppBridge {
     : new MockAppBridge();
 }
 
+function createDefaultZipIndexCacheRepo(): ZipIndexCacheRepository {
+  return new DexieZipIndexCacheRepository(db);
+}
+
+function createDefaultReadingProgressRepo(): ReadingProgressRepository {
+  return new DexieReadingProgressRepository(db);
+}
+
+function createDefaultReaderSettingsRepo(): ReaderSettingsRepository {
+  return new DexieReaderSettingsRepository(db);
+}
+
+function useStableService<T>(
+  provided: T | undefined,
+  createDefault: () => T,
+): T {
+  const fallbackRef = useRef<T | null>(null);
+  return useMemo(() => {
+    if (provided) {
+      return provided;
+    }
+    if (!fallbackRef.current) {
+      fallbackRef.current = createDefault();
+    }
+    return fallbackRef.current;
+  }, [createDefault, provided]);
+}
+
 export function ServiceProvider({
   children,
   appBridge,
@@ -45,60 +73,19 @@ export function ServiceProvider({
   readingProgressRepo,
   readerSettingsRepo,
 }: ServiceProviderProps) {
-  const fallbackAppBridgeRef = useRef<AppBridge | null>(null);
-  const fallbackZipIndexCacheRepoRef = useRef<ZipIndexCacheRepository | null>(
-    null,
+  const resolvedAppBridge = useStableService(appBridge, createDefaultAppBridge);
+  const resolvedZipIndexCacheRepo = useStableService(
+    zipIndexCacheRepo,
+    createDefaultZipIndexCacheRepo,
   );
-  const fallbackReadingProgressRepoRef =
-    useRef<ReadingProgressRepository | null>(null);
-  const fallbackReaderSettingsRepoRef = useRef<ReaderSettingsRepository | null>(
-    null,
+  const resolvedReadingProgressRepo = useStableService(
+    readingProgressRepo,
+    createDefaultReadingProgressRepo,
   );
-
-  const resolvedAppBridge = useMemo(() => {
-    if (appBridge) {
-      return appBridge;
-    }
-    if (!fallbackAppBridgeRef.current) {
-      fallbackAppBridgeRef.current = createDefaultAppBridge();
-    }
-    return fallbackAppBridgeRef.current;
-  }, [appBridge]);
-
-  const resolvedZipIndexCacheRepo = useMemo(() => {
-    if (zipIndexCacheRepo) {
-      return zipIndexCacheRepo;
-    }
-    if (!fallbackZipIndexCacheRepoRef.current) {
-      fallbackZipIndexCacheRepoRef.current = new DexieZipIndexCacheRepository(
-        db,
-      );
-    }
-    return fallbackZipIndexCacheRepoRef.current;
-  }, [zipIndexCacheRepo]);
-
-  const resolvedReadingProgressRepo = useMemo(() => {
-    if (readingProgressRepo) {
-      return readingProgressRepo;
-    }
-    if (!fallbackReadingProgressRepoRef.current) {
-      fallbackReadingProgressRepoRef.current =
-        new DexieReadingProgressRepository(db);
-    }
-    return fallbackReadingProgressRepoRef.current;
-  }, [readingProgressRepo]);
-
-  const resolvedReaderSettingsRepo = useMemo(() => {
-    if (readerSettingsRepo) {
-      return readerSettingsRepo;
-    }
-    if (!fallbackReaderSettingsRepoRef.current) {
-      fallbackReaderSettingsRepoRef.current = new DexieReaderSettingsRepository(
-        db,
-      );
-    }
-    return fallbackReaderSettingsRepoRef.current;
-  }, [readerSettingsRepo]);
+  const resolvedReaderSettingsRepo = useStableService(
+    readerSettingsRepo,
+    createDefaultReaderSettingsRepo,
+  );
 
   const resolvedCreateCoordinatorSession =
     createCoordinatorSession ?? defaultCreateCoordinatorSession;
