@@ -23,6 +23,9 @@ export interface ReaderHudOverlayProps {
   readonly onCycleSpreadMode?: () => void;
   readonly onToggleSpreadPageOffset?: () => void;
   readonly onToggleReadingDirection?: () => void;
+  readonly shaderModified?: boolean;
+  readonly onOpenShaderSheet?: () => void;
+  readonly onCommitSeek?: (targetPageIndex: number) => void;
 }
 
 const DEFAULT_BUTTON_COLOR_CLASS =

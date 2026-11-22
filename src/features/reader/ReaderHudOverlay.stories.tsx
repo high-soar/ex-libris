@@ -25,6 +25,8 @@ const meta: Meta<typeof ReaderHudOverlay> = {
     onCycleSpreadMode: () => {},
     onToggleSpreadPageOffset: () => {},
     onToggleReadingDirection: () => {},
+    onOpenShaderSheet: () => {},
+    onCommitSeek: () => {},
   },
 };
 
@@ -63,7 +65,7 @@ export const OpenLastPage: Story = {
   },
 };
 
-/** 右開き・見開き表示時の2段オーバーレイ HUD（auto + 見開き・2-3 / 24 表記） */
+/** 右開き・見開き表示時の3段オーバーレイ HUD（auto + 見開き・2-3 / 24 表記） */
 export const OpenSpreadRtl: Story = {
   name: "HUD表示（右開き・見開き）",
   args: {
@@ -79,7 +81,7 @@ export const OpenSpreadRtl: Story = {
   },
 };
 
-/** 左開き・見開き・1ページずらしON時の2段オーバーレイ HUD（ボタン順反転・ハイライト状態） */
+/** 左開き・見開き・1ページずらしON時の3段オーバーレイ HUD（ボタン順反転・ハイライト状態） */
 export const OpenSpreadLtrOffsetOn: Story = {
   name: "HUD表示（左開き・見開き・1ページずらしON）",
   args: {
@@ -95,7 +97,7 @@ export const OpenSpreadLtrOffsetOn: Story = {
   },
 };
 
-/** 左開き・単ページ固定時の2段オーバーレイ HUD（1ページずらし無効状態） */
+/** 左開き・単ページ固定時の3段オーバーレイ HUD（1ページずらし無効状態） */
 export const OpenForcedSingleLtr: Story = {
   name: "HUD表示（左開き・単ページ固定）",
   args: {
@@ -106,6 +108,17 @@ export const OpenForcedSingleLtr: Story = {
     spreadMode: "single",
     effectiveSpreadMode: "single",
     spreadPageOffset: 0,
+  },
+};
+
+/** 画質補正適用中のオーバーレイ HUD（画質補正ボタンインディゴ強調状態） */
+export const OpenWithShaderModified: Story = {
+  name: "HUD表示（画質補正適用中）",
+  args: {
+    isOpen: true,
+    currentPageIndex: 5,
+    totalPages: 24,
+    shaderModified: true,
   },
 };
 
