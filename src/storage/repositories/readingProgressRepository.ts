@@ -108,6 +108,41 @@ function isValidRecord(record: ReadingProgressRecord): boolean {
   );
 }
 
+export function compareTargetKeyAsc(a: string, b: string): number {
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return 0;
+}
+
+function toLocalReadingHistoryItem(
+  record: ReadingProgressRecord,
+): LocalReadingHistoryItem | null {
+  const parsed = parseLocalProgressTargetKey(record.targetKey);
+  if (
+    parsed === null ||
+    record.volumeId !== null ||
+    !hasValidCoreValues(record) ||
+    !Number.isFinite(record.lastReadAt) ||
+    !Number.isFinite(record.updatedAt)
+  ) {
+    return null;
+  }
+  return {
+    targetKey: record.targetKey,
+    rawFileName: parsed.rawFileName,
+    fileSize: parsed.fileSize,
+    currentPageIndex: record.currentPageIndex,
+    totalPageCount: record.totalPageCount,
+    readStatus: record.readStatus,
+    spreadPageOffset: record.spreadPageOffset,
+    lastReadAt: record.lastReadAt,
+  };
+}
+
 export class DexieReadingProgressRepository implements ReadingProgressRepository {
   private readonly database: ExLibrisDatabase;
   private readonly maxLocalEntries: number;
@@ -175,12 +210,11 @@ export class DexieReadingProgressRepository implements ReadingProgressRepository
               .startsWith("local:")
               .toArray();
             if (localRecords.length > this.maxLocalEntries) {
-              const sorted = [...localRecords].sort((a, b) => {
-                if (a.lastReadAt !== b.lastReadAt) {
-                  return a.lastReadAt - b.lastReadAt;
-                }
-                return a.targetKey < b.targetKey ? -1 : 1;
-              });
+              const sorted = [...localRecords].sort((a, b) =>
+                a.lastReadAt !== b.lastReadAt
+                  ? a.lastReadAt - b.lastReadAt
+                  : compareTargetKeyAsc(a.targetKey, b.targetKey),
+              );
               const overflowCount = sorted.length - this.maxLocalEntries;
               const deleteKeys = sorted
                 .slice(0, overflowCount)
@@ -207,34 +241,17 @@ export class DexieReadingProgressRepository implements ReadingProgressRepository
 
       const items: LocalReadingHistoryItem[] = [];
       for (const record of records) {
-        const parsed = parseLocalProgressTargetKey(record.targetKey);
-        if (
-          parsed === null ||
-          record.volumeId !== null ||
-          !hasValidCoreValues(record) ||
-          !Number.isFinite(record.lastReadAt) ||
-          !Number.isFinite(record.updatedAt)
-        ) {
-          continue;
+        const item = toLocalReadingHistoryItem(record);
+        if (item !== null) {
+          items.push(item);
         }
-        items.push({
-          targetKey: record.targetKey,
-          rawFileName: parsed.rawFileName,
-          fileSize: parsed.fileSize,
-          currentPageIndex: record.currentPageIndex,
-          totalPageCount: record.totalPageCount,
-          readStatus: record.readStatus,
-          spreadPageOffset: record.spreadPageOffset,
-          lastReadAt: record.lastReadAt,
-        });
       }
 
-      items.sort((a, b) => {
-        if (a.lastReadAt !== b.lastReadAt) {
-          return b.lastReadAt - a.lastReadAt;
-        }
-        return a.targetKey < b.targetKey ? -1 : 1;
-      });
+      items.sort((a, b) =>
+        a.lastReadAt !== b.lastReadAt
+          ? b.lastReadAt - a.lastReadAt
+          : compareTargetKeyAsc(a.targetKey, b.targetKey),
+      );
 
       return items.slice(0, Math.floor(limit));
     });

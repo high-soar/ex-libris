@@ -25,6 +25,11 @@ export class DexieReaderSettingsRepository implements ReaderSettingsRepository {
     this.database = database;
   }
 
+  private async deleteCorruptedAndFallback(): Promise<ShaderCorrectionParams> {
+    await this.database.syncMeta.delete(DEFAULT_READER_SETTINGS_META_KEY);
+    return { ...DEFAULT_SHADER_CORRECTION_PARAMS };
+  }
+
   async getShaderDefaults(): Promise<ShaderCorrectionParams> {
     const record = await this.database.syncMeta.get(
       DEFAULT_READER_SETTINGS_META_KEY,
@@ -37,19 +42,16 @@ export class DexieReaderSettingsRepository implements ReaderSettingsRepository {
     try {
       parsed = JSON.parse(record.value);
     } catch {
-      await this.database.syncMeta.delete(DEFAULT_READER_SETTINGS_META_KEY);
-      return { ...DEFAULT_SHADER_CORRECTION_PARAMS };
+      return this.deleteCorruptedAndFallback();
     }
 
     if (!isPlainObject(parsed)) {
-      await this.database.syncMeta.delete(DEFAULT_READER_SETTINGS_META_KEY);
-      return { ...DEFAULT_SHADER_CORRECTION_PARAMS };
+      return this.deleteCorruptedAndFallback();
     }
 
     if (Object.prototype.hasOwnProperty.call(parsed, "shader")) {
       if (!isPlainObject(parsed.shader)) {
-        await this.database.syncMeta.delete(DEFAULT_READER_SETTINGS_META_KEY);
-        return { ...DEFAULT_SHADER_CORRECTION_PARAMS };
+        return this.deleteCorruptedAndFallback();
       }
       return normalizeShaderCorrectionParams(parsed.shader);
     }

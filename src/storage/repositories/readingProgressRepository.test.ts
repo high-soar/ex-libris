@@ -6,6 +6,7 @@ import {
   LOCAL_READING_PROGRESS_MAX_ENTRIES,
   RECENT_LOCAL_HISTORY_DEFAULT_LIMIT,
   type SaveReadingProgressInput,
+  compareTargetKeyAsc,
   parseLocalProgressTargetKey,
 } from "./readingProgressRepository";
 
@@ -74,6 +75,10 @@ describe("DexieReadingProgressRepository", () => {
     for (const key of invalidKeys) {
       expect(parseLocalProgressTargetKey(key)).toBeNull();
     }
+
+    expect(compareTargetKeyAsc("local:a:1", "local:b:1")).toBe(-1);
+    expect(compareTargetKeyAsc("local:b:1", "local:a:1")).toBe(1);
+    expect(compareTargetKeyAsc("local:a:1", "local:a:1")).toBe(0);
   });
 
   it("local:*およびvol:*の保存・取得・個別削除ができ不正入力は無視すること (AC-RD-15)", async () => {
@@ -246,25 +251,30 @@ describe("DexieReadingProgressRepository", () => {
         now: () => fixedTime,
       });
 
-      await customRepo.put(createLocalInput("b.cbz", 10));
       await customRepo.put(createLocalInput("a.cbz", 10));
-      fixedTime = 600;
-      await customRepo.put(createLocalInput("c.cbz", 10));
+      await customRepo.put(createLocalInput("b.cbz", 10));
+      await customRepo.put(createLocalInput("d.cbz", 10));
 
       expect(await customRepo.get("local:a.cbz:10")).toBeNull();
       expect(await customRepo.get("local:b.cbz:10")).not.toBeNull();
+      expect(await customRepo.get("local:d.cbz:10")).not.toBeNull();
+
+      // 逆順入力でも同値タイブレーク昇順が維持されること
+      await customRepo.put(createLocalInput("c.cbz", 10));
+      expect(await customRepo.get("local:b.cbz:10")).toBeNull();
       expect(await customRepo.get("local:c.cbz:10")).not.toBeNull();
+      expect(await customRepo.get("local:d.cbz:10")).not.toBeNull();
 
       // 既存キー上書きは上限2件以内のため他を退避しない
       fixedTime = 700;
       await customRepo.put(
-        createLocalInput("b.cbz", 10, { currentPageIndex: 12 }),
+        createLocalInput("c.cbz", 10, { currentPageIndex: 12 }),
       );
       expect(await customDb.readingProgress.count()).toBe(2);
-      expect((await customRepo.get("local:b.cbz:10"))?.currentPageIndex).toBe(
+      expect((await customRepo.get("local:c.cbz:10"))?.currentPageIndex).toBe(
         12,
       );
-      expect(await customRepo.get("local:c.cbz:10")).not.toBeNull();
+      expect(await customRepo.get("local:d.cbz:10")).not.toBeNull();
     } finally {
       await customDb.delete();
     }
@@ -320,13 +330,49 @@ describe("DexieReadingProgressRepository", () => {
       lastReadAt: 99999,
       updatedAt: 99999,
     });
+    await db.readingProgress.put({
+      targetKey: "local:corrupt-nan-last.cbz:100",
+      volumeId: null,
+      currentPageIndex: 0,
+      totalPageCount: 5,
+      readStatus: "reading",
+      spreadPageOffset: 0,
+      lastReadAt: Number.NaN,
+      updatedAt: 99999,
+    });
+    await db.readingProgress.put({
+      targetKey: "local:corrupt-inf-upd.cbz:100",
+      volumeId: null,
+      currentPageIndex: 0,
+      totalPageCount: 5,
+      readStatus: "reading",
+      spreadPageOffset: 0,
+      lastReadAt: 99999,
+      updatedAt: Number.POSITIVE_INFINITY,
+    });
 
-    // 12件保存し、同値タイムスタンプ時は targetKey 昇順タイブレークで最新10件を返す
+    // 16件保存し、同値タイムスタンプ時は targetKey 昇順タイブレークで最新10件を返す
+    now = 300;
+    await repo.put(createLocalInput("m1.cbz", 100));
+    now = 290;
+    await repo.put(createLocalInput("m2.cbz", 100));
+    now = 280;
+    await repo.put(createLocalInput("m3.cbz", 100));
     now = 200;
-    await repo.put(createLocalInput("tie-b.cbz", 200));
+    await repo.put(createLocalInput("m4.cbz", 100));
+    now = 250;
+    await repo.put(createLocalInput("m5.cbz", 100));
+    now = 200;
+    await repo.put(createLocalInput("m6.cbz", 100));
+    await repo.put(
+      createLocalInput("tie-b.cbz", 200, {
+        readStatus: "unread",
+        currentPageIndex: 0,
+      }),
+    );
     await repo.put(createLocalInput("tie-a.cbz", 100));
     for (let i = 1; i <= 10; i += 1) {
-      now = 200 + i;
+      now = 400 + i;
       await repo.put(
         createLocalInput(`series:${i}.cbz`, 1024 * i, {
           currentPageIndex: i,
@@ -347,14 +393,19 @@ describe("DexieReadingProgressRepository", () => {
       totalPageCount: 30,
       readStatus: "completed",
       spreadPageOffset: 1,
-      lastReadAt: 210,
+      lastReadAt: 410,
     });
     expect(defaultRecent[9]?.targetKey).toBe("local:series:1.cbz:1024");
 
     const allValid = await repo.listRecentLocal(20);
-    expect(allValid).toHaveLength(12);
-    expect(allValid[10]?.targetKey).toBe("local:tie-a.cbz:100");
-    expect(allValid[11]?.targetKey).toBe("local:tie-b.cbz:200");
+    expect(allValid).toHaveLength(18);
+    expect(allValid[14]?.targetKey).toBe("local:m4.cbz:100");
+    expect(allValid[15]?.targetKey).toBe("local:m6.cbz:100");
+    expect(allValid[16]?.targetKey).toBe("local:tie-a.cbz:100");
+    expect(allValid[17]).toMatchObject({
+      targetKey: "local:tie-b.cbz:200",
+      readStatus: "unread",
+    });
 
     // clearLocal は local:* のみ全削除し vol:* を残す
     await repo.clearLocal();
