@@ -120,6 +120,17 @@ function buildRenderedState(
   };
 }
 
+function useNormalizedShaderParams(
+  shaderParams: ShaderCorrectionParams | undefined,
+): ShaderCorrectionParams {
+  const { sharpness, whitePoint, blackPoint, gamma } =
+    normalizeShaderCorrectionParams(shaderParams);
+  return useMemo<ShaderCorrectionParams>(
+    () => ({ sharpness, whitePoint, blackPoint, gamma }),
+    [sharpness, whitePoint, blackPoint, gamma],
+  );
+}
+
 export function ReaderCanvas({
   slots,
   shaderParams,
@@ -132,12 +143,7 @@ export function ReaderCanvas({
   const isContextLostRef = useRef(false);
   const lastRenderedKeyRef = useRef("");
 
-  const { sharpness, whitePoint, blackPoint, gamma } =
-    normalizeShaderCorrectionParams(shaderParams);
-  const normalizedShaderParams = useMemo<ShaderCorrectionParams>(
-    () => ({ sharpness, whitePoint, blackPoint, gamma }),
-    [sharpness, whitePoint, blackPoint, gamma],
-  );
+  const normalizedShaderParams = useNormalizedShaderParams(shaderParams);
   const shaderParamsRef = useRef(normalizedShaderParams);
   shaderParamsRef.current = normalizedShaderParams;
 
