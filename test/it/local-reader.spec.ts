@@ -3,11 +3,16 @@ import type { MockAppBridge } from "../../src/bridges/app/mockAppBridge";
 import {
   buildCorruptZipBytes,
   buildPartialCorruptArchive,
+  buildSpreadCorruptArchive,
   buildSyntheticCp932Archive,
+  buildSyntheticMixedSpreadArchive,
+  buildSyntheticOversizedTextureArchive,
+  buildSyntheticPortraitSpreadArchive,
   buildSyntheticSevenPageArchive,
   buildSyntheticThreePageArchive,
   buildSyntheticZip64Archive,
   readPngCenterPixel,
+  readPngPixelAtRatio,
   readZipIndexCacheRecord,
   resetTestDatabase,
   trackPageErrors,
@@ -809,6 +814,691 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
       .toContain("# ExLibris Diagnostic Report");
     const report = await page.evaluate(() => navigator.clipboard.readText());
     expect(report).not.toContain("[ERROR]");
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("1280x800でインテリジェント見開き・横長単独化・自動再ペアリング・最終頁no-op・spreadHistory逆戻りが一貫動作すること (AC-RD-10, AC-GL-08)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "mixed-spread.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSyntheticMixedSpreadArchive()),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:0");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(canvas).toHaveAttribute("data-rendered-pages", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const p0Pixel = readPngCenterPixel(await canvas.screenshot());
+    expect(p0Pixel.r).toBeGreaterThan(200);
+    expect(p0Pixel.g).toBeLessThan(30);
+    expect(p0Pixel.b).toBeLessThan(30);
+
+    const surface = page.getByTestId("reader-interaction-surface");
+    const box = await surface.boundingBox();
+    expect(box).not.toBeNull();
+    const surfaceBox = box!;
+
+    // 表紙0P状態でHUD確認: 自動(見開き), 1 / 6
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeVisible();
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText("1 / 6");
+    await expect(page.getByTestId("reader-spread-mode-button")).toHaveText(
+      "自動(見開き)",
+    );
+    await expect(page.getByTestId("reader-prev-button")).toBeDisabled();
+    await expect(page.getByTestId("reader-next-button")).toBeEnabled();
+    await expect(
+      page.getByTestId("reader-offset-toggle-button"),
+    ).toHaveAttribute("aria-pressed", "false");
+
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeHidden();
+
+    // 次頁 -> [1, 2] 縦見開き (left:2 青, right:1 緑)
+    await page.keyboard.press("ArrowLeft");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:2,right:1",
+    );
+    await expect(canvas).toHaveAttribute("data-rendered-page", "1");
+    await expect(canvas).toHaveAttribute("data-rendered-pages", "1,2");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const spread12Shot = await canvas.screenshot();
+    const left12Pixel = readPngPixelAtRatio(spread12Shot, 0.35, 0.5);
+    const right12Pixel = readPngPixelAtRatio(spread12Shot, 0.65, 0.5);
+    expect(left12Pixel.b).toBeGreaterThan(200);
+    expect(left12Pixel.r).toBeLessThan(30);
+    expect(left12Pixel.g).toBeLessThan(30);
+    expect(right12Pixel.g).toBeGreaterThan(200);
+    expect(right12Pixel.r).toBeLessThan(30);
+    expect(right12Pixel.b).toBeLessThan(30);
+
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "2-3 / 6",
+    );
+
+    // 次頁 -> 横長画像 3P 単独中央表示 (center:3 黄, 4 / 6)
+    await page.getByTestId("reader-next-button").click();
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:3");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "3");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText("4 / 6");
+
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeHidden();
+    const p3Pixel = readPngCenterPixel(await canvas.screenshot());
+    expect(p3Pixel.r).toBeGreaterThan(200);
+    expect(p3Pixel.g).toBeGreaterThan(200);
+    expect(p3Pixel.b).toBeLessThan(30);
+
+    // 次頁 -> [4, 5] 自動再ペアリング (left:5 マゼンタ, right:4 シアン, 5-6 / 6)
+    await page.keyboard.press("ArrowLeft");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:5,right:4",
+    );
+    await expect(canvas).toHaveAttribute("data-rendered-page", "4");
+    await expect(canvas).toHaveAttribute("data-rendered-pages", "4,5");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const spread45Shot = await canvas.screenshot();
+    const left45Pixel = readPngPixelAtRatio(spread45Shot, 0.35, 0.5);
+    const right45Pixel = readPngPixelAtRatio(spread45Shot, 0.65, 0.5);
+    expect(left45Pixel.r).toBeGreaterThan(200);
+    expect(left45Pixel.g).toBeLessThan(30);
+    expect(left45Pixel.b).toBeGreaterThan(200);
+    expect(right45Pixel.r).toBeLessThan(30);
+    expect(right45Pixel.g).toBeGreaterThan(200);
+    expect(right45Pixel.b).toBeGreaterThan(200);
+
+    // 最終見開き表示中の全次頁操作 (HUD 次へ disabled / ArrowLeft / 左30%タップ) が完全 no-op
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "5-6 / 6",
+    );
+    await expect(page.getByTestId("reader-next-button")).toBeDisabled();
+
+    const endEpoch = await canvas.getAttribute("data-rendered-epoch");
+    await page.keyboard.press("ArrowLeft");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:5,right:4",
+    );
+    await expect(canvas).toHaveAttribute("data-rendered-epoch", endEpoch ?? "");
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "5-6 / 6",
+    );
+
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeHidden();
+
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.15,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:5,right:4",
+    );
+    await expect(canvas).toHaveAttribute("data-rendered-epoch", endEpoch ?? "");
+
+    // spreadHistory 通りに前へ逆戻り: [4,5] -> 3 -> [1,2] -> 0
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeVisible();
+
+    await page.getByTestId("reader-prev-button").click();
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:3");
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText("4 / 6");
+
+    await page.getByTestId("reader-prev-button").click();
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:2,right:1",
+    );
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "2-3 / 6",
+    );
+
+    await page.getByTestId("reader-prev-button").click();
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:0");
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText("1 / 6");
+    await expect(page.getByTestId("reader-prev-button")).toBeDisabled();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("1280x800で1ページずらし(spreadPageOffset)および右開き(rtl)↔左開き(ltr)切替時の全入力/HUD反転・L1即時再配置が動作すること (AC-RD-03, AC-RD-04, AC-RD-10, AC-RD-11)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "offset-and-direction.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSyntheticPortraitSpreadArchive()),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const surface = page.getByTestId("reader-interaction-surface");
+    const box = await surface.boundingBox();
+    expect(box).not.toBeNull();
+    const surfaceBox = box!;
+
+    // HUD を開き、0P での 1ページずらし [0] ↔ [0, 1] を検証
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    const offsetButton = page.getByTestId("reader-offset-toggle-button");
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText("1 / 6");
+    await expect(offsetButton).toBeEnabled();
+    await expect(offsetButton).toHaveAttribute("aria-pressed", "false");
+
+    await offsetButton.click();
+    await expect(offsetButton).toHaveAttribute("aria-pressed", "true");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:1,right:0",
+    );
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "1-2 / 6",
+    );
+
+    await offsetButton.click();
+    await expect(offsetButton).toHaveAttribute("aria-pressed", "false");
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:0");
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText("1 / 6");
+
+    // [1, 2] へ進み、中間頁での 1ページずらし (2-3 / 6 -> 3-4 / 6 -> 2-3 / 6) を検証
+    await page.getByTestId("reader-next-button").click();
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:2,right:1",
+    );
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "2-3 / 6",
+    );
+
+    await offsetButton.click();
+    await expect(offsetButton).toHaveAttribute("aria-pressed", "true");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:3,right:2",
+    );
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "3-4 / 6",
+    );
+
+    await offsetButton.click();
+    await expect(offsetButton).toHaveAttribute("aria-pressed", "false");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:2,right:1",
+    );
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "2-3 / 6",
+    );
+
+    // rtl 時の HUD 配置順・ボタン表記と左右 RGB ピクセルを確認
+    const navRowChildren = page
+      .getByTestId("reader-hud-nav-row")
+      .locator("> *");
+    await expect(navRowChildren.nth(0)).toHaveAttribute(
+      "data-testid",
+      "reader-next-button",
+    );
+    await expect(navRowChildren.nth(1)).toHaveAttribute(
+      "data-testid",
+      "reader-page-indicator",
+    );
+    await expect(navRowChildren.nth(2)).toHaveAttribute(
+      "data-testid",
+      "reader-prev-button",
+    );
+    await expect(page.getByTestId("reader-next-button")).toHaveText("← 次へ");
+    await expect(page.getByTestId("reader-prev-button")).toHaveText("前へ →");
+
+    const directionButton = page.getByTestId("reader-direction-button");
+    await expect(directionButton).toHaveText("右開き");
+    await expect(directionButton).toHaveAttribute(
+      "data-reading-direction",
+      "rtl",
+    );
+
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeHidden();
+    const rtlShot = await canvas.screenshot();
+    expect(readPngPixelAtRatio(rtlShot, 0.35, 0.5).b).toBeGreaterThan(200);
+    expect(readPngPixelAtRatio(rtlShot, 0.65, 0.5).g).toBeGreaterThan(200);
+
+    // HUD を開いて 右開き -> 左開き へ切替: HUD 反転 + L1 キャッシュ即時再配置 (同一 epoch)
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeVisible();
+    const epochBeforeToggle = await canvas.getAttribute("data-rendered-epoch");
+
+    await directionButton.click();
+    await expect(directionButton).toHaveText("左開き");
+    await expect(directionButton).toHaveAttribute(
+      "data-reading-direction",
+      "ltr",
+    );
+    await expect(navRowChildren.nth(0)).toHaveAttribute(
+      "data-testid",
+      "reader-prev-button",
+    );
+    await expect(navRowChildren.nth(1)).toHaveAttribute(
+      "data-testid",
+      "reader-page-indicator",
+    );
+    await expect(navRowChildren.nth(2)).toHaveAttribute(
+      "data-testid",
+      "reader-next-button",
+    );
+    await expect(page.getByTestId("reader-prev-button")).toHaveText("← 前へ");
+    await expect(page.getByTestId("reader-next-button")).toHaveText("次へ →");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:1,right:2",
+    );
+    await expect(canvas).toHaveAttribute("data-rendered-page", "1");
+    await expect(canvas).toHaveAttribute("data-rendered-pages", "1,2");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-epoch",
+      epochBeforeToggle ?? "",
+    );
+
+    // HUD を閉じて左開きでの左右 RGB 反転を確認
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeHidden();
+    const ltrShot = await canvas.screenshot();
+    const ltrLeftPixel = readPngPixelAtRatio(ltrShot, 0.35, 0.5);
+    const ltrRightPixel = readPngPixelAtRatio(ltrShot, 0.65, 0.5);
+    expect(ltrLeftPixel.g).toBeGreaterThan(200);
+    expect(ltrLeftPixel.b).toBeLessThan(30);
+    expect(ltrRightPixel.b).toBeGreaterThan(200);
+    expect(ltrRightPixel.g).toBeLessThan(30);
+
+    // ltr 状態での全入力反転: ArrowRight / 右30%タップ / 右->左スワイプ で「次へ」、逆で「前へ」
+    await page.keyboard.press("ArrowRight");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:3,right:4",
+    );
+    await page.keyboard.press("ArrowLeft");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:1,right:2",
+    );
+
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.85,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:3,right:4",
+    );
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.15,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:1,right:2",
+    );
+
+    const swipeY = surfaceBox.y + surfaceBox.height * 0.5;
+    await page.mouse.move(surfaceBox.x + surfaceBox.width * 0.65, swipeY);
+    await page.mouse.down();
+    await page.mouse.move(surfaceBox.x + surfaceBox.width * 0.35, swipeY, {
+      steps: 10,
+    });
+    await page.mouse.up();
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:3,right:4",
+    );
+
+    await page.mouse.move(surfaceBox.x + surfaceBox.width * 0.35, swipeY);
+    await page.mouse.down();
+    await page.mouse.move(surfaceBox.x + surfaceBox.width * 0.65, swipeY, {
+      steps: 10,
+    });
+    await page.mouse.up();
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:1,right:2",
+    );
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("375x667縦向きでauto単ページ追従・モード循環・リロードなし動的リサイズ切替が動作すること (AC-RD-10, AC-RD-11)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "portrait-auto-resize.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSyntheticPortraitSpreadArchive()),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    // 縦向き auto は次頁も単ページ追従
+    await page.keyboard.press("ArrowLeft");
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:1");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const surface = page.getByTestId("reader-interaction-surface");
+    const box = await surface.boundingBox();
+    expect(box).not.toBeNull();
+    const surfaceBox = box!;
+
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeVisible();
+
+    const spreadModeButton = page.getByTestId("reader-spread-mode-button");
+    const offsetButton = page.getByTestId("reader-offset-toggle-button");
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText("2 / 6");
+    await expect(spreadModeButton).toHaveText("自動(単頁)");
+    await expect(spreadModeButton).toHaveAttribute("data-spread-mode", "auto");
+    await expect(spreadModeButton).toHaveAttribute(
+      "data-effective-spread-mode",
+      "single",
+    );
+    await expect(offsetButton).toBeDisabled();
+
+    // 表示モード循環: 自動(単頁) -> 見開き -> 単ページ -> 自動(単頁)
+    await spreadModeButton.click();
+    await expect(spreadModeButton).toHaveText("見開き");
+    await expect(spreadModeButton).toHaveAttribute(
+      "data-spread-mode",
+      "spread",
+    );
+    await expect(spreadModeButton).toHaveAttribute(
+      "data-effective-spread-mode",
+      "spread",
+    );
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:2,right:1",
+    );
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "2-3 / 6",
+    );
+    await expect(offsetButton).toBeEnabled();
+
+    await spreadModeButton.click();
+    await expect(spreadModeButton).toHaveText("単ページ");
+    await expect(spreadModeButton).toHaveAttribute(
+      "data-spread-mode",
+      "single",
+    );
+    await expect(spreadModeButton).toHaveAttribute(
+      "data-effective-spread-mode",
+      "single",
+    );
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:1");
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText("2 / 6");
+    await expect(offsetButton).toBeDisabled();
+
+    await spreadModeButton.click();
+    await expect(spreadModeButton).toHaveText("自動(単頁)");
+    await expect(spreadModeButton).toHaveAttribute("data-spread-mode", "auto");
+    await expect(spreadModeButton).toHaveAttribute(
+      "data-effective-spread-mode",
+      "single",
+    );
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:1");
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText("2 / 6");
+    await expect(offsetButton).toBeDisabled();
+
+    // リロードなし動的リサイズ: 375x667 -> 1280x800 -> 375x667
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(spreadModeButton).toHaveText("自動(見開き)");
+    await expect(spreadModeButton).toHaveAttribute(
+      "data-effective-spread-mode",
+      "spread",
+    );
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:2,right:1",
+    );
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "2-3 / 6",
+    );
+    await expect(offsetButton).toBeEnabled();
+
+    await page.setViewportSize({ width: 375, height: 667 });
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(spreadModeButton).toHaveText("自動(単頁)");
+    await expect(spreadModeButton).toHaveAttribute(
+      "data-effective-spread-mode",
+      "single",
+    );
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:1");
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText("2 / 6");
+    await expect(offsetButton).toBeDisabled();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("実SwiftShader gl.MAX_TEXTURE_SIZE超合成PNGのタイル分割描画(非黒)と診断WARN記録が動作すること (AC-GL-07)", async ({
+    context,
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    const maxTex = await page.evaluate(() => {
+      const probe = document.createElement("canvas");
+      const gl = probe.getContext("webgl2");
+      if (!gl) {
+        throw new Error("WebGL2 context is not available");
+      }
+      return gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+    });
+    expect(maxTex).toBeGreaterThan(0);
+
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "oversized-texture-split.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSyntheticOversizedTextureArchive(maxTex)),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    // Page 1 (横幅 maxTex + 128, 高さ 64, 左半分赤・右半分青) へ移動しタイル分割完了を待機
+    await page.keyboard.press("ArrowLeft");
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:1");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "1");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const splitShot = await canvas.screenshot();
+    const leftPixel = readPngPixelAtRatio(splitShot, 0.35, 0.5);
+    const rightPixel = readPngPixelAtRatio(splitShot, 0.65, 0.5);
+    const tile1CenterRatio = (maxTex + 64) / (maxTex + 128);
+    const tile1Pixel = readPngPixelAtRatio(splitShot, tile1CenterRatio, 0.5);
+
+    expect(leftPixel.r).toBeGreaterThan(200);
+    expect(leftPixel.g).toBeLessThan(30);
+    expect(leftPixel.b).toBeLessThan(30);
+
+    expect(rightPixel.b).toBeGreaterThan(200);
+    expect(rightPixel.r).toBeLessThan(30);
+    expect(rightPixel.g).toBeLessThan(30);
+
+    expect(tile1Pixel.b).toBeGreaterThan(200);
+    expect(tile1Pixel.r).toBeLessThan(30);
+    expect(tile1Pixel.g).toBeLessThan(30);
+
+    // '/' 復帰後に診断ログをコピーし、[WARN] [webgl2] MAX_TEXTURE_SIZE が記録され [ERROR] が無いことを確認
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/$/);
+    await page.getByTestId("copy-diagnostics-button").click();
+    await expect
+      .poll(async () => page.evaluate(() => navigator.clipboard.readText()))
+      .toContain("# ExLibris Diagnostic Report");
+    const report = await page.evaluate(() => navigator.clipboard.readText());
+    expect(report).toContain("[WARN]");
+    expect(report).toContain("[webgl2]");
+    expect(report).toContain("MAX_TEXTURE_SIZE");
+    expect(report).not.toContain("[ERROR]");
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("見開き片側デコードエラー時に正常側半面WebGL2描画が継続し、両側エラー時は中央代表エラー表示へ切り替わること (AC-GL-08, AC-RD-12)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    // 1) 片側破損 (Page 1 破損 / Page 2 正常青): 左半分正常描画 + 右側エラーカード
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "half-corrupt-spread.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSpreadCorruptArchive([1])),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    await page.keyboard.press("ArrowLeft");
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "left:2");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "2");
+    await expect(canvas).toHaveAttribute("data-rendered-pages", "2");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const halfShot = await canvas.screenshot();
+    const validLeftPixel = readPngPixelAtRatio(halfShot, 0.35, 0.5);
+    expect(validLeftPixel.b).toBeGreaterThan(200);
+    expect(validLeftPixel.r).toBeLessThan(30);
+    expect(validLeftPixel.g).toBeLessThan(30);
+
+    const pageError = page.getByTestId("reader-page-error");
+    await expect(pageError).toHaveCount(1);
+    await expect(pageError).toHaveAttribute("data-slot-position", "right");
+    await expect(pageError).toContainText("ページ読込エラー (p.2)");
+    await expect(page.getByTestId("reader-error-code")).toContainText(
+      "DECODE_FAILED",
+    );
+
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId("bookshelf-empty")).toBeVisible();
+
+    // 2) 両側破損 (Page 1・Page 2 とも破損): 描画クリア + 中央代表エラー1件 (ページ番号なし)
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "both-corrupt-spread.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSpreadCorruptArchive([1, 2])),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    await page.keyboard.press("ArrowLeft");
+    await expect(pageError).toHaveCount(1);
+    await expect(pageError).toBeVisible();
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    await expect(canvas).toHaveAttribute("data-rendered-page", "");
+    await expect(canvas).toHaveAttribute("data-rendered-pages", "");
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "");
+    await expect(pageError).toHaveAttribute("data-slot-position", "center");
+    await expect(pageError).toContainText("ページ読込エラー");
+    await expect(pageError).not.toContainText("(p.");
+    await expect(page.getByTestId("reader-error-code")).toContainText(
+      "DECODE_FAILED",
+    );
+
+    // エラー状態からも前ページへ復帰可能であることを確認
+    await page.keyboard.press("ArrowRight");
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:0");
+    await expect(pageError).toHaveCount(0);
 
     expect(pageErrors).toEqual([]);
   });

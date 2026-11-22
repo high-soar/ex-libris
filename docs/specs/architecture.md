@@ -2,7 +2,7 @@
 type: spec-architecture
 title: "4層＋マルチスレッドアーキテクチャと共通インターフェース契約"
 description: "Streaming & Provider・Engine Worker・Storage・Viewer & Bridge の4層責務境界、Zero-Copy 転送、メモリ予算定数、および TypeScript コア契約の正本"
-status: "Review (#21)"
+status: "Approved (#21)"
 updated: "2026-11-21"
 tags:
   [
@@ -23,6 +23,7 @@ related_specs:
   - docs/specs/screen-transitions.md
   - docs/specs/engine/zip-streaming.md
   - docs/specs/engine/webgl2-renderer.md
+  - docs/specs/features/reader.md
   - docs/guidelines/workflow.md
   - docs/guidelines/testing.md
 related_tests:
@@ -43,12 +44,16 @@ related_tests:
   - src/engine/zip/zipIndexValidation.test.ts
   - src/engine/zip/zipParser.test.ts
   - src/features/reader/localReaderSessionStore.test.ts
+  - src/features/reader/spreadLayout.test.ts
+  - src/features/reader/ReaderPage.test.tsx
   - src/shared/constants/app.test.ts
   - src/shared/router/RouterProvider.test.tsx
   - src/storage/db.test.ts
   - src/storage/repositories/zipIndexCacheRepository.test.ts
+  - src/webgl/ReaderCanvas.test.tsx
   - src/webgl/WebGLRendererCore.test.ts
   - src/webgl/l1PageCache.test.ts
+  - src/webgl/shaders.test.ts
   - scripts/android-build-config.test.ts
   - test/it/smoke.spec.ts
   - test/it/local-reader.spec.ts
