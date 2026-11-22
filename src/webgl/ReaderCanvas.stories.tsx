@@ -209,6 +209,7 @@ function createMockStoryWebGL2Context(
       texParameteri: () => {},
       useProgram: () => {},
       uniform2f: () => {},
+      uniform1f: () => {},
       uniform1i: () => {},
       drawArrays: () => {},
     };

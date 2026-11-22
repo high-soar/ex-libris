@@ -28,6 +28,7 @@ related_specs:
   - docs/guidelines/testing.md
 related_tests:
   - src/webgl/l1PageCache.test.ts
+  - src/webgl/shaderParams.test.ts
   - src/webgl/shaders.test.ts
   - src/webgl/WebGLRendererCore.test.ts
   - src/webgl/ReaderCanvas.test.tsx

@@ -170,6 +170,7 @@ function createMockWebGL2Context(options: MockCanvasGLOptions = {}) {
     texParameteri: vi.fn(),
     useProgram: vi.fn(),
     uniform2f: vi.fn(),
+    uniform1f: vi.fn(),
     uniform1i: vi.fn(),
     drawArrays: vi.fn(),
   };

@@ -8,9 +8,18 @@ import type { AppBridge } from "../bridges/app/types";
 import type { CoordinatorWorkerApi } from "../engine/types";
 import { db, resetTestDb } from "../storage/db";
 import {
+  DexieReaderSettingsRepository,
+  type ReaderSettingsRepository,
+} from "../storage/repositories/readerSettingsRepository";
+import {
+  DexieReadingProgressRepository,
+  type ReadingProgressRepository,
+} from "../storage/repositories/readingProgressRepository";
+import {
   DexieZipIndexCacheRepository,
   type ZipIndexCacheRepository,
 } from "../storage/repositories/zipIndexCacheRepository";
+import { DEFAULT_SHADER_CORRECTION_PARAMS } from "../webgl/shaderParams";
 import { ServiceProvider } from "./ServiceProvider";
 import * as stories from "./ServiceProvider.stories";
 import {
@@ -78,7 +87,7 @@ describe("ServiceProvider", () => {
     );
   });
 
-  it("Capacitor.isNativePlatform()がfalseのときはMockAppBridgeとDexieZipIndexCacheRepositoryを自動構築し参照を安定維持すること", () => {
+  it("Capacitor.isNativePlatform()がfalseのときはMockAppBridgeとDexie各Repositoryを自動構築し参照を安定維持すること", () => {
     vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(false);
     const captured: ServiceContextValue[] = [];
 
@@ -97,13 +106,19 @@ describe("ServiceProvider", () => {
     expect(captured[0]?.zipIndexCacheRepo).toBeInstanceOf(
       DexieZipIndexCacheRepository,
     );
+    expect(captured[0]?.readingProgressRepo).toBeInstanceOf(
+      DexieReadingProgressRepository,
+    );
+    expect(captured[0]?.readerSettingsRepo).toBeInstanceOf(
+      DexieReaderSettingsRepository,
+    );
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: captured[0]?.appBridge,
       resetTestDb: expect.any(Function),
     });
 
-    // 再レンダー時も同一の MockAppBridge と DexieZipIndexCacheRepository インスタンスを維持すること
+    // 再レンダー時も同一の MockAppBridge と Dexie Repository インスタンスを維持すること
     rerender(
       <ServiceProvider>
         <ServicesProbe onCapture={(s) => captured.push(s)} />
@@ -112,6 +127,12 @@ describe("ServiceProvider", () => {
     expect(captured).toHaveLength(2);
     expect(captured[1]?.appBridge).toBe(captured[0]?.appBridge);
     expect(captured[1]?.zipIndexCacheRepo).toBe(captured[0]?.zipIndexCacheRepo);
+    expect(captured[1]?.readingProgressRepo).toBe(
+      captured[0]?.readingProgressRepo,
+    );
+    expect(captured[1]?.readerSettingsRepo).toBe(
+      captured[0]?.readerSettingsRepo,
+    );
   });
 
   it("Capacitor.isNativePlatform()がtrueのときはCapacitorAppBridgeを自動構築すること", () => {
@@ -136,7 +157,7 @@ describe("ServiceProvider", () => {
     });
   });
 
-  it("DI props指定時は注入されたappBridge・createCoordinatorSession・zipIndexCacheRepoを使用・更新すること", () => {
+  it("DI props指定時は注入されたappBridge・createCoordinatorSession・各Repositoryを使用・更新すること", () => {
     const customBridge1: AppBridge = {
       addBackButtonListener: vi.fn(() => () => {}),
       minimizeApp: vi.fn(async () => {}),
@@ -159,6 +180,32 @@ describe("ServiceProvider", () => {
       put: vi.fn(async () => {}),
       delete: vi.fn(async () => {}),
     };
+    const customProgressRepo1: ReadingProgressRepository = {
+      get: vi.fn(async () => null),
+      put: vi.fn(async () => {}),
+      listRecentLocal: vi.fn(async () => []),
+      delete: vi.fn(async () => {}),
+      clearLocal: vi.fn(async () => {}),
+    };
+    const customProgressRepo2: ReadingProgressRepository = {
+      get: vi.fn(async () => null),
+      put: vi.fn(async () => {}),
+      listRecentLocal: vi.fn(async () => []),
+      delete: vi.fn(async () => {}),
+      clearLocal: vi.fn(async () => {}),
+    };
+    const customSettingsRepo1: ReaderSettingsRepository = {
+      getShaderDefaults: vi.fn(async () => ({
+        ...DEFAULT_SHADER_CORRECTION_PARAMS,
+      })),
+      saveShaderDefaults: vi.fn(async (params) => ({ ...params })),
+    };
+    const customSettingsRepo2: ReaderSettingsRepository = {
+      getShaderDefaults: vi.fn(async () => ({
+        ...DEFAULT_SHADER_CORRECTION_PARAMS,
+      })),
+      saveShaderDefaults: vi.fn(async (params) => ({ ...params })),
+    };
 
     const captured: ServiceContextValue[] = [];
 
@@ -167,6 +214,8 @@ describe("ServiceProvider", () => {
         appBridge={customBridge1}
         createCoordinatorSession={customFactory}
         zipIndexCacheRepo={customRepo1}
+        readingProgressRepo={customProgressRepo1}
+        readerSettingsRepo={customSettingsRepo1}
       >
         <ServicesProbe onCapture={(s) => captured.push(s)} />
       </ServiceProvider>,
@@ -175,6 +224,8 @@ describe("ServiceProvider", () => {
     expect(captured[0]?.appBridge).toBe(customBridge1);
     expect(captured[0]?.createCoordinatorSession).toBe(customFactory);
     expect(captured[0]?.zipIndexCacheRepo).toBe(customRepo1);
+    expect(captured[0]?.readingProgressRepo).toBe(customProgressRepo1);
+    expect(captured[0]?.readerSettingsRepo).toBe(customSettingsRepo1);
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: customBridge1,
@@ -186,6 +237,8 @@ describe("ServiceProvider", () => {
         appBridge={customBridge2}
         createCoordinatorSession={customFactory}
         zipIndexCacheRepo={customRepo2}
+        readingProgressRepo={customProgressRepo2}
+        readerSettingsRepo={customSettingsRepo2}
       >
         <ServicesProbe onCapture={(s) => captured.push(s)} />
       </ServiceProvider>,
@@ -193,6 +246,8 @@ describe("ServiceProvider", () => {
 
     expect(captured[1]?.appBridge).toBe(customBridge2);
     expect(captured[1]?.zipIndexCacheRepo).toBe(customRepo2);
+    expect(captured[1]?.readingProgressRepo).toBe(customProgressRepo2);
+    expect(captured[1]?.readerSettingsRepo).toBe(customSettingsRepo2);
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: customBridge2,

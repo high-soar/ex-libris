@@ -1,8 +1,17 @@
 import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
 import type { DecodedPageFrame } from "../engine/types";
 import type { ReadyPageFrame } from "./l1PageCache";
+import {
+  DEFAULT_SHADER_CORRECTION_PARAMS,
+  areShaderParamsEqual,
+  normalizeShaderCorrectionParams,
+} from "./shaderParams";
 import { FRAGMENT_SHADER_SOURCE, VERTEX_SHADER_SOURCE } from "./shaders";
-import type { RenderSlotFrame, ViewportSlot } from "./types";
+import type {
+  RenderSlotFrame,
+  ShaderCorrectionParams,
+  ViewportSlot,
+} from "./types";
 
 export type BitmapCropper = (
   bitmap: ImageBitmap,
@@ -45,6 +54,10 @@ interface WebGLPipeline {
   readonly scaleLoc: WebGLUniformLocation;
   readonly offsetLoc: WebGLUniformLocation;
   readonly textureLoc: WebGLUniformLocation;
+  readonly sharpnessLoc: WebGLUniformLocation;
+  readonly whitePointLoc: WebGLUniformLocation;
+  readonly blackPointLoc: WebGLUniformLocation;
+  readonly gammaLoc: WebGLUniformLocation;
 }
 
 interface TileTexture {
@@ -403,6 +416,9 @@ export class WebGLRendererCore {
   private readonly textures = new Map<number, TextureEntry>();
   private readonly pendingBitmaps = new Map<number, ImageBitmap>();
   private readonly failedOversizedBitmaps = new Map<number, ImageBitmap>();
+  private shaderParams: ShaderCorrectionParams = {
+    ...DEFAULT_SHADER_CORRECTION_PARAMS,
+  };
 
   constructor(
     gl: WebGL2RenderingContext,
@@ -417,6 +433,19 @@ export class WebGLRendererCore {
 
   getMaxTextureSize(): number {
     return this.maxTextureSize;
+  }
+
+  getShaderParams(): ShaderCorrectionParams {
+    return { ...this.shaderParams };
+  }
+
+  setShaderParams(params: ShaderCorrectionParams): boolean {
+    const next = normalizeShaderCorrectionParams(params);
+    if (areShaderParamsEqual(this.shaderParams, next)) {
+      return false;
+    }
+    this.shaderParams = next;
+    return true;
   }
 
   notifyContextLost(): void {
@@ -507,6 +536,7 @@ export class WebGLRendererCore {
     this.gl.bindVertexArray(this.pipeline.vao);
     this.gl.activeTexture(this.gl.TEXTURE0);
     this.gl.uniform1i(this.pipeline.textureLoc, 0);
+    this.bindShaderUniforms(this.pipeline);
 
     const renderedSlots: ViewportSlot[] = [];
     for (const prepared of preparedJobs) {
@@ -579,6 +609,13 @@ export class WebGLRendererCore {
       this.gl.deleteProgram(this.pipeline.program);
       this.pipeline = null;
     }
+  }
+
+  private bindShaderUniforms(pipeline: WebGLPipeline): void {
+    this.gl.uniform1f(pipeline.sharpnessLoc, this.shaderParams.sharpness);
+    this.gl.uniform1f(pipeline.whitePointLoc, this.shaderParams.whitePoint);
+    this.gl.uniform1f(pipeline.blackPointLoc, this.shaderParams.blackPoint);
+    this.gl.uniform1f(pipeline.gammaLoc, this.shaderParams.gamma);
   }
 
   private drawTilesInRect(
@@ -1022,12 +1059,20 @@ export class WebGLRendererCore {
       const scaleLoc = this.gl.getUniformLocation(program, "u_scale");
       const offsetLoc = this.gl.getUniformLocation(program, "u_offset");
       const textureLoc = this.gl.getUniformLocation(program, "u_texture");
+      const sharpnessLoc = this.gl.getUniformLocation(program, "u_sharpness");
+      const whitePointLoc = this.gl.getUniformLocation(program, "u_whitePoint");
+      const blackPointLoc = this.gl.getUniformLocation(program, "u_blackPoint");
+      const gammaLoc = this.gl.getUniformLocation(program, "u_gamma");
       if (
         positionLoc < 0 ||
         texCoordLoc < 0 ||
         scaleLoc === null ||
         offsetLoc === null ||
-        textureLoc === null
+        textureLoc === null ||
+        sharpnessLoc === null ||
+        whitePointLoc === null ||
+        blackPointLoc === null ||
+        gammaLoc === null
       ) {
         throw new WebGLInitError(
           "シェーダーのattribute/uniformロケーション取得に失敗しました",
@@ -1046,6 +1091,10 @@ export class WebGLRendererCore {
         scaleLoc,
         offsetLoc,
         textureLoc,
+        sharpnessLoc,
+        whitePointLoc,
+        blackPointLoc,
+        gammaLoc,
       };
       this.maxViewportDims = this.gl.getParameter(
         this.gl.MAX_VIEWPORT_DIMS,

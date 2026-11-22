@@ -17,6 +17,8 @@ related_specs:
 related_tests:
   - src/storage/db.test.ts
   - src/storage/repositories/zipIndexCacheRepository.test.ts
+  - src/storage/repositories/readingProgressRepository.test.ts
+  - src/storage/repositories/readerSettingsRepository.test.ts
   - src/engine/zip/zipIndexValidation.test.ts
 ---
 
