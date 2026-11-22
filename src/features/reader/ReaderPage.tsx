@@ -19,6 +19,7 @@ import type {
 import { ZipArchiveError, isAbortError } from "../../engine/zip/errors";
 import { matchRoute } from "../../shared/router/routeMatcher";
 import { useRouter } from "../../shared/router/routerContext";
+import type { ReaderSettingsRepository } from "../../storage/repositories/readerSettingsRepository";
 import type { ReadingProgressRepository } from "../../storage/repositories/readingProgressRepository";
 import type { ZipIndexCacheRepository } from "../../storage/repositories/zipIndexCacheRepository";
 import type { ReadStatus, ReadingProgressRecord } from "../../storage/types";
@@ -298,6 +299,43 @@ async function readReadingProgressSafely(
     }
     return null;
   }
+}
+
+async function readShaderDefaultsSafely(
+  repo: ReaderSettingsRepository,
+  isCurrentAttempt: () => boolean,
+): Promise<ShaderCorrectionParams | null> {
+  try {
+    return await repo.getShaderDefaults();
+  } catch (settingsError) {
+    if (isCurrentAttempt()) {
+      diagnosticLogger.warn(
+        "reader",
+        "画質補正デフォルト設定の取得に失敗しました",
+        formatErrorMessage(settingsError),
+      );
+    }
+    return null;
+  }
+}
+
+function resolveRestoredProgressAnchor(
+  savedProgress: ReadingProgressRecord | null,
+  pageCount: number,
+): {
+  readonly pageIndex: number;
+  readonly spreadPageOffset: SpreadPageOffset;
+} {
+  if (savedProgress === null) {
+    return { pageIndex: 0, spreadPageOffset: 0 };
+  }
+  return {
+    pageIndex: Math.min(
+      pageCount - 1,
+      Math.max(0, savedProgress.currentPageIndex),
+    ),
+    spreadPageOffset: pageCount > 1 ? savedProgress.spreadPageOffset : 0,
+  };
 }
 
 function isConfirmedNonLandscape(dims: PageDimensions | undefined): boolean {
@@ -976,21 +1014,18 @@ export function ReaderPage({
       runtimeRef.current === runtime && epochRef.current === openEpoch;
 
     void (async () => {
-      try {
-        const defaults = await readerSettingsRepo.getShaderDefaults();
-        if (isCurrentAttempt() && !hasUserModifiedShaderRef.current) {
-          const normalized = normalizeShaderCorrectionParams(defaults);
-          shaderParamsRef.current = normalized;
-          setShaderParams(normalized);
-        }
-      } catch (settingsError) {
-        if (isCurrentAttempt()) {
-          diagnosticLogger.warn(
-            "reader",
-            "画質補正デフォルト設定の取得に失敗しました",
-            formatErrorMessage(settingsError),
-          );
-        }
+      const defaults = await readShaderDefaultsSafely(
+        readerSettingsRepo,
+        isCurrentAttempt,
+      );
+      if (
+        defaults !== null &&
+        isCurrentAttempt() &&
+        !hasUserModifiedShaderRef.current
+      ) {
+        const normalized = normalizeShaderCorrectionParams(defaults);
+        shaderParamsRef.current = normalized;
+        setShaderParams(normalized);
       }
     })();
 
@@ -1050,17 +1085,8 @@ export function ReaderPage({
           return;
         }
 
-        const restoredOffset: SpreadPageOffset =
-          savedProgress !== null && result.pageCount > 1
-            ? savedProgress.spreadPageOffset
-            : 0;
-        const restoredPage =
-          savedProgress !== null
-            ? Math.min(
-                result.pageCount - 1,
-                Math.max(0, savedProgress.currentPageIndex),
-              )
-            : 0;
+        const { pageIndex: restoredPage, spreadPageOffset: restoredOffset } =
+          resolveRestoredProgressAnchor(savedProgress, result.pageCount);
 
         spreadPageOffsetRef.current = restoredOffset;
         setSpreadPageOffset(restoredOffset);
