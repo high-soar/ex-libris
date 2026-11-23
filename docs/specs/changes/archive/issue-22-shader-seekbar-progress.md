@@ -216,7 +216,7 @@ related_tests:
 3. **MK-3（`#60` / PR #64 @ `af8645b` マージ完了）: `ReaderCanvas` シェーダー反映・`ReaderPage` 自動レジューム／優先度2戻る制御・`BookshelfPage` 閲覧履歴統合**:
    - 対象: `src/webgl/ReaderCanvas.tsx`（`.stories.tsx` / `.test.tsx`）, `src/features/reader/ReaderPage.tsx`（`.stories.tsx` / `.test.tsx`）, `src/features/bookshelf/BookshelfPage.tsx`（`.stories.tsx` / `.test.tsx`）, `test/vrt/snapshots/*`
    - 実績: C0/C1/Functions/Lines 100% PASS ＆ VRT 1280px/375px PASS、AI 自律マージ完了（`Closes #60`）
-4. **IT (Step 4: `#61` / 最終 PR #65 `Closes #22`, `Closes #61`): Playwright `SCN-01`/`SCN-02` E2E 拡充・手動検証用 `ho08-shader-seek-test.cbz` 生成・仕様アーカイブ・Android 実機検証**:
+4. **IT (Step 4: `#61` / 最終 PR #65 @ `98cf722` `Closes #22`, `Closes #61`): Playwright `SCN-01`/`SCN-02` E2E 拡充・手動検証用 `ho08-shader-seek-test.cbz` 生成・仕様アーカイブ・Android 実機検証**:
    - 対象: `test/it/helpers.ts`, `test/it/smoke.spec.ts`, `test/it/local-reader.spec.ts`, `scripts/generate-manual-test-archives.mjs`, `scripts/generate-manual-test-archives.d.mts`, `scripts/generate-manual-test-archives.test.ts`, `test/fixtures/manual/ho08-shader-seek-test.cbz`, `test/fixtures/manual/README.md`, `docs/quality/bug-and-handover-log.md`（No. 32〜41 同期 ＆ `HO-08` 実機確認精算）, 本差分仕様の `Completed (Archived)` 化＆`docs/specs/changes/archive/` 移動, App 全体正本 7 冊の `Approved (#22)` 化
    - 実績: Playwright `SCN-01`/`SCN-02` 計 26/26 PASS ＆ CI/AI レビュー Gate 1〜6 収束後、`build-android.yml`（Run `#45042333265` / Drive `app-debug.apk` `1HIS95V2PjNom_l9dvszkRsMap0P8bJp7` ＆ `ho08-shader-seek-test.cbz` `1CCtDHrSJm_Q53ec94mAWh5togTscj17N`）により `HO-08` 実機項目 ①〜④ すべて問題なし・診断ログ `[WARN]`/`[ERROR]` ゼロを確認し `Resolved` へ精算。
 

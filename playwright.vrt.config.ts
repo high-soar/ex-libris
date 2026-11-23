@@ -21,12 +21,13 @@ const VRT_ENV = Object.fromEntries(
 export default defineConfig({
   testDir: "./test/vrt",
   snapshotPathTemplate: "{testDir}/snapshots/{arg}{ext}",
+  forbidOnly: Boolean(process.env.CI),
   fullyParallel: true,
   workers: 2,
   reporter: [["list"]],
   use: {
     baseURL: `http://127.0.0.1:${VRT_PORT}`,
-    trace: "on-first-retry",
+    trace: "retain-on-failure",
     launchOptions: {
       args: [
         "--use-gl=angle",

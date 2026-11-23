@@ -161,7 +161,7 @@ related_tests:
 3. **MK-3（`#47` / PR #51 @ `8b253c1` マージ完了）: `ReaderCanvas` ＆ `ReaderPage` 統合 ＆ Storybook/VRT 層**:
    - 対象: `src/webgl/ReaderCanvas.tsx`, `.stories.tsx`, `.test.tsx`, `src/features/reader/ReaderPage.tsx`, `.stories.tsx`, `.test.tsx`, `test/vrt/snapshots/*`, `test/it/local-reader.spec.ts`（既存 5 ケース 375×667 明示）
    - 実績: C0/C1/Functions/Lines 100% PASS ＆ VRT 1280px/375px PASS、AI 自律マージ完了（`Closes #47`）
-4. **Step 4（IT `#48` / 最終 PR #52 `Closes #21`, `Closes #48`）: IT 結合テスト・実機検証・差分仕様アーカイブ**:
+4. **Step 4（IT `#48` / 最終 PR #52 @ `aad0739` `Closes #21`, `Closes #48`）: IT 結合テスト・実機検証・差分仕様アーカイブ**:
    - 対象: `test/it/helpers.ts`, `test/it/local-reader.spec.ts`, `docs/quality/bug-and-handover-log.md`（No. 28〜29 PR #51 同期、`HO-07` 実機確認精算）, 本差分仕様の `Completed (Archived)` 化＆`docs/specs/changes/archive/` 移動、関連 App 全体正本の `Approved (#21)` 化
    - 実績: Gate 1〜6 通過後に `build-android.yml`（Run `#44967267212`）を実行し、実機項目 1〜6（`ho07-max-texture-test.cbz` による `maxTextureSize=8192` 下の `tile-split (2x1=2)` / `(3x1=3)` と `[WARN] [webgl2]`・`[ERROR]` ゼロ確認含む）をすべて確認して `HO-07` を `Resolved` へ精算。
 

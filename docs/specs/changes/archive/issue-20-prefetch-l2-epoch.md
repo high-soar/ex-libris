@@ -179,9 +179,9 @@ related_tests:
 2. **MK-2（`#39` / PR #42 @ `9120c60` マージ完了）: `CoordinatorCore` / `coordinator.worker.ts` L2・Prefetch・先行 In-Flight・Epoch 統合 ＆ `ReaderPage` 先読み窓・近傍バッチ配線（Worker & UI 層）**:
    - 対象: `src/engine/types.ts`, `src/engine/workers/CoordinatorCore.ts`, `src/engine/workers/coordinator.worker.ts`, `src/features/reader/ReaderPage.tsx`, 各 `*.test.*`
    - 実績: Red `57960a3` → Green `4711819` → Refactor `34b5ea0`、38 files / 220 tests PASS・C0/C1/Functions/Lines 100%・VRT 62/62 PASS、独立レビュー Round 1 指摘 0 件、AI 自律マージ完了（`Closes #39`）
-3. **Step 4 (IT `#40` / 本 PR `Closes #20`, `Closes #40`): Playwright `SCN-02` L1退避→L2再デコード往復検証・`HO-03` `Resolved` 精算・差分仕様アーカイブ**:
+3. **Step 4 (IT `#40` / PR #43 @ `db51492` `Closes #20`, `Closes #40`): Playwright `SCN-02` L1退避→L2再デコード往復検証・`HO-03` `Resolved` 精算・差分仕様アーカイブ**:
    - 対象: `test/it/helpers.ts`, `test/it/local-reader.spec.ts`, `docs/quality/bug-and-handover-log.md`（`HO-03` → `Resolved`）, 本差分仕様書の `Completed (Archived)` 化 ＆ `docs/specs/changes/archive/` 移動、正本 4 冊の `Approved (#20)` 化
-   - 完了条件: 全 IT 17/17 PASS、Gate 1〜6 完了後に **人間レビュー・マージ** で `#20` / `#40` をクローズ
+   - 完了条件（実績）: 全 IT 17/17 PASS、Gate 1〜6 完了後に **人間レビュー・マージ**（PR #43 @ `db51492`）で `#20` / `#40` をクローズ済み
 
 ---
 
@@ -190,7 +190,7 @@ related_tests:
 - **判定（[workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 B（Milestone `v0.1` 完了前に一括実施）**
   - **根拠**: Coordinator Worker 内のオンメモリ LRU キャッシュ・Range 結合プランナー・Epoch キャンセルおよび `ReaderPage` の RPC 引数配線であり、Android ネイティブ層・Google OAuth・WebGL2 シェーダー・物理ジェスチャー操作の新設・変更を含まないため。
 - **申し送り事項管理**:
-  - **`HO-03`**: `#38`（PR #41 @ `97e0be7`）・`#39`（PR #42 @ `9120c60`）・Step 4 IT（`#40` 実 Worker 7 頁超往復検証 PASS）を経て **`Resolved`** へ精算完了。
+  - **`HO-03`**: `#38`（PR #41 @ `97e0be7`）・`#39`（PR #42 @ `9120c60`）・Step 4 IT（`#40` / PR #43 @ `db51492` 実 Worker 7 頁超往復検証 PASS）を経て **`Resolved`** へ精算完了。
   - **`HO-06`**（[bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) 登録済み・状態: `Open`、完了ゲート: `Milestone v0.1 完了前`）: Milestone `v0.1` 完了時の一括実機検証にて以下を確認する：
     1. 10 ページ以上のローカル `.zip` / `.cbz` を開き、連続めくりおよび前後往復（L1 5 ページ退避後の再表示）を行ってもデコードエラー・黒画面・WebView OOM クラッシュが発生せず即座に描画されること。
     2. 高速連続タップ／スワイプめくり時に表示ページの追従が詰まらず、不要なエラーログが診断ロガーに記録されないこと。
