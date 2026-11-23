@@ -32,6 +32,28 @@ describe("diagnosticLogger", () => {
     expect(sanitized).not.toContain("rk_live_999");
   });
 
+  it("単体で混入したya29.*生アクセストークンも[REDACTED]へ置換すること (AC-GD-05)", () => {
+    const raw =
+      'Unexpected OAuth failure for ya29.a0AfH6SMBx-Raw_Token.~+/== and "ya29.secondToken123"';
+
+    const sanitized = redactSensitiveText(raw);
+
+    expect(sanitized).toBe(
+      'Unexpected OAuth failure for [REDACTED] and "[REDACTED]"',
+    );
+    expect(sanitized).not.toContain("ya29.");
+
+    const logger = createDiagnosticLogger(10);
+    const entry = logger.error(
+      "oauth:ya29.scopeSecretToken",
+      "認証失敗 ya29.msgSecretToken_123==",
+      "stack trace containing ya29.detailSecretToken~",
+    );
+    expect(entry.scope).toBe("oauth:[REDACTED]");
+    expect(entry.message).toBe("認証失敗 [REDACTED]");
+    expect(entry.detail).toBe("stack trace containing [REDACTED]");
+  });
+
   it("info・warn・errorの各レベルを記録しリングバッファ上限超過時に古いログから破棄すること", () => {
     const logger = createDiagnosticLogger(2);
 

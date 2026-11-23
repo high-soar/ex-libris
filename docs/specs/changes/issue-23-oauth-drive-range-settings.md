@@ -121,7 +121,7 @@ related_tests:
      - `refreshAccessToken({ previousToken, clearCache })`: `clearCache` 時は `clearToken` 先行実行。
      - `signOut({ previousToken })`: `SharedPreferences` 即時クリア ＋ `clearToken` ＋ `https://oauth2.googleapis.com/revoke` への `POST` フォームボディ送信。
    - `@Nullable` な `AuthorizationResult.toGoogleSignInAccount()` を `null` 安全に参照し、`email` が得られない場合は `GET https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)` で 1 回補完して `SharedPreferences` へ保存する。
-   - `scripts/android-build-config.test.ts` に `MainActivity.java` の `registerPlugin(GoogleAuthPlugin.class)` 先行呼び出し・`GoogleAuthPlugin.java` の `StartIntentSenderForResult`＋`saveCall`/`getSavedCall`/`freeSavedCall`・`clearToken`・`drive.readonly` 単独スコープ・クエリ文字列トークン非露出の契約テストを追加する。
+   - `scripts/android-build-config.test.ts` に `MainActivity.java` の `registerPlugin(GoogleAuthPlugin.class)` 先行呼び出し・`GoogleAuthPlugin.java` の `StartIntentSenderForResult`＋`getBridge().saveCall`/`getSavedCall`/`releaseCall`（非推奨 `freeSavedCall` 排除）・`pendingSignInCallId`・`clearToken`・`drive.readonly` 単独スコープ・クエリ文字列トークン非露出の契約テストを追加する。
 2. **`GoogleAuthBridge` ＆ Single-Flight `GoogleAuthTokenManager`（`src/bridges/oauth/`）**:
    - `GoogleAuthTokenManager` が `GoogleAuthAdapter`（ネイティブ時 `CapacitorGoogleAuthAdapter`、Web/テスト時 `MockGoogleAuthAdapter`）をラップし、`TOKEN_DEFAULT_TTL_MS = 3_600_000`・`TOKEN_EARLY_REFRESH_MARGIN_MS = 300_000`（残り 5 分未満で事前更新）・`failedToken` 比較ガード（Compare-and-Refresh：時差 `401` で既に別トークンへ更新済みなら `clearToken` をスキップして現トークンを即返却）・Single-Flight Promise 共有・`authEpoch` 世代ガード・`getCachedSession()` 同期参照・変化時のみ発火する `subscribeSession` 配信を一元管理する。
    - `getSession()` はオフライン一時障害（`AUTH_NETWORK_ERROR`）時に警告ログを記録して `null` を返し（ネイティブ `SharedPreferences` は保持）、画面初期マウントをクラッシュさせない。

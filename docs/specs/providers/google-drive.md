@@ -29,6 +29,14 @@ related_tests:
   - scripts/android-build-config.test.ts
   - src/app/ServiceProvider.test.tsx
   - src/diagnostics/diagnosticLogger.test.ts
+  - src/bridges/oauth/googleAuthErrors.test.ts
+  - src/bridges/oauth/capacitorGoogleAuthAdapter.test.ts
+  - src/bridges/oauth/mockGoogleAuthAdapter.test.ts
+  - src/bridges/oauth/googleAuthTokenManager.test.ts
+  - src/providers/gdrive/driveApiErrors.test.ts
+  - src/providers/gdrive/driveFolderInput.test.ts
+  - src/providers/gdrive/googleDriveFolderClient.test.ts
+  - src/providers/gdrive/mockDriveFolderClient.test.ts
 ---
 
 # Google OAuth（Single-Flight）＆ Google Drive フォルダ参照プロバイダ仕様書
@@ -72,7 +80,7 @@ related_tests:
 
 1. **プラグイン登録とライフサイクル規律（[testing.md §2.4](../../guidelines/testing.md#24-webgl2-viewer-ui--bridge-layer生webgl2描画l1キャッシュuibridge層)）**:
    - `MainActivity.onCreate` にて **`super.onCreate(savedInstanceState)` より前に `registerPlugin(GoogleAuthPlugin.class);`** を呼び出す（`scripts/android-build-config.test.ts` で機械検証する）。
-   - `load()` で `ActivityResultContracts.StartIntentSenderForResult` ランチャーを登録し、同意画面遷移時は `pendingSignInCall` 二重起動ガードとともに `saveCall(call)` / `getSavedCall()` / `freeSavedCall()` で `PluginCall` を確実に保持・解放する。
+   - `load()` で `ActivityResultContracts.StartIntentSenderForResult` ランチャーを登録し、同意画面遷移時は `pendingSignInCallId` 二重起動ガードとともに `getBridge().saveCall(call)` / `getBridge().getSavedCall(callbackId)` / `getBridge().releaseCall(savedCall)` で `PluginCall` を確実に保持・解放する（`@Deprecated` な `Plugin#freeSavedCall()` は使用しない）。
    - `handleOnDestroy()` でワーカースレッド（`ExecutorService`）の `shutdownNow()` および揮発状態リセットを行う。
 2. **提供するネイティブメソッド**:
    - `restoreSession()`:

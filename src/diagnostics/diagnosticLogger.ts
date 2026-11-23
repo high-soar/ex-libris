@@ -10,12 +10,14 @@ const QUERY_SECRET_PATTERN =
   /\b(access_token|refresh_token|id_token|api_key|apikey|client_secret|password|secret|token|key)=([^\s&"'`,;]+)/gi;
 const JSON_SECRET_PATTERN =
   /"(access_token|refresh_token|id_token|api_key|apikey|client_secret|password|secret|token|key)"\s*:\s*"([^"]+)"/gi;
+const RAW_GOOGLE_ACCESS_TOKEN_PATTERN = /\bya29\.[A-Za-z0-9\-._~+/]+=*/g;
 
 export function redactSensitiveText(input: string): string {
   return input
     .replace(BEARER_PATTERN, "Bearer [REDACTED]")
     .replace(QUERY_SECRET_PATTERN, "$1=[REDACTED]")
-    .replace(JSON_SECRET_PATTERN, '"$1":"[REDACTED]"');
+    .replace(JSON_SECRET_PATTERN, '"$1":"[REDACTED]"')
+    .replace(RAW_GOOGLE_ACCESS_TOKEN_PATTERN, "[REDACTED]");
 }
 
 export function createDiagnosticLogger(maxEntries = 200): DiagnosticLogger {

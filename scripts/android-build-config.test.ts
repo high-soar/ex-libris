@@ -425,4 +425,134 @@ describe("Android build, Capacitor & Remote Agent governance invariants", () => 
     expect(androidCompileSection).toContain("BUILD_NUMBER=abc");
     expect(androidCompileSection).toContain("REQUIRE_FIXED_SIGNING=true");
   });
+
+  it("MainActivity.javaがonCreateのsuper.onCreateより前にregisterPlugin(GoogleAuthPlugin.class)を呼び出すこと (AC-GD-01)", () => {
+    const mainActivityPath = path.resolve(
+      repoRoot,
+      "android/app/src/main/java/com/highsoar/exlibris/MainActivity.java",
+    );
+    const mainActivity = fs.readFileSync(mainActivityPath, "utf8");
+
+    const registerIdx = mainActivity.indexOf(
+      "registerPlugin(GoogleAuthPlugin.class);",
+    );
+    const superOnCreateIdx = mainActivity.indexOf(
+      "super.onCreate(savedInstanceState);",
+    );
+    expect(registerIdx).toBeGreaterThan(-1);
+    expect(superOnCreateIdx).toBeGreaterThan(registerIdx);
+  });
+
+  it("GoogleAuthPlugin.javaがCapacitor 7コール管理・drive.readonly単独・clearToken先行・@Nullableメール参照・障害時SharedPreferences保護・revoke POST・destroy解放を満たすこと (AC-GD-01)", () => {
+    const pluginPath = path.resolve(
+      repoRoot,
+      "android/app/src/main/java/com/highsoar/exlibris/GoogleAuthPlugin.java",
+    );
+    expect(fs.existsSync(pluginPath)).toBe(true);
+    const pluginSource = fs.readFileSync(pluginPath, "utf8");
+
+    // クラス宣言・CapacitorPlugin登録
+    expect(pluginSource).toContain("package com.highsoar.exlibris;");
+    expect(pluginSource).toContain(
+      '@CapacitorPlugin(name = "GoogleAuthPlugin")',
+    );
+
+    // スコープ: drive.readonly 単独
+    expect(pluginSource).toContain(
+      '"https://www.googleapis.com/auth/drive.readonly"',
+    );
+    expect(pluginSource).toContain(
+      "Collections.singletonList(new Scope(DRIVE_READONLY_SCOPE))",
+    );
+    expect(pluginSource).not.toContain("drive.appdata");
+
+    // Capacitor 7 ActivityResult と非非推奨 saveCall/getSavedCall/releaseCall + 二重起動ガード
+    expect(pluginSource).toContain(
+      "ActivityResultContracts.StartIntentSenderForResult",
+    );
+    expect(pluginSource).toContain("getBridge().registerForActivityResult");
+    expect(pluginSource).toContain("getBridge().saveCall(");
+    expect(pluginSource).toContain("getBridge().getSavedCall(");
+    expect(pluginSource).toContain("getBridge().releaseCall(");
+    expect(pluginSource).not.toContain("freeSavedCall");
+    expect(pluginSource).toContain("pendingSignInCallId");
+
+    // hasResolution() 分岐と getAuthorizationResultFromIntent
+    expect(pluginSource).toContain("hasResolution()");
+    expect(pluginSource).toContain("getAuthorizationResultFromIntent");
+    expect(pluginSource).toContain("Activity.RESULT_CANCELED");
+    expect(pluginSource).toContain("Activity.RESULT_OK");
+
+    // clearToken 先行実行（ClearTokenRequest）
+    expect(pluginSource).toContain("ClearTokenRequest.builder()");
+    expect(pluginSource).toContain(".clearToken(");
+
+    // @Nullable 安全な toGoogleSignInAccount() 参照 + drive/v3/about 補完 + フォールバック
+    expect(pluginSource).toContain("toGoogleSignInAccount()");
+    expect(pluginSource).not.toMatch(/toGoogleSignInAccount\(\)\s*\./);
+    expect(pluginSource).toContain(
+      "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)",
+    );
+    expect(pluginSource).toContain("Google Drive 連携済み");
+
+    // SharedPreferences 保護 & 一時的障害 AUTH_NETWORK_ERROR
+    expect(pluginSource).toContain('"exlibris_google_auth"');
+    expect(pluginSource).toContain("Context.MODE_PRIVATE");
+    expect(pluginSource).toContain("CommonStatusCodes.NETWORK_ERROR");
+    expect(pluginSource).toContain("CommonStatusCodes.TIMEOUT");
+    expect(pluginSource).toContain("CommonStatusCodes.INTERRUPTED");
+    expect(pluginSource).toContain('"AUTH_NETWORK_ERROR"');
+    expect(pluginSource).toContain('"AUTH_REQUIRED"');
+
+    // revoke POST フォームボディ送信（クエリ文字列露出禁止）
+    expect(pluginSource).toContain("https://oauth2.googleapis.com/revoke");
+    expect(pluginSource).toContain('"POST"');
+    expect(pluginSource).toContain("application/x-www-form-urlencoded");
+    expect(pluginSource).toContain("URLEncoder.encode");
+    expect(pluginSource).toContain("StandardCharsets.UTF_8");
+    expect(pluginSource).not.toMatch(/oauth2\.googleapis\.com\/revoke\?token=/);
+
+    // handleOnDestroy での ExecutorService shutdownNow() と揮発状態リセット
+    expect(pluginSource).toContain("handleOnDestroy()");
+    expect(pluginSource).toContain("shutdownNow()");
+
+    // authEpoch 世代競合時の PluginCall 確定解放・pendingSignInEpoch 契約（リーク・ハング・同意画面後発起動防止）
+    expect(pluginSource).toContain("pendingSignInEpoch");
+    expect(pluginSource).toMatch(
+      /authorize\(buildAuthorizationRequest\(\)\)\s*\.addOnSuccessListener\(authResult\s*->\s*\{[\s\S]*?authEpoch\.get\(\)\s*!=\s*epochAtStart[\s\S]*?authorizationLauncher\.launch/,
+    );
+    expect(pluginSource).toMatch(
+      /handleAuthorizationActivityResult[\s\S]*?epochAtStart\s*=\s*pendingSignInEpoch[\s\S]*?authEpoch\.get\(\)\s*!=\s*epochAtStart/,
+    );
+    expect(pluginSource).not.toContain("epochAtResult");
+
+    // restoreSession の世代不一致時は bare return せず unlinked で call を確定解決すること
+    const restoreMethodMatch = pluginSource.match(
+      /public void restoreSession\(PluginCall call\)\s*\{([\s\S]*?)\n\s{4}\}/,
+    );
+    expect(restoreMethodMatch).not.toBeNull();
+    const restoreBody = restoreMethodMatch![1]!;
+    expect(restoreBody).not.toMatch(
+      /if\s*\(\s*isDestroyed\s*\|\|\s*authEpoch\.get\(\)\s*!=\s*epochAtStart\s*\)\s*\{\s*return;\s*\}/,
+    );
+    expect(
+      restoreBody.match(
+        /authEpoch\.get\(\)\s*!=\s*epochAtStart[\s\S]*?call\.resolve\(buildStatusResult\("unlinked"\)\)/g,
+      )?.length ?? 0,
+    ).toBeGreaterThanOrEqual(3);
+
+    // refreshAccessToken / executeAuthorizeForRefresh の失敗リスナーでも世代不一致時は ERROR_AUTH_REQUIRED で reject すること
+    const refreshFailureMatches =
+      pluginSource.match(
+        /\.addOnFailureListener\(ex\s*->\s*\{[\s\S]*?authEpoch\.get\(\)\s*!=\s*epochAtStart[\s\S]*?ERROR_AUTH_REQUIRED[\s\S]*?\}\)/g,
+      ) ?? [];
+    expect(refreshFailureMatches.length).toBeGreaterThanOrEqual(3);
+
+    // AndroidManifest は INTERNET のみを維持
+    const manifest = fs.readFileSync(
+      path.resolve(repoRoot, "android/app/src/main/AndroidManifest.xml"),
+      "utf8",
+    );
+    expect(manifest).toContain("android.permission.INTERNET");
+  });
 });

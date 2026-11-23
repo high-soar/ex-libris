@@ -11,6 +11,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        registerPlugin(GoogleAuthPlugin.class);
         super.onCreate(savedInstanceState);
 
         Window window = getWindow();
