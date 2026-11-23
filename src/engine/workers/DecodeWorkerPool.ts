@@ -4,6 +4,7 @@ import { ZipArchiveError } from "../zip/errors";
 export interface DecodeWorkerHandle {
   readonly api: DecodeWorkerApi;
   readonly terminate?: () => void;
+  readonly subscribeError?: (listener: (event: unknown) => void) => () => void;
 }
 
 interface WorkerSlot {
