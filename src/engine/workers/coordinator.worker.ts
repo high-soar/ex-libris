@@ -28,6 +28,14 @@ const workerHandles: DecodeWorkerHandle[] = Array.from(
           );
         },
       },
+      subscribeError: (listener) => {
+        worker.addEventListener("error", listener);
+        worker.addEventListener("messageerror", listener);
+        return () => {
+          worker.removeEventListener("error", listener);
+          worker.removeEventListener("messageerror", listener);
+        };
+      },
       terminate: () => worker.terminate(),
     };
   },
