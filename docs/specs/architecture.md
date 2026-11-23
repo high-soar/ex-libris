@@ -40,6 +40,7 @@ related_tests:
   - src/diagnostics/diagnosticLogger.test.ts
   - src/engine/constants.test.ts
   - src/engine/cache/L2ByteCache.test.ts
+  - src/engine/io/GoogleDriveRangeReader.test.ts
   - src/engine/io/LocalFileReader.test.ts
   - src/engine/prefetch/AdaptivePrefetcher.test.ts
   - src/engine/workers/CoordinatorCore.test.ts

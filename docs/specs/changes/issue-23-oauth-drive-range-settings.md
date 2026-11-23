@@ -39,6 +39,7 @@ related_tests:
   - src/app/coordinatorClient.test.ts
   - src/app/serviceContext.test.ts
   - src/diagnostics/diagnosticLogger.test.ts
+  - src/engine/io/GoogleDriveRangeReader.test.ts
   - src/engine/workers/CoordinatorCore.test.ts
   - src/features/bookshelf/BookshelfHeader.test.tsx
   - src/features/bookshelf/BookshelfPage.test.tsx
