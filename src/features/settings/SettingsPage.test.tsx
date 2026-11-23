@@ -338,10 +338,26 @@ describe("SettingsPage", () => {
     expect(getPickerProps().folders).toHaveLength(2);
     u4();
 
-    await renderAndFlush(<ErrorState />);
+    const { unmount: u5 } = await renderAndFlush(<ErrorState />);
     expect(getAccountProps().errorMessage).toContain("通信に失敗");
     expect(getSyncRootsProps().errorMessage).toContain("マイドライブ直下");
     expect(getDiagnosticsProps().copyStatus).toBe("failed");
+    u5();
+
+    await renderSettings(
+      {},
+      {
+        initialSnapshot: {
+          authState: {
+            status: "unlinked",
+            email: null,
+            errorMessage: null,
+          },
+          syncRoots: [],
+        },
+      },
+    );
+    expect(getDiagnosticsProps().entries).toEqual([]);
   });
 
   it("初期マウント時にcachedSession/getSession/listActiveを解決し、非同期競合や失敗時は安全フォールバックすること (AC-ST-01, AC-ST-04)", async () => {
@@ -507,7 +523,7 @@ describe("SettingsPage", () => {
     });
     const logger = createDiagnosticLogger(20);
 
-    const { unmount } = await renderSettings(
+    const { rerender } = await renderSettings(
       {
         authBridge,
         syncRootsRepo,
@@ -664,7 +680,23 @@ describe("SettingsPage", () => {
       getAccountProps().onSignIn();
     });
     expect(blockedStates.at(-1)).toBe(true);
-    unmount();
+
+    function KeepRouterObserver() {
+      const { isBackBlocked } = useRouter();
+      blockedStates.push(isBackBlocked);
+      return null;
+    }
+    rerender(
+      <ServiceProvider
+        googleAuthBridge={authBridge}
+        driveSyncRootsRepo={syncRootsRepo}
+        driveFolderClient={createMockDriveFolderClient()}
+      >
+        <RouterProvider initialPath="/settings">
+          <KeepRouterObserver />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
     expect(blockedStates.at(-1)).toBe(false);
 
     await act(async () => {
@@ -911,6 +943,31 @@ describe("SettingsPage", () => {
       await flushMicrotasks();
     });
 
+    // resolveFolderById 自体のアンマウント後 resolve 無視
+    const lateResolve = createDeferred<{ id: string; name: string }>();
+    const repoOk2 = createMockSyncRootsRepo({
+      listActive: vi.fn(async () => []),
+    });
+    const fcLate = createMockDriveFolderClient({
+      resolveFolderById: vi.fn(() => lateResolve.promise),
+    });
+    const { unmount: uStep1 } = await renderSettings({
+      authBridge,
+      syncRootsRepo: repoOk2,
+      folderClient: fcLate,
+    });
+    act(() => {
+      getSyncRootsProps().onChangeFolderInput("folder-step1");
+    });
+    act(() => {
+      void getSyncRootsProps().onAddFolderByInput();
+    });
+    uStep1();
+    await act(async () => {
+      lateResolve.resolve({ id: "folder-step1", name: "Step1" });
+      await flushMicrotasks();
+    });
+
     // resolveFolderById 後の upsertRoot 中アンマウント、および upsertRoot 後 listActive 中アンマウント
     const upsertDeferred = createDeferred<DriveSyncRootRecord>();
     const listDeferred = createDeferred<readonly DriveSyncRootRecord[]>();
@@ -938,6 +995,109 @@ describe("SettingsPage", () => {
     uStep2();
     await act(async () => {
       upsertDeferred.resolve(createSampleRoot());
+      await flushMicrotasks();
+    });
+
+    const listAfterUpsertDeferred =
+      createDeferred<readonly DriveSyncRootRecord[]>();
+    const repoStep3 = createMockSyncRootsRepo({
+      listActive: vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockImplementationOnce(() => listAfterUpsertDeferred.promise),
+      upsertRoot: vi.fn(async () => createSampleRoot()),
+    });
+    const { unmount: uStep3 } = await renderSettings({
+      authBridge,
+      syncRootsRepo: repoStep3,
+      folderClient,
+    });
+    act(() => {
+      getSyncRootsProps().onChangeFolderInput("folder-step3");
+    });
+    act(() => {
+      void getSyncRootsProps().onAddFolderByInput();
+    });
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    uStep3();
+    await act(async () => {
+      listAfterUpsertDeferred.resolve([createSampleRoot()]);
+      await flushMicrotasks();
+    });
+
+    // toggle (2件中の片側非一致分岐 + listActive 中アンマウント) / remove (アンマウント後 resolve)
+    const toggleListDeferred = createDeferred<readonly DriveSyncRootRecord[]>();
+    const repoToggleUnmount = createMockSyncRootsRepo({
+      listActive: vi
+        .fn()
+        .mockResolvedValueOnce([
+          createSampleRoot({ folderId: "folder-comics" }),
+          createSampleRoot({ folderId: "folder-other", folderName: "Other" }),
+        ])
+        .mockImplementationOnce(() => toggleListDeferred.promise),
+      setEnabled: vi.fn(async () => createSampleRoot()),
+    });
+    const { unmount: uToggleList } = await renderSettings({
+      authBridge,
+      syncRootsRepo: repoToggleUnmount,
+      folderClient,
+    });
+    act(() => {
+      void getSyncRootsProps().onToggleRootEnabled("folder-comics", false);
+    });
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    uToggleList();
+    await act(async () => {
+      toggleListDeferred.resolve([]);
+      await flushMicrotasks();
+    });
+
+    const resolveRemoveOnly = createDeferred<void>();
+    const repoRemoveStep1 = createMockSyncRootsRepo({
+      listActive: vi.fn(async () => [createSampleRoot()]),
+      removeRoot: vi.fn(() => resolveRemoveOnly.promise),
+    });
+    const { unmount: uRemove1 } = await renderSettings({
+      authBridge,
+      syncRootsRepo: repoRemoveStep1,
+      folderClient,
+    });
+    act(() => {
+      void getSyncRootsProps().onRemoveRoot("folder-comics");
+    });
+    uRemove1();
+    await act(async () => {
+      resolveRemoveOnly.resolve(undefined);
+      await flushMicrotasks();
+    });
+
+    const listAfterRemoveDeferred =
+      createDeferred<readonly DriveSyncRootRecord[]>();
+    const repoRemoveStep2 = createMockSyncRootsRepo({
+      listActive: vi
+        .fn()
+        .mockResolvedValueOnce([createSampleRoot()])
+        .mockImplementationOnce(() => listAfterRemoveDeferred.promise),
+      removeRoot: vi.fn(async () => undefined),
+    });
+    const { unmount: uRemove2 } = await renderSettings({
+      authBridge,
+      syncRootsRepo: repoRemoveStep2,
+      folderClient,
+    });
+    act(() => {
+      void getSyncRootsProps().onRemoveRoot("folder-comics");
+    });
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    uRemove2();
+    await act(async () => {
+      listAfterRemoveDeferred.resolve([]);
       await flushMicrotasks();
     });
 
@@ -1091,7 +1251,17 @@ describe("SettingsPage", () => {
     });
     const upsertDeferred = createDeferred<DriveSyncRootRecord>();
     vi.mocked(syncRootsRepo.upsertRoot).mockImplementationOnce(
-      () => upsertDeferred.promise,
+      async (input) => {
+        const rec = await upsertDeferred.promise;
+        activeRoots = [
+          ...activeRoots,
+          createSampleRoot({
+            folderId: input.folderId,
+            folderName: input.folderName,
+          }),
+        ];
+        return rec;
+      },
     );
     act(() => {
       void getPickerProps().onConfirmCurrentFolder();
@@ -1176,7 +1346,36 @@ describe("SettingsPage", () => {
       await flushMicrotasks();
     });
 
-    // 保存中のアンマウント後の resolve / reject 無視
+    // 読込中の階層移動(前リクエストabort)と読込中フォルダ確定(savePickedFolder側abort)
+    let firstListSignal: AbortSignal | undefined;
+    let secondListSignal: AbortSignal | undefined;
+    const firstListDeferred = createDeferred<DriveFolderPage>();
+    const secondListDeferred = createDeferred<DriveFolderPage>();
+    vi.mocked(folderClient.listChildFolders)
+      .mockImplementationOnce((_id, options) => {
+        firstListSignal = options?.signal;
+        return firstListDeferred.promise;
+      })
+      .mockImplementationOnce((_id, options) => {
+        secondListSignal = options?.signal;
+        return secondListDeferred.promise;
+      });
+    act(() => {
+      getSyncRootsProps().onOpenFolderPicker();
+    });
+    expect(firstListSignal?.aborted).toBe(false);
+    act(() => {
+      getPickerProps().onOpenFolder({ id: "f-race", name: "Race" });
+    });
+    expect(firstListSignal?.aborted).toBe(true);
+    expect(secondListSignal?.aborted).toBe(false);
+    await act(async () => {
+      await getPickerProps().onSelectFolder({ id: "f-race", name: "Race" });
+    });
+    expect(secondListSignal?.aborted).toBe(true);
+    expect(getPickerProps().isOpen).toBe(false);
+
+    // 読込中のアンマウント後の resolve 無視
     const pendingListForUnmount = createDeferred<DriveFolderPage>();
     vi.mocked(folderClient.listChildFolders).mockImplementationOnce(
       () => pendingListForUnmount.promise,
@@ -1188,6 +1387,82 @@ describe("SettingsPage", () => {
     expect(registeredModalBack).toBeNull();
     await act(async () => {
       pendingListForUnmount.resolve({ folders: [], nextPageToken: null });
+      await flushMicrotasks();
+    });
+
+    // savePickedFolder の upsertRoot / listActive / catch アンマウント後無視
+    const pickerUpsertOk = createDeferred<DriveSyncRootRecord>();
+    const repoPickerU1 = createMockSyncRootsRepo({
+      listActive: vi.fn(async () => []),
+      upsertRoot: vi.fn(() => pickerUpsertOk.promise),
+    });
+    const { unmount: uPicker1 } = await renderSettings({
+      authBridge,
+      syncRootsRepo: repoPickerU1,
+      folderClient,
+    });
+    await act(async () => {
+      getSyncRootsProps().onOpenFolderPicker();
+      await flushMicrotasks();
+    });
+    act(() => {
+      void getPickerProps().onSelectFolder({ id: "f-u1", name: "U1" });
+    });
+    uPicker1();
+    await act(async () => {
+      pickerUpsertOk.resolve(createSampleRoot());
+      await flushMicrotasks();
+    });
+
+    const pickerListOk = createDeferred<readonly DriveSyncRootRecord[]>();
+    const repoPickerU2 = createMockSyncRootsRepo({
+      listActive: vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockImplementationOnce(() => pickerListOk.promise),
+      upsertRoot: vi.fn(async () => createSampleRoot()),
+    });
+    const { unmount: uPicker2 } = await renderSettings({
+      authBridge,
+      syncRootsRepo: repoPickerU2,
+      folderClient,
+    });
+    await act(async () => {
+      getSyncRootsProps().onOpenFolderPicker();
+      await flushMicrotasks();
+    });
+    act(() => {
+      void getPickerProps().onSelectFolder({ id: "f-u2", name: "U2" });
+    });
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    uPicker2();
+    await act(async () => {
+      pickerListOk.resolve([createSampleRoot()]);
+      await flushMicrotasks();
+    });
+
+    const pickerUpsertErr = createDeferred<DriveSyncRootRecord>();
+    const repoPickerU3 = createMockSyncRootsRepo({
+      listActive: vi.fn(async () => []),
+      upsertRoot: vi.fn(() => pickerUpsertErr.promise),
+    });
+    const { unmount: uPicker3 } = await renderSettings({
+      authBridge,
+      syncRootsRepo: repoPickerU3,
+      folderClient,
+    });
+    await act(async () => {
+      getSyncRootsProps().onOpenFolderPicker();
+      await flushMicrotasks();
+    });
+    act(() => {
+      void getPickerProps().onSelectFolder({ id: "f-u3", name: "U3" });
+    });
+    uPicker3();
+    await act(async () => {
+      pickerUpsertErr.reject(new Error("late picker save fail"));
       await flushMicrotasks();
     });
   });
