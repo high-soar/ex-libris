@@ -799,9 +799,17 @@ export async function readCompressedPageSlice(
   entry: ZipPageEntry,
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
-  assertValidLfhSpan(entry);
+  const maxSpan = assertValidLfhSpan(entry);
 
-  const fetchLength = computeEntryFetchSpan(entry);
+  const fetchLength =
+    entry.compressedSize > ENGINE_BUDGETS.L2_CACHE_MAX_BYTES
+      ? Math.min(
+          maxSpan,
+          30 +
+            entry.entryNameByteLength +
+            ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES,
+        )
+      : computeEntryFetchSpan(entry);
   const initialBuf = await reader.readRange(
     entry.localHeaderOffset,
     fetchLength,
