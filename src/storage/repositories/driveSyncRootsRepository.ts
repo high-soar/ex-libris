@@ -21,15 +21,35 @@ export interface DexieDriveSyncRootsRepositoryOptions {
   readonly now?: () => number;
 }
 
-function isValidDriveSyncRootRecord(record: DriveSyncRootRecord): boolean {
+export function isValidDriveSyncRootRecord(
+  record: DriveSyncRootRecord,
+): boolean {
   return (
+    typeof record.folderId === "string" &&
     record.folderId.trim().length > 0 &&
+    typeof record.folderName === "string" &&
     record.folderName.trim().length > 0 &&
     (record.enabled === 0 || record.enabled === 1) &&
     Number.isFinite(record.addedAt) &&
     Number.isFinite(record.updatedAt) &&
     (record.deletedAt === null || Number.isFinite(record.deletedAt))
   );
+}
+
+export function compareDriveSyncRootsAsc(
+  a: DriveSyncRootRecord,
+  b: DriveSyncRootRecord,
+): number {
+  if (a.addedAt !== b.addedAt) {
+    return a.addedAt - b.addedAt;
+  }
+  if (a.folderId < b.folderId) {
+    return -1;
+  }
+  if (a.folderId > b.folderId) {
+    return 1;
+  }
+  return 0;
 }
 
 export class DexieDriveSyncRootsRepository implements DriveSyncRootsRepository {
@@ -56,19 +76,36 @@ export class DexieDriveSyncRootsRepository implements DriveSyncRootsRepository {
 
   private async loadValidRecords(): Promise<DriveSyncRootRecord[]> {
     const records = await this.database.driveSyncRoots.toArray();
-    const corruptIds: string[] = [];
+    const corruptKeys: string[] = [];
     const valid: DriveSyncRootRecord[] = [];
     for (const record of records) {
       if (!isValidDriveSyncRootRecord(record)) {
-        corruptIds.push(record.folderId);
+        corruptKeys.push(record.folderId);
         continue;
       }
       valid.push(record);
     }
-    if (corruptIds.length > 0) {
-      await this.database.driveSyncRoots.bulkDelete(corruptIds);
+    if (corruptKeys.length > 0) {
+      await this.database.driveSyncRoots.bulkDelete(corruptKeys);
     }
     return valid;
+  }
+
+  private async findActiveMutableRoot(
+    normalizedId: string,
+  ): Promise<DriveSyncRootRecord | null> {
+    const existing = await this.database.driveSyncRoots.get(normalizedId);
+    if (!existing) {
+      return null;
+    }
+    if (!isValidDriveSyncRootRecord(existing)) {
+      await this.database.driveSyncRoots.delete(normalizedId);
+      return null;
+    }
+    if (existing.deletedAt !== null) {
+      return null;
+    }
+    return existing;
   }
 
   listActive(): Promise<readonly DriveSyncRootRecord[]> {
@@ -76,13 +113,7 @@ export class DexieDriveSyncRootsRepository implements DriveSyncRootsRepository {
       const valid = await this.loadValidRecords();
       return valid
         .filter((record) => record.deletedAt === null)
-        .sort((a, b) =>
-          a.addedAt !== b.addedAt
-            ? a.addedAt - b.addedAt
-            : a.folderId < b.folderId
-              ? -1
-              : 1,
-        );
+        .sort(compareDriveSyncRootsAsc);
     });
   }
 
@@ -144,15 +175,8 @@ export class DexieDriveSyncRootsRepository implements DriveSyncRootsRepository {
         "rw",
         this.database.driveSyncRoots,
         async () => {
-          const existing = await this.database.driveSyncRoots.get(normalizedId);
-          if (!existing) {
-            return null;
-          }
-          if (!isValidDriveSyncRootRecord(existing)) {
-            await this.database.driveSyncRoots.delete(normalizedId);
-            return null;
-          }
-          if (existing.deletedAt !== null) {
+          const existing = await this.findActiveMutableRoot(normalizedId);
+          if (existing === null) {
             return null;
           }
           const updated: DriveSyncRootRecord = {
@@ -178,15 +202,8 @@ export class DexieDriveSyncRootsRepository implements DriveSyncRootsRepository {
         "rw",
         this.database.driveSyncRoots,
         async () => {
-          const existing = await this.database.driveSyncRoots.get(normalizedId);
-          if (!existing) {
-            return;
-          }
-          if (!isValidDriveSyncRootRecord(existing)) {
-            await this.database.driveSyncRoots.delete(normalizedId);
-            return;
-          }
-          if (existing.deletedAt !== null) {
+          const existing = await this.findActiveMutableRoot(normalizedId);
+          if (existing === null) {
             return;
           }
           const timestamp = this.now();

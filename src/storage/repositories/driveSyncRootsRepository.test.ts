@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { db, resetTestDb } from "../db";
 import type { DriveSyncRootRecord } from "../types";
-import { DexieDriveSyncRootsRepository } from "./driveSyncRootsRepository";
+import {
+  DexieDriveSyncRootsRepository,
+  compareDriveSyncRootsAsc,
+} from "./driveSyncRootsRepository";
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -74,6 +77,29 @@ describe("DexieDriveSyncRootsRepository", () => {
       "folder-b",
     ]);
     expect(await repo.countEnabled()).toBe(3);
+    expect(compareDriveSyncRootsAsc(r1, r2)).toBe(-1);
+    expect(compareDriveSyncRootsAsc(r2, r1)).toBe(1);
+    expect(compareDriveSyncRootsAsc(r1, r1)).toBe(0);
+
+    // アクティブな既存ルートを再登録した場合も addedAt を維持しつつ folderName を更新すること
+    clock = 2500;
+    const renamedA = await repo.upsertRoot({
+      folderId: "folder-a",
+      folderName: "マンガA改",
+    });
+    expect(renamedA).toEqual({
+      folderId: "folder-a",
+      folderName: "マンガA改",
+      enabled: 1,
+      addedAt: 2000,
+      updatedAt: 2500,
+      deletedAt: null,
+    });
+    clock = 2600;
+    await repo.upsertRoot({
+      folderId: "folder-a",
+      folderName: "マンガA",
+    });
 
     // setEnabled(false) で一時無効化（listActive には残るが countEnabled は減る）
     clock = 3000;
@@ -201,6 +227,22 @@ describe("DexieDriveSyncRootsRepository", () => {
         addedAt: 100,
         updatedAt: 100,
         deletedAt: Number.NaN,
+      },
+      {
+        folderId: 123 as unknown as string,
+        folderName: "NumericId",
+        enabled: 1,
+        addedAt: 100,
+        updatedAt: 100,
+        deletedAt: null,
+      },
+      {
+        folderId: "bad-nonstring-name",
+        folderName: 456 as unknown as string,
+        enabled: 1,
+        addedAt: 100,
+        updatedAt: 100,
+        deletedAt: null,
       },
     ];
     await db.driveSyncRoots.bulkPut(corruptedRows);
