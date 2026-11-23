@@ -74,7 +74,8 @@ export function collectFrameTransferables(
 
 export function transferDecodedFrames<T extends readonly DecodedPageFrame[]>(
   frames: T,
-  _transfer: (obj: T, transfers: Transferable[]) => T = Comlink.transfer,
+  transfer: (obj: T, transfers: Transferable[]) => T = Comlink.transfer,
 ): T {
-  return frames;
+  const transferables = collectFrameTransferables(frames);
+  return transferables.length > 0 ? transfer(frames, transferables) : frames;
 }
