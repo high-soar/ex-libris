@@ -20,12 +20,13 @@ const IT_ENV = Object.fromEntries(
 
 export default defineConfig({
   testDir: "./test/it",
+  forbidOnly: Boolean(process.env.CI),
   fullyParallel: false,
   workers: 1,
   reporter: [["list"]],
   use: {
     baseURL: `http://127.0.0.1:${IT_PORT}`,
-    trace: "on-first-retry",
+    trace: "retain-on-failure",
     screenshot: "on",
     launchOptions: {
       args: [
