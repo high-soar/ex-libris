@@ -16,6 +16,7 @@ import {
   DexieZipIndexCacheRepository,
   type ZipIndexCacheRepository,
 } from "../storage/repositories/zipIndexCacheRepository";
+import type { ExLibrisServicesState } from "../types";
 import {
   createCoordinatorSession as defaultCreateCoordinatorSession,
   type CoordinatorSessionHandle,
@@ -38,21 +39,34 @@ export interface ResetTestDbExposureOptions {
   readonly isWebDriver?: boolean;
 }
 
+function isWebDriverEnvironment(): boolean {
+  return typeof navigator !== "undefined" && navigator.webdriver === true;
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function shouldExposeResetTestDb(
   options: ResetTestDbExposureOptions = {},
 ): boolean {
-  const isNativePlatform =
-    options.isNativePlatform ?? Capacitor.isNativePlatform();
-  if (isNativePlatform) {
+  if (options.isNativePlatform ?? Capacitor.isNativePlatform()) {
     return false;
   }
   const isDev = options.isDev ?? import.meta.env.DEV;
   const mode = options.mode ?? import.meta.env.MODE;
-  const isWebDriver =
-    options.isWebDriver ??
-    (typeof navigator !== "undefined" && navigator.webdriver === true);
+  const isWebDriver = options.isWebDriver ?? isWebDriverEnvironment();
   return isDev || mode === "test" || isWebDriver;
+}
+
+function buildGlobalServicesState(appBridge: AppBridge): ExLibrisServicesState {
+  return shouldExposeResetTestDb()
+    ? {
+        isReady: true,
+        appBridge,
+        resetTestDb: () => resetTestDb(),
+      }
+    : {
+        isReady: true,
+        appBridge,
+      };
 }
 
 function createDefaultAppBridge(): AppBridge {
@@ -115,12 +129,7 @@ export function ServiceProvider({
     createCoordinatorSession ?? defaultCreateCoordinatorSession;
 
   useEffect(() => {
-    const exposeResetTestDb = shouldExposeResetTestDb();
-    window.__exLibrisServices = {
-      isReady: true,
-      appBridge: resolvedAppBridge,
-      ...(exposeResetTestDb ? { resetTestDb: () => resetTestDb() } : {}),
-    };
+    window.__exLibrisServices = buildGlobalServicesState(resolvedAppBridge);
   }, [resolvedAppBridge]);
 
   const contextValue = useMemo<ServiceContextValue>(
