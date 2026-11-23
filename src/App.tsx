@@ -4,9 +4,12 @@ import type { CoordinatorSessionHandle } from "./app/coordinatorClient";
 import { useServices } from "./app/serviceContext";
 import type { AppBridge } from "./bridges/app/types";
 import { diagnosticLogger } from "./diagnostics/diagnosticLogger";
+import type { DiagnosticLogger } from "./diagnostics/types";
 import type { CopyStatus as BookshelfCopyStatus } from "./features/bookshelf/BookshelfHeader";
 import { BookshelfPage } from "./features/bookshelf/BookshelfPage";
+import type { DriveSetupBannerState } from "./features/bookshelf/DriveSetupBanner";
 import { ReaderPage } from "./features/reader/ReaderPage";
+import type { SettingsPageInitialSnapshot } from "./features/settings/types";
 import { RouterProvider } from "./shared/router/RouterProvider";
 import { useRouter } from "./shared/router/routerContext";
 
@@ -17,6 +20,9 @@ export interface AppProps {
   readonly appBridge?: AppBridge;
   readonly createCoordinatorSession?: () => CoordinatorSessionHandle;
   readonly initialCopyStatus?: CopyStatus;
+  readonly initialDriveSetupState?: DriveSetupBannerState;
+  readonly initialSettingsSnapshot?: SettingsPageInitialSnapshot;
+  readonly settingsLogger?: DiagnosticLogger;
 }
 
 interface AppShellProps {
