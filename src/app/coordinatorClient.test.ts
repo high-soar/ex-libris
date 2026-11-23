@@ -742,14 +742,16 @@ describe("coordinatorClient", () => {
       forceRefresh: true,
       failedToken: "ya29.old",
     });
-    expect(channelLogger.getEntries()).toEqual([
-      expect.objectContaining({
-        level: "warn",
-        scope: "gdrive-range",
-        message: "proxy-warn",
-        detail: "[REDACTED]",
-      }),
-    ]);
+    await vi.waitFor(() => {
+      expect(channelLogger.getEntries()).toEqual([
+        expect.objectContaining({
+          level: "warn",
+          scope: "gdrive-range",
+          message: "proxy-warn",
+          detail: "[REDACTED]",
+        }),
+      ]);
+    });
     channelSession.dispose();
   });
 });
