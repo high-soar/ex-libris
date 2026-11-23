@@ -628,6 +628,7 @@ export function SettingsPage({
         setIsPickerLoadingMore(true);
       } else {
         setIsPickerLoading(true);
+        setIsPickerLoadingMore(false);
         setPickerFolders([]);
         setPickerNextPageToken(null);
       }
@@ -758,6 +759,8 @@ export function SettingsPage({
         pickerAbortRef.current?.abort();
         pickerAbortRef.current = null;
         setIsPickerOpen(false);
+        setIsPickerLoading(false);
+        setIsPickerLoadingMore(false);
         setSyncRootsErrorMessage(null);
       } catch (error: unknown) {
         if (!isMountedRef.current) {
