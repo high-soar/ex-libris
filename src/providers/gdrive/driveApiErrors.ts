@@ -14,8 +14,11 @@ export class DriveApiError extends Error {
     message: string,
     options?: DriveApiErrorOptions,
   ) {
-    super(message);
-    this.name = "Error";
+    super(
+      message,
+      options?.cause !== undefined ? { cause: options.cause } : undefined,
+    );
+    this.name = "DriveApiError";
     this.code = code;
     this.status = options?.status;
   }
