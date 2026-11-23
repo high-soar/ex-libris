@@ -140,9 +140,9 @@ related_tests:
 2. **MK-2（`#32` / PR #35 @ `e8bacf7` マージ完了）: Dexie `version(2)`・`ZipIndexCacheRepository`・`CoordinatorCore` / `ServiceProvider` / `ReaderPage` 0RTT 統合（Storage・Worker & UI 層）**:
    - 対象: `src/storage/types.ts`, `src/storage/db.ts`, `src/engine/zip/zipIndexValidation.ts`, `src/storage/repositories/zipIndexCacheRepository.ts`, `src/engine/workers/CoordinatorCore.ts`, `src/app/serviceContext.ts`, `src/app/ServiceProvider.tsx`, `src/features/reader/ReaderPage.tsx`, 各 `*.test.*`
    - 実績: Red `8a40dce` → Green `904963d` → Refactor `c52ca79`、C0/C1/Functions/Lines 100%、VRT 62/62 PASS、独立レビュー Round 1 指摘 0 件、AI 自律マージ完了（`Closes #32`）
-3. **Step 4（`#33` / 本 PR `Closes #19`, `Closes #33`）: Playwright `SCN-02` 拡充・差分仕様アーカイブ**:
+3. **Step 4（`#33` / PR #36 @ `bad443b` `Closes #19`, `Closes #33`）: Playwright `SCN-02` 拡充・差分仕様アーカイブ**:
    - 対象: `test/it/helpers.ts`, `test/it/local-reader.spec.ts`, 本差分仕様書の `Completed (Archived)` 化 ＆ `docs/specs/changes/archive/` 移動、正本 5 冊の `Approved (#19)` 化
-   - 完了条件: 全 IT 15/15 PASS、Gate 1〜6 完了後に **人間レビュー・マージ** で `#19` / `#33` をクローズ
+   - 完了条件（実績）: 全 IT 15/15 PASS、Gate 1〜6 完了後に **人間レビュー・マージ**（PR #36 @ `bad443b`）で `#19` / `#33` をクローズ済み
 
 ---
 
