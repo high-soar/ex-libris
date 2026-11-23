@@ -218,6 +218,7 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
    - 既存アーカイブがあれば `closeArchive()` 相当のクリーンアップ（進行中全 I/O 中断・`inflightPageReads` 全クリア・`l2Cache.clear()`）を実施。
    - `source.kind === "local-session"` に対し `LocalFileReader(source.file)` を生成する。`cachedEntries` に非空配列かつ基本構造検証（`validateZipIndexEntries`：必須フィールド型・非負有限数値・`localHeaderOffset < physicalEnd` 等）を通過した配列が渡された場合のみ `parseZipDirectory` をスキップして 0 RTT（`fromIndexCache: true`）で即座に完了し、`null`・空配列・不整合配列の場合は自動的に `parseZipDirectory` へフォールバックする（`fromIndexCache: false`）。
    - UI スレッド（`ReaderPage` + `ZipIndexCacheRepository`）が `source.indexCacheKey`（`local:${rawFileName}:${fileSize}`）で Dexie `zipIndexCache`（最大 500 件 LRU）を参照し、不整合キャッシュ検知時は自動削除して `cachedEntries = null` へ透過フォールバックし、通常オープン成功時に `entries` を非ブロッキング保存する。
+   - さらに `fromIndexCache: true` でオープンしたセッションにおいて後続の `requestVisiblePages`（`ReaderPage.fetchAndStorePages`）で `CORRUPT_ZIP` または `DECODE_FAILED` を検知した場合は、`ReaderPage` 側で同一セッション 1 回限り `zipIndexCacheRepo.delete(source.indexCacheKey)`・新 `repairEpoch` 発行・L1/WebGL2 全破棄の上で `openArchive(source, null, repairEpoch)`（`cachedEntries = null` による `parseZipDirectory` 再解析）へ自己修復フォールバックする連携を行う（`R1-06`）。
 3. **`requestVisiblePages(pageIndices, prefetchIndices, epoch, options?)`**:
    - `epoch < minActiveEpoch` または `activeReader === null` の場合は `[]` を返却する。
    - 進行中の古い世代（`activePrefetchEpoch < epoch`）の Warm Prefetch が存在する場合は即座に `abort()` して Fast-Path 帯域と旧 `inflightPageReads` を解放し、`effectiveVisible = options?.visiblePageIndices ?? pageIndices` で `l2Cache.setPinnedPages(effectiveVisible)` を更新する。

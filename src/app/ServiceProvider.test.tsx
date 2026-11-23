@@ -20,7 +20,7 @@ import {
   type ZipIndexCacheRepository,
 } from "../storage/repositories/zipIndexCacheRepository";
 import { DEFAULT_SHADER_CORRECTION_PARAMS } from "../webgl/shaderParams";
-import { ServiceProvider } from "./ServiceProvider";
+import { ServiceProvider, shouldExposeResetTestDb } from "./ServiceProvider";
 import * as stories from "./ServiceProvider.stories";
 import {
   createCoordinatorSession,
@@ -51,6 +51,7 @@ describe("ServiceProvider", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
     resetGlobalServices();
     await resetTestDb();
@@ -135,7 +136,7 @@ describe("ServiceProvider", () => {
     );
   });
 
-  it("Capacitor.isNativePlatform()がtrueのときはCapacitorAppBridgeを自動構築すること", () => {
+  it("Capacitor.isNativePlatform()がtrueのときはCapacitorAppBridgeを自動構築しresetTestDbを公開しないこと (R1-12)", () => {
     vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(true);
     let capturedBridge: AppBridge | null = null;
 
@@ -153,8 +154,9 @@ describe("ServiceProvider", () => {
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: capturedBridge,
-      resetTestDb: expect.any(Function),
     });
+    expect(window.__exLibrisServices?.resetTestDb).toBeUndefined();
+    expect("resetTestDb" in window.__exLibrisServices!).toBe(false);
   });
 
   it("DI props指定時は注入されたappBridge・createCoordinatorSession・各Repositoryを使用・更新すること", () => {
@@ -273,5 +275,87 @@ describe("ServiceProvider", () => {
     await resetFn!();
 
     expect(await db.syncMeta.count()).toBe(0);
+  });
+
+  it("shouldExposeResetTestDbがネイティブ実機および通常本番ブラウザではfalse、非ネイティブかつDEV/test/WebDriverではtrueを返すこと (R1-12)", () => {
+    // 1. ネイティブ実機は DEV / test / WebDriver が true でも必ず false
+    expect(
+      shouldExposeResetTestDb({
+        isNativePlatform: true,
+        isDev: true,
+        mode: "test",
+        isWebDriver: true,
+      }),
+    ).toBe(false);
+
+    // 2. 非ネイティブ環境で DEV / mode==="test" / isWebDriver のいずれかが true なら true
+    expect(
+      shouldExposeResetTestDb({
+        isNativePlatform: false,
+        isDev: true,
+        mode: "production",
+        isWebDriver: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldExposeResetTestDb({
+        isNativePlatform: false,
+        isDev: false,
+        mode: "test",
+        isWebDriver: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldExposeResetTestDb({
+        isNativePlatform: false,
+        isDev: false,
+        mode: "production",
+        isWebDriver: true,
+      }),
+    ).toBe(true);
+
+    // 3. 非ネイティブの通常本番ブラウザ (DEV=false, mode="production", isWebDriver=false) は false
+    expect(
+      shouldExposeResetTestDb({
+        isNativePlatform: false,
+        isDev: false,
+        mode: "production",
+        isWebDriver: false,
+      }),
+    ).toBe(false);
+
+    // 4. navigator フォールバック判定 (undefined / webdriver=false / webdriver=true)
+    vi.stubGlobal("navigator", undefined);
+    expect(
+      shouldExposeResetTestDb({
+        isNativePlatform: false,
+        isDev: false,
+        mode: "production",
+      }),
+    ).toBe(false);
+
+    vi.stubGlobal("navigator", { webdriver: false });
+    expect(
+      shouldExposeResetTestDb({
+        isNativePlatform: false,
+        isDev: false,
+        mode: "production",
+      }),
+    ).toBe(false);
+
+    vi.stubGlobal("navigator", { webdriver: true });
+    expect(
+      shouldExposeResetTestDb({
+        isNativePlatform: false,
+        isDev: false,
+        mode: "production",
+      }),
+    ).toBe(true);
+
+    // 5. 引数省略時のデフォルト環境判定
+    vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(false);
+    expect(shouldExposeResetTestDb()).toBe(true);
+    vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(true);
+    expect(shouldExposeResetTestDb()).toBe(false);
   });
 });

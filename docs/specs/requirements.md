@@ -3,13 +3,17 @@ type: spec-requirements
 title: "全体要件定義・機能一覧・ミニMilestoneロードマップ"
 description: "ExLibris のプロダクトゴール、前提制約、非機能要件（TTFP・メモリ予算）、全機能カタログ割当、および Phase 3〜v1.0 マイルストーン計画の正本"
 status: "Approved (#22)"
-updated: "2026-11-22"
+updated: "2026-11-23"
 tags: [requirements, roadmap, mvp, non-functional, ex-libris, android]
 related_specs:
   - docs/index.md
   - docs/specs/architecture.md
   - docs/specs/db-schema.md
   - docs/specs/screen-transitions.md
+  - docs/specs/engine/zip-streaming.md
+  - docs/specs/engine/webgl2-renderer.md
+  - docs/specs/features/bookshelf.md
+  - docs/specs/features/reader.md
   - docs/guidelines/workflow.md
   - docs/guidelines/testing.md
 related_tests:
@@ -80,7 +84,7 @@ related_tests:
 
 ## 4. 全機能カタログとマイルストーン割当マトリクス
 
-個別機能の詳細な受け入れ条件（`AC-xx`）は、各親 Issue 着手時（Step 2 設計更新 PR）に対象ドメインの正本仕様書（`docs/specs/engine/*.md`, `features/*.md`, `providers/*.md`）へ Just-in-Time に定義します。
+個別機能の詳細な受け入れ条件（`AC-xx`）は、各親 Issue 着手時（Step 2 設計更新 PR）に対象ドメインの正本仕様書（`docs/specs/architecture.md`［`AC-APK-*`］, `docs/specs/engine/*.md`, `features/*.md`, `providers/*.md`）へ Just-in-Time に定義します。
 
 | 領域                       | 機能項目                                                                                   |        割当先        | 備考                                                                                                     |
 | :------------------------- | :----------------------------------------------------------------------------------------- | :------------------: | :------------------------------------------------------------------------------------------------------- |
@@ -121,7 +125,7 @@ related_tests:
 |                            | サムネイル付き高速シークバー ＆ ジャンプ元復帰（Undo Jump）                                |      **`v0.4`**      |                                                                                                          |
 |                            | 連続巻またぎ読書（最終ページから次巻シームレス遷移）                                       |      **`v0.4`**      |                                                                                                          |
 | **F. 記録・端末間同期**    | アプリ内リングバッファ診断ログ＆1タップコピー（機密マスク付）                              | **完了 (`Phase 1`)** | 各フェーズで記録スコープを順次拡充                                                                       |
-|                            | 自動レジューム・未読/読書中/読了ステータス管理                                             |      **`v0.1`**      | ローカル識別子＆Drive 巻の双方に対応                                                                     |
+|                            | 自動レジューム・未読/読書中/読了ステータス管理                                             |      **`v0.1`**      | `v0.1` はローカル識別子 `local:*` 実装、Drive 巻 `vol:*` は DB スキーマ先行定義の上 `v0.2` で有効化      |
 |                            | 一言メモ付きしおり（複数ページブックマーク）                                               |      **`v0.4`**      |                                                                                                          |
 |                            | Google Drive `appDataFolder` 自動バックアップ＆複数端末 LWW 同期                           |      **`v1.0`**      |                                                                                                          |
 |                            | 読書統計グラフビュー（月間読了数・作家/レーベル集計）                                      |       `v1.1+`        | `v1.0` スコープ外                                                                                        |

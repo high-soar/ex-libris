@@ -94,9 +94,15 @@ export interface ReaderPageProps {
   readonly initialSnapshot?: ReaderPageInitialSnapshot;
 }
 
+type LocalArchiveSource = Extract<
+  ArchiveSourceDescriptor,
+  { kind: "local-session" }
+>;
+
 interface ReaderRuntime {
   readonly coordinator: CoordinatorSessionHandle;
   readonly l1Cache: L1PageCache;
+  readonly source: LocalArchiveSource;
 }
 
 interface PageErrorDescriptor {
@@ -126,7 +132,7 @@ const PAGE_ERROR_CODE_MAP: Record<ReaderFatalErrorCode, ZipErrorCode> = {
 
 function buildLocalArchiveSource(
   session: LocalReaderSession,
-): ArchiveSourceDescriptor {
+): LocalArchiveSource {
   const sessionKey = `local:${session.fileName}:${session.fileSize}`;
   return {
     kind: "local-session",
@@ -282,6 +288,51 @@ async function readZipIndexCacheSafely(
   }
 }
 
+function isCacheRepairTriggerCode(code: ZipErrorCode): boolean {
+  return code === "CORRUPT_ZIP" || code === "DECODE_FAILED";
+}
+
+function findCacheRepairTriggerFrame(
+  frames: readonly DecodedPageFrame[],
+): Extract<DecodedPageFrame, { status: "error" }> | undefined {
+  return frames.find(
+    (frame): frame is Extract<DecodedPageFrame, { status: "error" }> =>
+      frame.status === "error" && isCacheRepairTriggerCode(frame.errorCode),
+  );
+}
+
+function persistZipIndexCacheSafely(
+  repo: ZipIndexCacheRepository,
+  cacheKey: string,
+  entries: readonly ZipPageEntry[],
+): void {
+  void repo.put(cacheKey, entries).catch((cacheError: unknown) => {
+    diagnosticLogger.warn(
+      "reader",
+      "目次キャッシュの保存に失敗しました",
+      `${cacheKey}: ${formatErrorMessage(cacheError)}`,
+    );
+  });
+}
+
+async function deleteZipIndexCacheSafely(
+  repo: ZipIndexCacheRepository,
+  cacheKey: string,
+  isCurrentAttempt: () => boolean,
+): Promise<void> {
+  try {
+    await repo.delete(cacheKey);
+  } catch (deleteError) {
+    if (isCurrentAttempt()) {
+      diagnosticLogger.warn(
+        "reader",
+        "目次キャッシュの削除に失敗しました",
+        `${cacheKey}: ${formatErrorMessage(deleteError)}`,
+      );
+    }
+  }
+}
+
 async function readReadingProgressSafely(
   repo: ReadingProgressRepository,
   targetKey: string,
@@ -303,12 +354,12 @@ async function readReadingProgressSafely(
 
 async function readShaderDefaultsSafely(
   repo: ReaderSettingsRepository,
-  isCurrentAttempt: () => boolean,
+  isCurrentRuntime: () => boolean,
 ): Promise<ShaderCorrectionParams | null> {
   try {
     return await repo.getShaderDefaults();
   } catch (settingsError) {
-    if (isCurrentAttempt()) {
+    if (isCurrentRuntime()) {
       diagnosticLogger.warn(
         "reader",
         "画質補正デフォルト設定の取得に失敗しました",
@@ -317,6 +368,20 @@ async function readShaderDefaultsSafely(
     }
     return null;
   }
+}
+
+function clampAnchorForPageCount(
+  pageIndex: number,
+  spreadPageOffset: SpreadPageOffset,
+  pageCount: number,
+): {
+  readonly pageIndex: number;
+  readonly spreadPageOffset: SpreadPageOffset;
+} {
+  return {
+    pageIndex: Math.min(pageCount - 1, Math.max(0, pageIndex)),
+    spreadPageOffset: pageCount > 1 ? spreadPageOffset : 0,
+  };
 }
 
 function resolveRestoredProgressAnchor(
@@ -329,13 +394,11 @@ function resolveRestoredProgressAnchor(
   if (savedProgress === null) {
     return { pageIndex: 0, spreadPageOffset: 0 };
   }
-  return {
-    pageIndex: Math.min(
-      pageCount - 1,
-      Math.max(0, savedProgress.currentPageIndex),
-    ),
-    spreadPageOffset: pageCount > 1 ? savedProgress.spreadPageOffset : 0,
-  };
+  return clampAnchorForPageCount(
+    savedProgress.currentPageIndex,
+    savedProgress.spreadPageOffset,
+    pageCount,
+  );
 }
 
 function isConfirmedNonLandscape(dims: PageDimensions | undefined): boolean {
@@ -450,6 +513,19 @@ export function ReaderPage({
     extractDimensionsFromFrames(initialSnapshot?.framesByPage),
   );
   const hasUserModifiedShaderRef = useRef(false);
+  const openedFromIndexCacheRef = useRef(false);
+  const hasAttemptedCacheRepairRef = useRef(false);
+  const loadPageWindowRef = useRef<
+    | ((
+        runtime: ReaderRuntime,
+        pageIndex: number,
+        pageTotal: number,
+        epoch: number,
+        effectiveMode: EffectiveSpreadMode,
+        offset: SpreadPageOffset,
+      ) => Promise<void>)
+    | null
+  >(null);
 
   const sessionRef = useRef(session);
   sessionRef.current = session;
@@ -608,24 +684,26 @@ export function ReaderPage({
     setIsShaderSheetOpen(true);
   }, []);
 
+  const applyShaderParams = useCallback((next: ShaderCorrectionParams) => {
+    const normalized = normalizeShaderCorrectionParams(next);
+    shaderParamsRef.current = normalized;
+    setShaderParams(normalized);
+  }, []);
+
   const handleChangeShaderParams = useCallback(
     (next: ShaderCorrectionParams) => {
       hasUserModifiedShaderRef.current = true;
       setShaderSaveStatus("idle");
-      const normalized = normalizeShaderCorrectionParams(next);
-      shaderParamsRef.current = normalized;
-      setShaderParams(normalized);
+      applyShaderParams(next);
     },
-    [],
+    [applyShaderParams],
   );
 
   const handleResetShaderParams = useCallback(() => {
     hasUserModifiedShaderRef.current = true;
     setShaderSaveStatus("idle");
-    const resetParams = { ...DEFAULT_SHADER_CORRECTION_PARAMS };
-    shaderParamsRef.current = resetParams;
-    setShaderParams(resetParams);
-  }, []);
+    applyShaderParams(DEFAULT_SHADER_CORRECTION_PARAMS);
+  }, [applyShaderParams]);
 
   const handleSaveDefaultShaderParams = useCallback(async () => {
     hasUserModifiedShaderRef.current = true;
@@ -636,9 +714,7 @@ export function ReaderPage({
       if (!isMountedRef.current) {
         return;
       }
-      const normalized = normalizeShaderCorrectionParams(saved);
-      shaderParamsRef.current = normalized;
-      setShaderParams(normalized);
+      applyShaderParams(saved);
       setShaderSaveStatus("saved");
     } catch (error) {
       if (!isMountedRef.current) {
@@ -651,7 +727,7 @@ export function ReaderPage({
       );
       setShaderSaveStatus("error");
     }
-  }, [readerSettingsRepo]);
+  }, [applyShaderParams, readerSettingsRepo]);
 
   useEffect(() => {
     onRegisterExit?.(handleExitRequest);
@@ -659,6 +735,122 @@ export function ReaderPage({
       onRegisterExit?.(null);
     };
   }, [onRegisterExit, handleExitRequest]);
+
+  const applyOpenedArchiveAnchor = useCallback(
+    (
+      pageIndex: number,
+      pageCount: number,
+      spreadPageOffsetValue: SpreadPageOffset,
+    ) => {
+      spreadPageOffsetRef.current = spreadPageOffsetValue;
+      setSpreadPageOffset(spreadPageOffsetValue);
+      currentPageIndexRef.current = pageIndex;
+      setCurrentPageIndex(pageIndex);
+      totalPagesRef.current = pageCount;
+      setTotalPages(pageCount);
+      isOpeningRef.current = false;
+      setIsOpening(false);
+    },
+    [],
+  );
+
+  const repairFromIndexCache = useCallback(
+    async (
+      runtime: ReaderRuntime,
+      triggerCode: ZipErrorCode,
+    ): Promise<void> => {
+      hasAttemptedCacheRepairRef.current = true;
+      openedFromIndexCacheRef.current = false;
+
+      const repairEpoch = epochRef.current + 1;
+      epochRef.current = repairEpoch;
+      runtime.l1Cache.setMinActiveEpoch(repairEpoch);
+      runtime.coordinator.api.cancelEpochBelow(repairEpoch);
+      runtime.l1Cache.clear();
+      rendererHandleRef.current?.clearAllTextures();
+      knownDimensionsRef.current = new Map();
+      setKnownDimensions(new Map());
+      setFramesByPage({});
+      spreadHistoryRef.current = [];
+      isOpeningRef.current = true;
+      setIsOpening(true);
+
+      diagnosticLogger.warn(
+        "reader",
+        "古いまたは不整合な目次キャッシュを破棄してアーカイブを再解析します",
+        `${runtime.source.indexCacheKey}: ${triggerCode}`,
+      );
+
+      const isRepairActive = () =>
+        runtimeRef.current === runtime && epochRef.current === repairEpoch;
+
+      await deleteZipIndexCacheSafely(
+        zipIndexCacheRepo,
+        runtime.source.indexCacheKey,
+        isRepairActive,
+      );
+
+      if (!isRepairActive()) {
+        return;
+      }
+
+      try {
+        const result = await runtime.coordinator.api.openArchive(
+          runtime.source,
+          null,
+          repairEpoch,
+        );
+        if (!isRepairActive()) {
+          return;
+        }
+        if (result.pageCount <= 0) {
+          throw new ZipArchiveError(
+            "EMPTY_ARCHIVE",
+            "表示できる画像ファイルが見つかりませんでした",
+          );
+        }
+
+        diagnosticLogger.info(
+          "reader",
+          "Central Directory解析でアーカイブを開きました",
+          `${runtime.source.indexCacheKey} (pages=${result.pageCount}, fromIndexCache=${String(result.fromIndexCache)})`,
+        );
+
+        persistZipIndexCacheSafely(
+          zipIndexCacheRepo,
+          runtime.source.indexCacheKey,
+          result.entries,
+        );
+
+        const { pageIndex: clampedPage, spreadPageOffset: clampedOffset } =
+          clampAnchorForPageCount(
+            currentPageIndexRef.current,
+            spreadPageOffsetRef.current,
+            result.pageCount,
+          );
+
+        applyOpenedArchiveAnchor(clampedPage, result.pageCount, clampedOffset);
+        await loadPageWindowRef.current!(
+          runtime,
+          clampedPage,
+          result.pageCount,
+          repairEpoch,
+          effectiveSpreadModeRef.current,
+          clampedOffset,
+        );
+      } catch (repairError) {
+        if (isAbortError(repairError) || !isRepairActive()) {
+          return;
+        }
+        const extracted = extractReaderError(repairError);
+        reportArchiveError(
+          extracted,
+          `${extracted.code}: ${runtime.source.rawFileName}`,
+        );
+      }
+    },
+    [applyOpenedArchiveAnchor, reportArchiveError, zipIndexCacheRepo],
+  );
 
   const fetchAndStorePages = useCallback(
     async (
@@ -669,45 +861,14 @@ export function ReaderPage({
       protectedPages: readonly number[],
       visiblePageIndices: readonly number[],
     ): Promise<DecodedPageFrame[]> => {
+      let frames: DecodedPageFrame[];
       try {
-        const frames = await runtime.coordinator.api.requestVisiblePages(
+        frames = await runtime.coordinator.api.requestVisiblePages(
           targetPages,
           prefetchTargets,
           epoch,
           { visiblePageIndices },
         );
-
-        if (runtimeRef.current !== runtime || epoch !== epochRef.current) {
-          closeReadyFrames(frames);
-          return [];
-        }
-
-        const acceptedFrames: DecodedPageFrame[] = [];
-        let hasReadyFrame = false;
-        for (const frame of frames) {
-          if (!runtime.l1Cache.put(frame, protectedPages)) {
-            continue;
-          }
-          if (frame.status === "ready") {
-            knownDimensionsRef.current.set(frame.pageIndex, {
-              width: frame.width,
-              height: frame.height,
-            });
-            hasReadyFrame = true;
-          } else {
-            diagnosticLogger.error(
-              "reader",
-              getReaderErrorMessage(frame.errorCode),
-              `${frame.errorCode}: page ${frame.pageIndex + 1} (${frame.message})`,
-            );
-          }
-          acceptedFrames.push(frame);
-        }
-        if (hasReadyFrame) {
-          setKnownDimensions(new Map(knownDimensionsRef.current));
-        }
-
-        return acceptedFrames;
       } catch (error) {
         if (
           isAbortError(error) ||
@@ -719,6 +880,15 @@ export function ReaderPage({
 
         const extracted = extractReaderError(error);
         const pageErrorCode = PAGE_ERROR_CODE_MAP[extracted.code];
+        if (
+          isCacheRepairTriggerCode(pageErrorCode) &&
+          !hasAttemptedCacheRepairRef.current &&
+          openedFromIndexCacheRef.current
+        ) {
+          await repairFromIndexCache(runtime, pageErrorCode);
+          return [];
+        }
+
         const errorFrames: DecodedPageFrame[] = [];
 
         for (const targetPage of targetPages) {
@@ -741,8 +911,51 @@ export function ReaderPage({
 
         return errorFrames;
       }
+
+      if (runtimeRef.current !== runtime || epoch !== epochRef.current) {
+        closeReadyFrames(frames);
+        return [];
+      }
+
+      const repairTriggerFrame = findCacheRepairTriggerFrame(frames);
+      if (
+        repairTriggerFrame !== undefined &&
+        !hasAttemptedCacheRepairRef.current &&
+        openedFromIndexCacheRef.current
+      ) {
+        closeReadyFrames(frames);
+        await repairFromIndexCache(runtime, repairTriggerFrame.errorCode);
+        return [];
+      }
+
+      const acceptedFrames: DecodedPageFrame[] = [];
+      let hasReadyFrame = false;
+      for (const frame of frames) {
+        if (!runtime.l1Cache.put(frame, protectedPages)) {
+          continue;
+        }
+        if (frame.status === "ready") {
+          knownDimensionsRef.current.set(frame.pageIndex, {
+            width: frame.width,
+            height: frame.height,
+          });
+          hasReadyFrame = true;
+        } else {
+          diagnosticLogger.error(
+            "reader",
+            getReaderErrorMessage(frame.errorCode),
+            `${frame.errorCode}: page ${frame.pageIndex + 1} (${frame.message})`,
+          );
+        }
+        acceptedFrames.push(frame);
+      }
+      if (hasReadyFrame) {
+        setKnownDimensions(new Map(knownDimensionsRef.current));
+      }
+
+      return acceptedFrames;
     },
-    [],
+    [repairFromIndexCache],
   );
 
   const loadPageWindow = useCallback(
@@ -866,6 +1079,7 @@ export function ReaderPage({
     },
     [fetchAndStorePages, persistCurrentProgress],
   );
+  loadPageWindowRef.current = loadPageWindow;
 
   const resyncCurrentWindow = useCallback(
     (
@@ -974,13 +1188,14 @@ export function ReaderPage({
       return;
     }
 
+    const source = buildLocalArchiveSource(session);
     const coordinator = createCoordinatorSession();
     const l1Cache = new L1PageCache({
       onEvictTexture: (evictedPageIndex) => {
         rendererHandleRef.current?.deletePageTexture(evictedPageIndex);
       },
     });
-    const runtime: ReaderRuntime = { coordinator, l1Cache };
+    const runtime: ReaderRuntime = { coordinator, l1Cache, source };
     runtimeRef.current = runtime;
 
     const openEpoch = epochRef.current + 1;
@@ -995,9 +1210,9 @@ export function ReaderPage({
     setIsShaderSheetOpen(false);
     setShaderSaveStatus("idle");
     hasUserModifiedShaderRef.current = false;
-    const initialShader = { ...DEFAULT_SHADER_CORRECTION_PARAMS };
-    shaderParamsRef.current = initialShader;
-    setShaderParams(initialShader);
+    openedFromIndexCacheRef.current = false;
+    hasAttemptedCacheRepairRef.current = false;
+    applyShaderParams(DEFAULT_SHADER_CORRECTION_PARAMS);
     spreadHistoryRef.current = [];
     knownDimensionsRef.current = new Map();
     setKnownDimensions(new Map());
@@ -1009,23 +1224,21 @@ export function ReaderPage({
     totalPagesRef.current = 0;
     setTotalPages(0);
 
-    const source = buildLocalArchiveSource(session);
+    const isCurrentRuntime = () => runtimeRef.current === runtime;
     const isCurrentAttempt = () =>
-      runtimeRef.current === runtime && epochRef.current === openEpoch;
+      isCurrentRuntime() && epochRef.current === openEpoch;
 
     void (async () => {
       const defaults = await readShaderDefaultsSafely(
         readerSettingsRepo,
-        isCurrentAttempt,
+        isCurrentRuntime,
       );
       if (
         defaults !== null &&
-        isCurrentAttempt() &&
+        isCurrentRuntime() &&
         !hasUserModifiedShaderRef.current
       ) {
-        const normalized = normalizeShaderCorrectionParams(defaults);
-        shaderParamsRef.current = normalized;
-        setShaderParams(normalized);
+        applyShaderParams(defaults);
       }
     })();
 
@@ -1060,6 +1273,8 @@ export function ReaderPage({
           );
         }
 
+        openedFromIndexCacheRef.current = result.fromIndexCache;
+
         diagnosticLogger.info(
           "reader",
           result.fromIndexCache
@@ -1069,15 +1284,11 @@ export function ReaderPage({
         );
 
         if (!result.fromIndexCache) {
-          void zipIndexCacheRepo
-            .put(source.indexCacheKey, result.entries)
-            .catch((cacheError: unknown) => {
-              diagnosticLogger.warn(
-                "reader",
-                "目次キャッシュの保存に失敗しました",
-                `${source.indexCacheKey}: ${formatErrorMessage(cacheError)}`,
-              );
-            });
+          persistZipIndexCacheSafely(
+            zipIndexCacheRepo,
+            source.indexCacheKey,
+            result.entries,
+          );
         }
 
         const savedProgress = await progressPromise;
@@ -1088,14 +1299,11 @@ export function ReaderPage({
         const { pageIndex: restoredPage, spreadPageOffset: restoredOffset } =
           resolveRestoredProgressAnchor(savedProgress, result.pageCount);
 
-        spreadPageOffsetRef.current = restoredOffset;
-        setSpreadPageOffset(restoredOffset);
-        currentPageIndexRef.current = restoredPage;
-        setCurrentPageIndex(restoredPage);
-        totalPagesRef.current = result.pageCount;
-        setTotalPages(result.pageCount);
-        isOpeningRef.current = false;
-        setIsOpening(false);
+        applyOpenedArchiveAnchor(
+          restoredPage,
+          result.pageCount,
+          restoredOffset,
+        );
         await loadPageWindow(
           runtime,
           restoredPage,
@@ -1121,6 +1329,8 @@ export function ReaderPage({
   }, [
     session,
     initialSnapshot,
+    applyOpenedArchiveAnchor,
+    applyShaderParams,
     createCoordinatorSession,
     zipIndexCacheRepo,
     readingProgressRepo,
