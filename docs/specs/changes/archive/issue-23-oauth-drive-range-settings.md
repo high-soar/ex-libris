@@ -2,7 +2,7 @@
 type: spec-delta
 title: "Issue #23 差分仕様: Google OAuth（Single-Flight）・GoogleDriveRangeReader・SCR-04 設定基盤"
 description: "Androidネイティブ GoogleAuthPlugin（drive.readonly）・Webモック自動フォールバック、Single-Flightトークン管理、GoogleDriveRangeReader（HTTP Range・401 1回リトライ・200 OOM防御）、Dexie version(3) 先行定義＆ルートフォルダ管理UI、およびSCR-04（/settings）ルーティング・戻る優先度制御を定義する差分仕様"
-status: "Review (#23)"
+status: "Completed (Archived)"
 updated: "2026-11-23"
 issue: "#23"
 tags:
@@ -44,17 +44,21 @@ related_tests:
   - src/features/bookshelf/BookshelfHeader.test.tsx
   - src/features/bookshelf/BookshelfPage.test.tsx
   - src/features/bookshelf/DriveSetupBanner.test.tsx
+  - src/features/bookshelf/bookshelfUiStateStore.test.ts
   - src/features/reader/ReaderPage.test.tsx
   - src/features/settings/DiagnosticsSection.test.tsx
   - src/features/settings/DriveFolderPickerModal.test.tsx
   - src/features/settings/DriveSyncRootsSection.test.tsx
   - src/features/settings/GoogleAccountSection.test.tsx
   - src/features/settings/SettingsHeader.test.tsx
+  - src/features/settings/SettingsPage.test.tsx
   - src/shared/router/RouterProvider.test.tsx
   - src/shared/router/routeMatcher.test.ts
+  - src/shared/router/routerContext.test.ts
   - src/storage/db.test.ts
   - test/vrt/vrt.spec.ts
   - test/it/smoke.spec.ts
+  - test/it/settings-oauth.spec.ts
 ---
 
 # Issue #23 差分仕様: Google OAuth（Single-Flight）・`GoogleDriveRangeReader`・`SCR-04` 設定基盤
@@ -102,17 +106,17 @@ related_tests:
 
 ## 2. 新規作成・変更対象の App 全体正本一覧
 
-|   種別   | 正本ファイル                                                     | 変更概要                                                                                                                                                                                                              |
-| :------: | :--------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **新規** | [google-drive.md](../providers/google-drive.md)                  | `GoogleAuthPlugin.java`、`GoogleAuthBridge` / Single-Flight（Compare-and-Refresh 付き）`GoogleAuthTokenManager`、`ya29.*` 秘匿マスク、`parseDriveFolderInput`（`"root"` 拒否）/ `DriveFolderClient`・`AC-GD-01`〜`08` |
-| **新規** | [settings.md](../features/settings.md)                           | `SCR-04`（`/settings`）の画面構成、`isBackBlocked` 優先度 1/2/4 戻る制御、`initialSnapshot`/`logger` による決定的 VRT 契約、および `AC-ST-01`〜`07` を定義                                                            |
-| **更新** | [architecture.md](../architecture.md)                            | Layer 1/3/4 責務更新、`CoordinatorWorkerApi.setHostCallbacks`（`CoordinatorHostCallbacks`）追加、`§4.2` の段階的スコープ要求・`getCachedSession`/`getSession`/`subscribeSession`・`failedToken` 保護を反映            |
-| **更新** | [zip-streaming.md](../engine/zip-streaming.md)                   | `GoogleDriveRangeReader`（`§2.2`：`byteLength !== expectedLength` 厳格検証含む）、`CoordinatorCore` / `coordinator.worker.ts` / `coordinatorClient` の `gdrive` ＆初期トークン同期・`AC-ENG-15`〜`16` を追加          |
-| **更新** | [db-schema.md](../db-schema.md)                                  | `§3.4` に `DriveSyncRootsRepository`（FIFO 直列化・`listActive`/`countEnabled` 条件分離・Tombstone 削除・再登録復活・ログアウト時保持）契約を追加し、`§4.1` に `#23` での `version(3)` 先行定義を明記                 |
-| **更新** | [bookshelf.md](../features/bookshelf.md)                         | `SCR-01` ヘッダー「設定」ボタン、`DriveSetupBanner`（2段階ガイドバナー）、`TR-03`/`TR-09` スクロール位置保持、Storybook VRT 決定的注入契約、および `AC-BS-07` を追加                                                  |
-| **更新** | [screen-transitions.md](../screen-transitions.md)                | `SCR-04`・`TR-03`・`TR-09`、戻る優先度 1/2/4 の `SCR-04` 適用、および結合テストシナリオ `SCN-03`（`test/it/settings-oauth.spec.ts`）を追加                                                                            |
-| **更新** | [requirements.md](../requirements.md)                            | 新設正本 2 冊（`settings.md`, `google-drive.md`）への双方向 `related_specs` リンク同期                                                                                                                                |
-| **更新** | [bug-and-handover-log.md](../../quality/bug-and-handover-log.md) | 区分 A 実機検証申し送り **`HO-09`**（完了ゲート: `親 Issue #23 完了前`）、**`HO-10`**（完了ゲート: `親 Issue #25 完了前`）、および PR #74 Round 1 指摘是正記録（`No. 1`〜`6`）を登録                                  |
+|   種別   | 正本ファイル                                                        | 変更概要                                                                                                                                                                                                              |
+| :------: | :------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **新規** | [google-drive.md](../../providers/google-drive.md)                  | `GoogleAuthPlugin.java`、`GoogleAuthBridge` / Single-Flight（Compare-and-Refresh 付き）`GoogleAuthTokenManager`、`ya29.*` 秘匿マスク、`parseDriveFolderInput`（`"root"` 拒否）/ `DriveFolderClient`・`AC-GD-01`〜`08` |
+| **新規** | [settings.md](../../features/settings.md)                           | `SCR-04`（`/settings`）の画面構成、`isBackBlocked` 優先度 1/2/4 戻る制御、`initialSnapshot`/`logger` による決定的 VRT 契約、および `AC-ST-01`〜`07` を定義                                                            |
+| **更新** | [architecture.md](../../architecture.md)                            | Layer 1/3/4 責務更新、`CoordinatorWorkerApi.setHostCallbacks`（`CoordinatorHostCallbacks`）追加、`§4.2` の段階的スコープ要求・`getCachedSession`/`getSession`/`subscribeSession`・`failedToken` 保護を反映            |
+| **更新** | [zip-streaming.md](../../engine/zip-streaming.md)                   | `GoogleDriveRangeReader`（`§2.2`：`byteLength !== expectedLength` 厳格検証含む）、`CoordinatorCore` / `coordinator.worker.ts` / `coordinatorClient` の `gdrive` ＆初期トークン同期・`AC-ENG-15`〜`16` を追加          |
+| **更新** | [db-schema.md](../../db-schema.md)                                  | `§3.4` に `DriveSyncRootsRepository`（FIFO 直列化・`listActive`/`countEnabled` 条件分離・Tombstone 削除・再登録復活・ログアウト時保持）契約を追加し、`§4.1` に `#23` での `version(3)` 先行定義を明記                 |
+| **更新** | [bookshelf.md](../../features/bookshelf.md)                         | `SCR-01` ヘッダー「設定」ボタン、`DriveSetupBanner`（2段階ガイドバナー）、`TR-03`/`TR-09` スクロール位置保持、Storybook VRT 決定的注入契約、および `AC-BS-07` を追加                                                  |
+| **更新** | [screen-transitions.md](../../screen-transitions.md)                | `SCR-04`・`TR-03`・`TR-09`、戻る優先度 1/2/4 の `SCR-04` 適用、および結合テストシナリオ `SCN-03`（`test/it/settings-oauth.spec.ts`）を追加                                                                            |
+| **更新** | [requirements.md](../../requirements.md)                            | 新設正本 2 冊（`settings.md`, `google-drive.md`）への双方向 `related_specs` リンク同期                                                                                                                                |
+| **更新** | [bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) | 区分 A 実機検証申し送り **`HO-09`**（完了ゲート: `親 Issue #23 完了前`）、**`HO-10`**（完了ゲート: `親 Issue #25 完了前`）、および PR #74 Round 1 指摘是正記録（`No. 1`〜`6`）を登録                                  |
 
 ---
 
@@ -144,7 +148,7 @@ related_tests:
 ### 3.2 `GoogleDriveRangeReader` ＆ Coordinator Worker 統合（MK-2）
 
 1. **`GoogleDriveRangeReader`（`src/engine/io/GoogleDriveRangeReader.ts`）**:
-   - [zip-streaming.md §2.2](../engine/zip-streaming.md#22-googledriverangereadersrcengineiogoogledriverangereaderts--v02) に従い、`Range: bytes=${offset}-${end - 1}`・`supportsAllDrives=true`・`206 Partial Content`（および全体要求時のみの `200 OK`）受理・部分要求時の `200 OK` 即時 `body.cancel()` OOM 遮断・`byteLength !== expectedLength`（短尺および `Content-Length` 省略超過応答の双方）厳格拒否・`401` 時の `{ forceRefresh: true, failedToken: token }` 1回透過リトライ・その他異常時のマスク済み `onDiagnostic` 通知＆`ZipArchiveError("READ_ERROR")`・`AbortSignal` 即時中断を実装する。
+   - [zip-streaming.md §2.2](../../engine/zip-streaming.md#22-googledriverangereadersrcengineiogoogledriverangereaderts--v02) に従い、`Range: bytes=${offset}-${end - 1}`・`supportsAllDrives=true`・`206 Partial Content`（および全体要求時のみの `200 OK`）受理・部分要求時の `200 OK` 即時 `body.cancel()` OOM 遮断・`byteLength !== expectedLength`（短尺および `Content-Length` 省略超過応答の双方）厳格拒否・`401` 時の `{ forceRefresh: true, failedToken: token }` 1回透過リトライ・その他異常時のマスク済み `onDiagnostic` 通知＆`ZipArchiveError("READ_ERROR")`・`AbortSignal` 即時中断を実装する。
 2. **`CoordinatorCore` / `coordinator.worker.ts` / `coordinatorClient` / `ServiceProvider` 配線**:
    - `src/engine/types.ts`（および `src/types.ts`）の `CoordinatorWorkerApi` に必須メソッド `setHostCallbacks(callbacks: CoordinatorHostCallbacks | null): void` を追加する（モック `CoordinatorWorkerApi` を生成する既存 `src/features/reader/ReaderPage.test.tsx` 等も同一 PR で同期更新する）。
    - `CoordinatorCore.ts` で `source.kind === "gdrive"` 時に `GoogleDriveRangeReader` を生成し、通常時および時差 `401` 更新済み時（`this.accessToken !== failedToken`）の IPC ゼロ高速パス＋未保持/初回 `401` 時の `hostCallbacks.refreshAccessToken({ forceRefresh, failedToken })` 呼び出し＋`tokenVersion` 保護＋`hostCallbacks.reportDiagnostic` 転送を実装する。
@@ -188,7 +192,7 @@ related_tests:
 
 1. **Sub-issue ①（MK-1）: Android `GoogleAuthPlugin`・Single-Flight `GoogleAuthBridge`・`ya29.*` マスク・Dexie `version(3)` `DriveSyncRootsRepository`・`DriveFolderClient` 実装**
    - 対象: `android/app/src/main/java/com/highsoar/exlibris/{MainActivity,GoogleAuthPlugin}.java`, `scripts/android-build-config.test.ts`, `src/diagnostics/diagnosticLogger.ts`, `src/bridges/oauth/**`, `src/storage/{types,db}.ts`, `src/storage/repositories/driveSyncRootsRepository.ts`, `src/providers/gdrive/**` および全 1対1 単体テスト
-   - マージ方針: 新規 npm/Gradle パッケージ・`AndroidManifest` 権限追加は伴わず本設計 PR で承認された外部ドメイン・Java プラグイン契約内の実装（エスカレーション条件非該当を確認の上 Gate 1〜6 通過後に進行。万一 Gradle/Manifest 変更が必要となった場合は [workflow.md §4.1](../../guidelines/workflow.md#41-ai-自律マージの停止人間エスカレーション条件) に従い人間エスカレーション）
+   - マージ方針: 新規 npm/Gradle パッケージ・`AndroidManifest` 権限追加は伴わず本設計 PR で承認された外部ドメイン・Java プラグイン契約内の実装（エスカレーション条件非該当を確認の上 Gate 1〜6 通過後に進行。万一 Gradle/Manifest 変更が必要となった場合は [workflow.md §4.1](../../../guidelines/workflow.md#41-ai-自律マージの停止人間エスカレーション条件) に従い人間エスカレーション）
 2. **Sub-issue ②（MK-2）: `GoogleDriveRangeReader` ＆ `CoordinatorCore` / `coordinatorClient` / `ServiceProvider` 統合**
    - 対象: `src/engine/io/GoogleDriveRangeReader.ts`, `src/engine/types.ts`, `src/types.ts`, `src/engine/workers/CoordinatorCore.ts`, `src/engine/workers/coordinator.worker.ts`, `src/app/{coordinatorClient,serviceContext,ServiceProvider}.ts(x)`, `src/features/reader/ReaderPage.test.tsx`（モック API 型同期）および全 1対1 単体テスト
 3. **Sub-issue ③（MK-3）: `SCR-04` 設定画面子コンポーネント群・`SCR-01` 段階別ガイドバナー ＆ Storybook / VRT 実装**
@@ -198,7 +202,7 @@ related_tests:
 
 ### 5.2 申し送り事項（`HO-09` / `HO-10`）と Android 実機検証計画
 
-- **実施区分判定（[workflow.md §2.2](../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 A（完了ゲート: `親 Issue #23 完了前`）**
+- **実施区分判定（[workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 A（完了ゲート: `親 Issue #23 完了前`）**
   - **根拠**: Android ネイティブ Java プラグイン（`GoogleAuthPlugin.java` / Play Services OAuth 同意画面インテント連携）の新設、実 Google Drive REST API 通信、および Android ハードウェア戻るボタン優先度制御（1/2/4）を含み、実機確認項目が 4 項目あるため。
 - **登録済み申し送り**:
   1. **`HO-09`**（完了ゲート: `親 Issue #23 完了前`）: Step 4 IT PR の Gate 1〜6 完了直後に `build-android.yml` (`debug`) でビルドした `app-debug.apk` を Google Drive へ分離配置し、以下の 4 観点を実機確認する：

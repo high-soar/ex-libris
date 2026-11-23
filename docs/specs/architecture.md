@@ -2,7 +2,7 @@
 type: spec-architecture
 title: "4層＋マルチスレッドアーキテクチャと共通インターフェース契約"
 description: "Streaming & Provider・Engine Worker・Storage・Viewer & Bridge の4層責務境界、Zero-Copy 転送、メモリ予算定数、および TypeScript コア契約の正本"
-status: "Review (#23)"
+status: "Approved (#23)"
 updated: "2026-11-23"
 tags:
   [
@@ -56,6 +56,7 @@ related_tests:
   - src/features/reader/ReaderPage.test.tsx
   - src/shared/constants/app.test.ts
   - src/shared/router/RouterProvider.test.tsx
+  - src/shared/router/routerContext.test.ts
   - src/storage/db.test.ts
   - src/storage/repositories/zipIndexCacheRepository.test.ts
   - src/storage/repositories/readingProgressRepository.test.ts
@@ -68,6 +69,7 @@ related_tests:
   - scripts/android-build-config.test.ts
   - test/it/smoke.spec.ts
   - test/it/local-reader.spec.ts
+  - test/it/settings-oauth.spec.ts
 ---
 
 # ExLibris 4層＋マルチスレッドアーキテクチャと共通インターフェース契約

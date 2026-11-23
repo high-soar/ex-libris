@@ -2,7 +2,7 @@
 type: spec-provider
 title: "Google OAuth（Single-Flight）＆ Google Drive フォルダ参照プロバイダ仕様書"
 description: "Android ネイティブ GoogleAuthPlugin（Play Services Identity API）・Web モック自動フォールバック、Single-Flight トークン管理、機密マスク、および Drive ルートフォルダ参照クライアントの正本"
-status: "Review (#23)"
+status: "Approved (#23)"
 updated: "2026-11-23"
 tags:
   [
