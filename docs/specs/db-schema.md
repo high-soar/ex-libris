@@ -3,7 +3,7 @@ type: spec-db-schema
 title: "Dexie.js（IndexedDB）ローカルDBスキーマ・インデックス定義"
 description: "仮想本棚、指定ルートフォルダ同期、ZIP目次キャッシュ、ローカル一時ZIP共用レジューム、および appDataFolder LWW 端末間同期を支える全9テーブル定義の正本"
 status: "Approved (#22)"
-updated: "2026-11-22"
+updated: "2026-11-23"
 tags:
   [database, dexie, indexeddb, schema, bookshelf, lww-sync, reading-progress]
 related_specs:
@@ -11,6 +11,7 @@ related_specs:
   - docs/specs/requirements.md
   - docs/specs/architecture.md
   - docs/specs/screen-transitions.md
+  - docs/specs/engine/zip-streaming.md
   - docs/specs/features/bookshelf.md
   - docs/specs/features/reader.md
   - docs/guidelines/testing.md
