@@ -15,6 +15,7 @@ import {
 } from "../../storage/repositories/readingProgressRepository";
 import { useLocalReaderSessionStore } from "../reader/localReaderSessionStore";
 import { BookshelfHeader, type CopyStatus } from "./BookshelfHeader";
+import type { DriveSetupBannerState } from "./DriveSetupBanner";
 import { LocalArchiveEmptyState } from "./LocalArchiveEmptyState";
 import { RecentLocalHistorySection } from "./RecentLocalHistorySection";
 
@@ -23,6 +24,7 @@ export interface BookshelfPageProps {
   readonly initialErrorMessage?: string | null;
   readonly initialDragActive?: boolean;
   readonly initialRecentHistory?: readonly LocalReadingHistoryItem[];
+  readonly initialDriveSetupState?: DriveSetupBannerState;
 }
 
 const LOCAL_ARCHIVE_INPUT_ACCEPT =
@@ -45,7 +47,9 @@ export function BookshelfPage({
   initialErrorMessage = null,
   initialDragActive = false,
   initialRecentHistory,
+  initialDriveSetupState,
 }: BookshelfPageProps) {
+  void initialDriveSetupState;
   const { readingProgressRepo } = useServices();
   const { navigate } = useRouter();
   const openLocalFile = useLocalReaderSessionStore(
