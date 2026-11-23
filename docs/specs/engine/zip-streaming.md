@@ -1,8 +1,8 @@
 ---
 type: spec-engine
 title: "ZIPストリーミング・I/O・Worker エンジン仕様書"
-description: "LocalFileReader、標準ZIP/ZIP64/CP932パーサー、80MB L2ByteCache LRU、10MB/64KB結合 AdaptivePrefetcher、Coordinator/Decode Worker構成、zipIndexCache 0RTT、HO-03所有権分離、およびrequestEpoch世代キャンセル制御の正本"
-status: "Approved"
+description: "LocalFileReader、GoogleDriveRangeReader（HTTP Range・401 Single-Flight 1回透過リトライ・200 OOM防御）、標準ZIP/ZIP64/CP932パーサー、80MB L2ByteCache LRU、10MB/64KB結合 AdaptivePrefetcher、Coordinator/Decode Worker構成、zipIndexCache 0RTT、HO-03所有権分離、およびrequestEpoch世代キャンセル制御の正本"
+status: "Review (#23)"
 updated: "2026-11-23"
 tags:
   [
@@ -11,6 +11,8 @@ tags:
     zip64,
     cp932,
     streaming,
+    google-drive,
+    http-range,
     web-worker,
     comlink,
     cache,
@@ -26,6 +28,7 @@ related_specs:
   - docs/specs/screen-transitions.md
   - docs/specs/engine/webgl2-renderer.md
   - docs/specs/features/reader.md
+  - docs/specs/providers/google-drive.md
   - docs/guidelines/testing.md
 related_tests:
   - src/engine/constants.test.ts
@@ -47,7 +50,7 @@ related_tests:
 
 # ZIP ストリーミング・I/O・Worker エンジン仕様書
 
-本ドキュメントは、ExLibris の **Layer 1（Streaming & I/O）** および **Layer 2（Engine Worker）** に属するランダムアクセス読込、ZIP 解析・1 RTT スライス切り出し、80MB `L2ByteCache`、10MB 予算・64KB ギャップ結合 `AdaptivePrefetcher`、Coordinator / Decode Worker 連携、ならびに世代キャンセル制御（`requestEpoch`）の正本（Single Source of Truth）です。
+本ドキュメントは、ExLibris の **Layer 1（Streaming & I/O）** および **Layer 2（Engine Worker）** に属するランダムアクセス読込（`LocalFileReader` / `GoogleDriveRangeReader`）、ZIP 解析・1 RTT スライス切り出し、80MB `L2ByteCache`、10MB 予算・64KB ギャップ結合 `AdaptivePrefetcher`、Coordinator / Decode Worker 連携、ならびに世代キャンセル制御（`requestEpoch`）の正本（Single Source of Truth）です。
 
 ---
 
@@ -55,28 +58,31 @@ related_tests:
 
 Worker グローバル（`self`）への直接依存を避けて Vitest による C0/C1/Functions/Lines 100% 単体テストを可能にするため、ロジック本体（`*Core.ts` および純関数モジュール）と Worker ブートストラップ（`*.worker.ts`）を厳格に分離します。
 
-| モジュールパス                              | レイヤー | 責務                                                                                                                                                                                                                                                                                                             |
-| :------------------------------------------ | :------: | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/engine/constants.ts`                   | 共通定数 | ストリーミング読込・先読み・L1/L2 キャッシュ・Worker プール数・表紙抽出レートの予算定数（`ENGINE_BUDGETS`）定義                                                                                                                                                                                                  |
-| `src/engine/io/LocalFileReader.ts`          | Layer 1  | 端末ローカル `File` を `File.slice` で範囲読込する `RandomAccessReader` 実装（Web / Android WebView 共通）                                                                                                                                                                                                       |
-| `src/engine/zip/zipParser.ts`               | Layer 2  | 論理名 `ZipParserCore`（実装関数: `parseZipDirectory`, `readCompressedPageSlice`, `computeEntryFetchSpan`, `extractCompressedSliceFromBuffer`）。EOCD/CDH 解析、画像フィルタ・ゴミ除外、自然順ソート、LFH 可変長ヘッダスキップ＆2 RTT 補完、および 80MB 超ページのヘッダ先行独立抽出                             |
-| `src/engine/zip/zipIndexValidation.ts`      | Layer 2  | `zipIndexCache` 復元時および `CoordinatorCore.openArchive` 入口での `ZipPageEntry[]` 構造・境界検証純関数                                                                                                                                                                                                        |
-| `src/engine/zip/errors.ts`                  | Layer 2  | 型付きエンジンエラー（`ZipArchiveError` / エラーコード列挙 / `isAbortError`）                                                                                                                                                                                                                                    |
-| `src/engine/cache/L2ByteCache.ts`           | Layer 2  | 80MB 上限（`L2_CACHE_MAX_BYTES`）の未デコード圧縮 `Uint8Array` LRU キャッシュ。単一 80MB 超表示ページのピン付き一時保持・表示外即時退避、独立 `Uint8Array` 正規化、および `markSharedBuffer` 自動付与                                                                                                            |
-| `src/engine/prefetch/AdaptivePrefetcher.ts` | Layer 2  | 閲覧優先順 10MB 予算選抜（単一 10MB 超〜80MB 以下単独許容・80MB 超除外）＋物理オフセット昇順・ギャップ 64KB 以内・実 Range 長 10MB 以内の結合取得および L2 格納エンジン                                                                                                                                          |
-| `src/engine/workers/DecodeWorkerCore.ts`    | Layer 2  | Store (`0`) / Deflate (`8`: `DecompressionStream('deflate-raw')` ＋ `fflate` フォールバック) 伸長 ＋ `createImageBitmap` デコード                                                                                                                                                                                |
-| `src/engine/workers/DecodeWorkerPool.ts`    | Layer 2  | `DecodeWorkerApi` を実装し、複数 Decode Worker 間の最小負荷＋ラウンドロビン割り当て、対象 Worker の `error` / `messageerror` 検知時の `broken` 隔離・保留 RPC 即時 `DECODE_FAILED` reject・健全スロット継続、および `dispose()` ライフサイクル制御を行うプール                                                   |
-| `src/engine/workers/CoordinatorCore.ts`     | Layer 2  | `CoordinatorWorkerApi` 実装。アーカイブオープン、L2 0RTT ヒット、Fast-Path 最優先実行、ページ単位 In-Flight 共有、10MB Warm Prefetch 非同期起動、`requestEpoch` 世代キャンセル                                                                                                                                   |
-| `src/engine/workers/comlinkErrorHandler.ts` | Layer 2  | Worker 側・UI クライアント側双方の Comlink `throw` ハンドラを拡張し、`ZipArchiveError.code` および `DOMException`（`AbortError` 等）を RPC 越しに保持・復元する純関数シリアライザ                                                                                                                                |
-| `src/engine/workers/coordinatorTransfer.ts` | Layer 2  | `WeakSet<ArrayBuffer>` 共有バッファ保護（`markSharedBuffer` / `isSharedBuffer` / `HO-03` 対応）を含む Decode Worker 送信ペイロード構築（`prepareDecodeTransfer`）、`ready` フレームの `ImageBitmap` 抽出（`collectFrameTransferables`）、および転送ラッパー（`transferDecodedFrames`）純関数モジュール           |
-| `src/engine/workers/decode.worker.ts`       | Layer 2  | `registerZipArchiveErrorTransferHandler()` 登録、`DecodeWorkerCore` 初期化、`Comlink.transfer` 返却および `Comlink.expose` のみの薄いブートストラップ（数行のみ、条件分岐禁止）                                                                                                                                  |
-| `src/engine/workers/coordinator.worker.ts`  | Layer 2  | `registerZipArchiveErrorTransferHandler()` 登録、`DecodeWorker` 毎の `error` / `messageerror` 購読結線（`subscribeError`）・`DecodeWorkerPool`・`CoordinatorCore`・`coordinatorTransfer`（`prepareDecodeTransfer` / `transferDecodedFrames`）の結線（`options` 透過中継含む）と `Comlink.expose`（条件分岐ゼロ） |
+| モジュールパス                              | レイヤー | 責務                                                                                                                                                                                                                                                                                                                                 |
+| :------------------------------------------ | :------: | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/engine/constants.ts`                   | 共通定数 | ストリーミング読込・先読み・L1/L2 キャッシュ・Worker プール数・表紙抽出レートの予算定数（`ENGINE_BUDGETS`）定義                                                                                                                                                                                                                      |
+| `src/engine/io/LocalFileReader.ts`          | Layer 1  | 端末ローカル `File` を `File.slice` で範囲読込する `RandomAccessReader` 実装（Web / Android WebView 共通）                                                                                                                                                                                                                           |
+| `src/engine/io/GoogleDriveRangeReader.ts`   | Layer 1  | Google Drive `alt=media` エンドポイントに対して標準 `fetch`（HTTP `Range`）で範囲読込し、`401` 1回透過リトライ・部分要求時の `200 OK` OOM 遮断・マスク済み診断通知を行う `RandomAccessReader` 実装                                                                                                                                   |
+| `src/engine/zip/zipParser.ts`               | Layer 2  | 論理名 `ZipParserCore`（実装関数: `parseZipDirectory`, `readCompressedPageSlice`, `computeEntryFetchSpan`, `extractCompressedSliceFromBuffer`）。EOCD/CDH 解析、画像フィルタ・ゴミ除外、自然順ソート、LFH 可変長ヘッダスキップ＆2 RTT 補完、および 80MB 超ページのヘッダ先行独立抽出                                                 |
+| `src/engine/zip/zipIndexValidation.ts`      | Layer 2  | `zipIndexCache` 復元時および `CoordinatorCore.openArchive` 入口での `ZipPageEntry[]` 構造・境界検証純関数                                                                                                                                                                                                                            |
+| `src/engine/zip/errors.ts`                  | Layer 2  | 型付きエンジンエラー（`ZipArchiveError` / エラーコード列挙 / `isAbortError`）                                                                                                                                                                                                                                                        |
+| `src/engine/cache/L2ByteCache.ts`           | Layer 2  | 80MB 上限（`L2_CACHE_MAX_BYTES`）の未デコード圧縮 `Uint8Array` LRU キャッシュ。単一 80MB 超表示ページのピン付き一時保持・表示外即時退避、独立 `Uint8Array` 正規化、および `markSharedBuffer` 自動付与                                                                                                                                |
+| `src/engine/prefetch/AdaptivePrefetcher.ts` | Layer 2  | 閲覧優先順 10MB 予算選抜（単一 10MB 超〜80MB 以下単独許容・80MB 超除外）＋物理オフセット昇順・ギャップ 64KB 以内・実 Range 長 10MB 以内の結合取得および L2 格納エンジン                                                                                                                                                              |
+| `src/engine/workers/DecodeWorkerCore.ts`    | Layer 2  | Store (`0`) / Deflate (`8`: `DecompressionStream('deflate-raw')` ＋ `fflate` フォールバック) 伸長 ＋ `createImageBitmap` デコード                                                                                                                                                                                                    |
+| `src/engine/workers/DecodeWorkerPool.ts`    | Layer 2  | `DecodeWorkerApi` を実装し、複数 Decode Worker 間の最小負荷＋ラウンドロビン割り当て、対象 Worker の `error` / `messageerror` 検知時の `broken` 隔離・保留 RPC 即時 `DECODE_FAILED` reject・健全スロット継続、および `dispose()` ライフサイクル制御を行うプール                                                                       |
+| `src/engine/workers/CoordinatorCore.ts`     | Layer 2  | `CoordinatorWorkerApi` 実装。ローカル／Google Drive アーカイブオープン、L2 0RTT ヒット、Fast-Path 最優先実行、ページ単位 In-Flight 共有、10MB Warm Prefetch 非同期起動、`requestEpoch` 世代キャンセル、Worker トークン・診断コールバック連携                                                                                         |
+| `src/engine/workers/comlinkErrorHandler.ts` | Layer 2  | Worker 側・UI クライアント側双方の Comlink `throw` ハンドラを拡張し、`ZipArchiveError.code` および `DOMException`（`AbortError` 等）を RPC 越しに保持・復元する純関数シリアライザ                                                                                                                                                    |
+| `src/engine/workers/coordinatorTransfer.ts` | Layer 2  | `WeakSet<ArrayBuffer>` 共有バッファ保護（`markSharedBuffer` / `isSharedBuffer` / `HO-03` 対応）を含む Decode Worker 送信ペイロード構築（`prepareDecodeTransfer`）、`ready` フレームの `ImageBitmap` 抽出（`collectFrameTransferables`）、および転送ラッパー（`transferDecodedFrames`）純関数モジュール                               |
+| `src/engine/workers/decode.worker.ts`       | Layer 2  | `registerZipArchiveErrorTransferHandler()` 登録、`DecodeWorkerCore` 初期化、`Comlink.transfer` 返却および `Comlink.expose` のみの薄いブートストラップ（数行のみ、条件分岐禁止）                                                                                                                                                      |
+| `src/engine/workers/coordinator.worker.ts`  | Layer 2  | `registerZipArchiveErrorTransferHandler()` 登録、`DecodeWorker` 毎の `error` / `messageerror` 購読結線（`subscribeError`）・`DecodeWorkerPool`・`CoordinatorCore`・`coordinatorTransfer`（`prepareDecodeTransfer` / `transferDecodedFrames`）の結線（`options`・`setHostCallbacks` 透過中継含む）と `Comlink.expose`（条件分岐ゼロ） |
 
 ---
 
-## 2. `LocalFileReader`（Layer 1）仕様
+## 2. `RandomAccessReader`（Layer 1）仕様
 
 `architecture.md §2.2` の `RandomAccessReader` 契約を実装します。
+
+### 2.1 `LocalFileReader`（`src/engine/io/LocalFileReader.ts`）
 
 1. **プロパティ**:
    - `sourceId`: `"local:${file.name}:${file.size}"`
@@ -87,6 +93,30 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
    - `length === 0` または `offset >= totalSize` の場合は空の `Uint8Array(0)` を返す。
    - `end = Math.min(offset + length, totalSize)` にクランプし、`file.slice(offset, end).arrayBuffer()` を読み込む。
    - 読込完了後にも `signal?.aborted === true` を再確認し、キャンセル済みなら結果を返さず `AbortError` を送出する。
+
+### 2.2 `GoogleDriveRangeReader`（`src/engine/io/GoogleDriveRangeReader.ts` / `v0.2`〜）
+
+1. **コンストラクタ・プロパティ**:
+   - 注入オプション: `{ driveFileId, totalSize, getAccessToken, fetchImpl?, onDiagnostic? }`
+   - `driveFileId.trim()` が空文字列、または `!Number.isSafeInteger(totalSize) || totalSize < 0` の場合は即座に `ZipArchiveError("READ_ERROR")` を送出する。
+   - `sourceId`: `"gdrive:${driveFileId}"`
+   - `totalSize`: `totalSize`
+2. **`readRange(offset, length, signal?)` 契約**:
+   - `signal?.aborted === true` の場合、即座に `DOMException("Aborted", "AbortError")` を送出する。
+   - `!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0` の場合は `ZipArchiveError("READ_ERROR")` を送出する。
+   - `length === 0` または `offset >= totalSize` の場合は通信を行わず空の `Uint8Array(0)` を返す。
+   - `end = Math.min(offset + length, totalSize)`（期待バイト長 `expectedLength = end - offset`、HTTP `Range` 終端インデックス `end - 1`）を算出する。
+   - エンドポイント `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(driveFileId)}?alt=media&supportsAllDrives=true` に対し、標準 `fetch`（`CapacitorHttp.enabled: false` 維持）でヘッダー `Authorization: Bearer ${token}` および `Range: bytes=${offset}-${end - 1}`、`signal` を指定して `GET` する。
+   - **`401 Unauthorized` 時の 1 回限り Single-Flight（Compare-and-Refresh）透過リトライ**:
+     - 1 回目の応答が `401` の場合、未読レスポンスストリームを `response.body?.cancel()` で解放し、`onDiagnostic?.("warn", ...)` を記録した上で、1 回目に使用したトークンを添えて `await getAccessToken({ forceRefresh: true, failedToken: token })`（Compare-and-Refresh ＋ Main Thread 側 Single-Flight 更新）を呼び出し、新トークンで **1 回だけ** 再リクエストを実行する。
+     - 再リクエストでも `401` が返った場合、または `getAccessToken` 自体が失敗（`AbortError` 以外）した場合は、`onDiagnostic?.("error", ...)`（トークン文字列は含めず `redactSensitiveText` でも二重保護）を記録し `ZipArchiveError("READ_ERROR")` を送出する。
+   - **ステータス検証と巨大 `200 OK` OOM 遮断ガード**:
+     - **`206 Partial Content`**: 標準の正常応答として受理する。`Content-Length` ヘッダーが存在し有限整数で `contentLength > expectedLength` の場合は、`arrayBuffer()` 確保前に `response.body?.cancel()` でストリームを破棄し、`onDiagnostic?.("error", ...)` を記録して `ZipArchiveError("READ_ERROR")` を送出する。
+     - **`200 OK`**: ファイル全体要求時（`offset === 0 && end === totalSize`、かつ `Content-Length` が存在する場合 `contentLength <= expectedLength`）のみ正常応答として許容する。**部分範囲要求時（`!(offset === 0 && end === totalSize)`）に `200 OK` が返った場合は、数 GB ファイル全体読込による WebView / Worker OOM を防ぐため `arrayBuffer()` を呼ばず即座に `response.body?.cancel()` で切断し、`onDiagnostic?.("error", ...)` を記録して `ZipArchiveError("READ_ERROR")` を送出する**。
+     - **その他のステータス（`403` / `404` / `416` / `429` / `5xx` 等）およびネットワーク通信断**: リトライは行わず（`NFR-01` 初速予測性維持）、`response.body?.cancel()` 解放と `onDiagnostic?.("error", ...)` 記録の上で `ZipArchiveError("READ_ERROR")` を送出する。
+   - **ボディ読込・厳格バイト長整合性（`byteLength !== expectedLength`）・`AbortSignal` チェック**:
+     - 各 `await` 直後および `response.arrayBuffer()` 完了時に `signal?.aborted === true`（または `isAbortError(err)`）であれば `DOMException("Aborted", "AbortError")` を送出し、中断を `READ_ERROR` や診断エラーログとして誤記録しない。
+     - 取得した `Uint8Array` の長さが **`byteLength !== expectedLength`**（途中切断による短尺 `byteLength < expectedLength`、および `Content-Length` ヘッダー省略応答での超過 `byteLength > expectedLength` の双方）の場合は `onDiagnostic?.("error", ...)` を記録して `ZipArchiveError("READ_ERROR")` を送出し、常に `byteLength === expectedLength` が成立するバッファのみを返す。
 
 ---
 
@@ -204,20 +234,24 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
    - 伸長済みバイト列から `new Blob([rawBytes])` を生成し、`createImageBitmap(blob)` でオフスレッドデコードを行う（失敗時は `ZipArchiveError("DECODE_FAILED")`）。
    - 返却値 `{ bitmap, width: bitmap.width, height: bitmap.height }`。Worker ラッパー側では `Comlink.transfer(result, [result.bitmap])` で所有権ごと親側へ Zero-Copy 転送する。
 
-### 4.4 `CoordinatorCore`（L2 0RTT ヒット・In-Flight 共有・Warm Prefetch・世代キャンセル）
+### 4.4 `CoordinatorCore`（L2 0RTT ヒット・In-Flight 共有・Warm Prefetch・世代キャンセル・Drive トークン中継）
 
 1. **状態管理**:
    - `activeReader: RandomAccessReader | null`
    - `entries: ZipPageEntry[]`
    - `l2Cache: L2ByteCache`（アーカイブ単位、80MB 上限）
    - `minActiveEpoch: number`
+   - `accessToken: string | null` および `tokenVersion: number`（`updateAccessToken(null)` によるログアウト破棄後に古い非同期更新結果がトークンを上書き復活させる競合を防ぐ単調増加カウンタ）
+   - `hostCallbacks: CoordinatorHostCallbacks | null`（`setHostCallbacks` で設定される Main Thread 側の `Comlink.proxy` コールバック）
    - `inflightAbortControllers: Map<number, Set<AbortController>>`（epoch 単位の Fast-Path および Warm Prefetch 進行中 I/O 中断管理）
-   - `inflightPageReads: Map<number, InflightPageRead>`（`{ epoch, signal, promise, consumerCount }` を保持するページ単位の進行中スライス取得共有マップ。`AbortController.abort()` 発火時に `abort` リスナーで同期的にエントリ削除＆`null` 解決を行い、`LocalFileReader` の旧世代読込完了を待たずに新世代要求を解放する）
-2. **`openArchive(source, cachedEntries, epoch)`**:
+   - `inflightPageReads: Map<number, InflightPageRead>`（`{ epoch, signal, promise, consumerCount }` を保持するページ単位の進行中スライス取得共有マップ。`AbortController.abort()` 発火時に `abort` リスナーで同期的にエントリ削除＆`null` 解決を行い、`LocalFileReader` / `GoogleDriveRangeReader` の旧世代読込完了を待たずに新世代要求を解放する）
+2. **`openArchive(source, cachedEntries, epoch)` と `gdrive` ソース統合**:
    - `epoch < minActiveEpoch` の場合は即キャンセルエラー。
    - 既存アーカイブがあれば `closeArchive()` 相当のクリーンアップ（進行中全 I/O 中断・`inflightPageReads` 全クリア・`l2Cache.clear()`）を実施。
-   - `source.kind === "local-session"` に対し `LocalFileReader(source.file)` を生成する。`cachedEntries` に非空配列かつ基本構造検証（`validateZipIndexEntries`：必須フィールド型・非負有限数値・`localHeaderOffset < physicalEnd` 等）を通過した配列が渡された場合のみ `parseZipDirectory` をスキップして 0 RTT（`fromIndexCache: true`）で即座に完了し、`null`・空配列・不整合配列の場合は自動的に `parseZipDirectory` へフォールバックする（`fromIndexCache: false`）。
-   - UI スレッド（`ReaderPage` + `ZipIndexCacheRepository`）が `source.indexCacheKey`（`local:${rawFileName}:${fileSize}`）で Dexie `zipIndexCache`（最大 500 件 LRU）を参照し、不整合キャッシュ検知時は自動削除して `cachedEntries = null` へ透過フォールバックし、通常オープン成功時に `entries` を非ブロッキング保存する。
+   - `source.kind === "local-session"` に対し `LocalFileReader(source.file)` を生成し、`source.kind === "gdrive"` に対しては `GoogleDriveRangeReader` を生成する。
+   - `GoogleDriveRangeReader` へ渡す `getAccessToken({ forceRefresh, failedToken })` は、①通常時（`!forceRefresh && this.accessToken` が非空文字列）、または ②時差 `401` 到着時（`forceRefresh === true && failedToken !== undefined && this.accessToken` が非空かつ `this.accessToken !== failedToken`：先行リフレッシュにより Worker 内トークンが既に更新済みの場合）は **IPC ゼロで現 `this.accessToken` を即座に返却** し、それ以外（未保持、または現 `this.accessToken === failedToken` の初回 `401` 検知時）のみ `this.hostCallbacks.refreshAccessToken({ forceRefresh, failedToken })` を呼び出して（未設定時は `ZipArchiveError("READ_ERROR")`）新トークンを取得・呼び出し開始時の `tokenVersion` 一致時に `this.accessToken` へ反映して返す。`onDiagnostic` は `this.hostCallbacks?.reportDiagnostic(level, "gdrive-range", message, detail)` へ中継する。
+   - `cachedEntries` に非空配列かつ基本構造検証（`validateZipIndexEntries`：必須フィールド型・非負有限数値・`localHeaderOffset < physicalEnd` 等）を通過した配列が渡された場合のみ `parseZipDirectory` をスキップして 0 RTT（`fromIndexCache: true`）で即座に完了し、`null`・空配列・不整合配列の場合は自動的に `parseZipDirectory` へフォールバックする（`fromIndexCache: false`）。
+   - UI スレッド（`ReaderPage` + `ZipIndexCacheRepository`）が `source.indexCacheKey`（`local:${rawFileName}:${fileSize}` または `gdrive:${driveFileId}:${md5Checksum ?? fileSize}`）で Dexie `zipIndexCache`（最大 500 件 LRU）を参照し、不整合キャッシュ検知時は自動削除して `cachedEntries = null` へ透過フォールバックし、通常オープン成功時に `entries` を非ブロッキング保存する。
    - さらに `fromIndexCache: true` でオープンしたセッションにおいて後続の `requestVisiblePages`（`ReaderPage.fetchAndStorePages`）で `CORRUPT_ZIP` または `DECODE_FAILED` を検知した場合は、`ReaderPage` 側で同一セッション 1 回限り `zipIndexCacheRepo.delete(source.indexCacheKey)`・新 `repairEpoch` 発行・L1/WebGL2 全破棄の上で `openArchive(source, null, repairEpoch)`（`cachedEntries = null` による `parseZipDirectory` 再解析）へ自己修復フォールバックする連携を行う（`R1-06`）。
 3. **`requestVisiblePages(pageIndices, prefetchIndices, epoch, options?)`**:
    - `epoch < minActiveEpoch` または `activeReader === null` の場合は `[]` を返却する。
@@ -231,14 +265,16 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
    - **バックグラウンド Warm Prefetch 起動（1 `epoch` 最大 1 サイクル）**:
      - `pageIndices` の処理完了後（`pageIndices.length === 0` の L2 補充呼び出し時を含む）、未中断かつ `prefetchIndices.length > 0` かつ当該 `epoch` で Warm Prefetch 未起動であれば、`epoch` に紐づく専用 `AbortController` を登録し、全計画バッチの `inflightPageReads` 先行登録を同期実行した上で `AdaptivePrefetcher` をバックグラウンド非同期起動し、RPC 自体は待たずに `DecodedPageFrame[]` を返却する。
    - **世代チェックと即時破棄**: `DecodeWorker` から `ImageBitmap` が戻った時点で中断済み（`epoch < minActiveEpoch`）になっていた場合、**UI スレッドへ返却せず Coordinator 側で即座に `bitmap.close()` を実行して破棄する**。
-   - **Worker ブートストラップ中継と Zero-Copy 転送**: `coordinator.worker.ts` ラッパーは `core.requestVisiblePages(pageIndices, prefetchIndices, epoch, options)` へ第 4 引数 `options` まで透過中継した上で、条件分岐を持たず無条件で `coordinatorTransfer.transferDecodedFrames(frames)` へ委譲する。`transferDecodedFrames` は `collectFrameTransferables(frames)` により `status === "ready"` の `frame.bitmap` のみを抽出し、`transferables.length > 0` の場合のみ `Comlink.transfer(frames, transferables)`（それ以外は `frames` をそのまま返却）で UI スレッドへ転送する。
-4. **`cancelEpochBelow(minActiveEpoch)` / `closeArchive()`**:
+   - **Worker ブートストラップ中継と Zero-Copy 転送**: `coordinator.worker.ts` ラッパーは `core.requestVisiblePages(pageIndices, prefetchIndices, epoch, options)` へ第 4 引数 `options` まで透過中継し、`setHostCallbacks(callbacks)` も条件分岐ゼロで `core.setHostCallbacks(callbacks)` へ透過中継した上で、無条件で `coordinatorTransfer.transferDecodedFrames(frames)` へ委譲する。`transferDecodedFrames` は `collectFrameTransferables(frames)` により `status === "ready"` の `frame.bitmap` のみを抽出し、`transferables.length > 0` の場合のみ `Comlink.transfer(frames, transferables)`（それ以外は `frames` をそのまま返却）で UI スレッドへ転送する。
+4. **`updateAccessToken` / `setHostCallbacks` / `cancelEpochBelow` / `closeArchive`**:
+   - `updateAccessToken(accessToken)`: `tokenVersion += 1` を進めて `this.accessToken = accessToken` を更新する。
+   - `setHostCallbacks(callbacks)`: `this.hostCallbacks = callbacks` を保持する。
    - `cancelEpochBelow`: `minActiveEpoch` 未満の Fast-Path および進行中 Warm Prefetch の `AbortController.abort()` をすべて即時発火する（連動して該当世代の `inflightPageReads` も同期的に削除・`null` 解決される）。
    - `closeArchive()`: 進行中全ジョブを中断し、`inflightPageReads` クリアおよび `l2Cache.clear()` で L2 保持メモリを全破棄した上で `activeReader` および `entries` を解放する。
 5. **Worker 異常終了・ロード失敗時のライフサイクル保護**:
    - `Coordinator` / `Decode` 各 Worker のロード失敗や実行時クラッシュ（`error` / `messageerror`）をハングさせずに捕捉し、該当 RPC 呼び出し元へ型付きエラー（`READ_ERROR` / `DECODE_FAILED`）を即時返却する（詳細は `§4.5.3`）。
 
-### 4.5 Worker 間 Zero-Copy 転送所有権規約（`HO-03`）・Comlink エラーシリアライズ・Worker 異常終了検知契約
+### 4.5 Worker 間 Zero-Copy 転送所有権規約（`HO-03`）・Comlink エラーシリアライズ・Worker 異常終了検知・ホスト連携契約
 
 1. **Decode 送信時の `ArrayBuffer` 所有権分離規約（`prepareDecodeTransfer` / `markSharedBuffer`）**:
    - `coordinatorTransfer.ts` は `WeakSet<ArrayBuffer>` ベースの `markSharedBuffer(buffer)` / `isSharedBuffer(buffer)` および `prepareDecodeTransfer(compressedData, options?: { shared?: boolean })` を提供する。
@@ -248,10 +284,12 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 2. **Comlink 例外シリアライズ契約（`registerZipArchiveErrorTransferHandler`）**:
    - Worker 側（`src/engine/workers/decode.worker.ts`, `src/engine/workers/coordinator.worker.ts`）および UI クライアント側（`src/app/coordinatorClient.ts`）の双方で起動時に `registerZipArchiveErrorTransferHandler()` を冪等登録する。
    - Comlink の標準 `"throw"` ハンドラをラップし、`ZipArchiveError` の `code`・`name`・`message`・`stack` および `DOMException`（`AbortError` 等の `name`・`message`・`stack`）を Worker RPC 越しに保持・復元する。
-3. **Coordinator Worker ＆ Decode Worker 異常終了・ロード失敗（`error` / `messageerror`）時の RPC 即時 reject 契約**:
-   - **Coordinator Worker 監視（`src/app/coordinatorClient.ts`）**:
+3. **Coordinator Worker ＆ Decode Worker 異常終了・ロード失敗（`error` / `messageerror`）時の RPC 即時 reject ＆ ホストコールバック配線契約**:
+   - **Coordinator Worker 監視・認証/診断バインド（`src/app/coordinatorClient.ts`）**:
      - `CoordinatorWorkerHandle` はオプショナルな `addEventListener` / `removeEventListener`（`"error"` / `"messageerror"` 対象）を持ち、最小 DI モック（`{ terminate }` のみ）との後方互換性を維持する。
-     - `createCoordinatorSession` 内で Coordinator Worker の `"error"` / `"messageerror"` を購読し、発火時は ①`diagnosticLogger.error("engine", "Coordinator Workerが異常終了しました", detail)` を記録（`ErrorEvent` の `message` / `filename` / `lineno` / `colno` や `Event.type` から安全に構築）、②`ZipArchiveError("READ_ERROR", "Coordinator Workerが異常終了しました")` を生成・保持してリスナーを解除、③保留中の非同期 RPC（`openArchive`, `requestVisiblePages`, `closeArchive`）および以後の非同期 RPC 呼び出しを即座に同エラーで reject する（ただし `dispose()` 済みセッションは既存 Comlink 契約通り同期的に `rawApi` へフォワードし、`wrapWorker` 例外送出時および `dispose()` 実行時も `removeEventListener` を漏れなく実行する）。
+     - `createGuardedCoordinatorApi` は既存の `updateAccessToken` / `cancelEpochBelow` と同様に `setHostCallbacks` を必須同期 RPC（`forwardSyncRpc`）として中継する（オプショナルチェーン `?.` は使用せず C1 100% カバレッジを維持する）。
+     - `createCoordinatorSession` はオプショナルな `authBridge?: GoogleAuthBridge` および `logger?: DiagnosticLogger`（デフォルト `diagnosticLogger`）を受け取る。`authBridge` 指定時は、① `Comlink.proxy` でラップした `CoordinatorHostCallbacks`（`refreshAccessToken` → `authBridge.getValidAccessToken`, `reportDiagnostic` → `logger[level]`）を `api.setHostCallbacks(...)` へ必須登録し、② 既にログイン済みの場合に備えて `const cached = authBridge.getCachedSession(); if (cached !== null) { api.updateAccessToken(cached.accessToken); }` で初期トークンを即時同期し、③ 以後のセッション変化に対して `authBridge.subscribeSession`（登録時非発火・変化時のみ発火）で `api.updateAccessToken(session?.accessToken ?? null)` を自動同期して `dispose()` 時に購読解除する。
+     - `createCoordinatorSession` 内で Coordinator Worker の `"error"` / `"messageerror"` を購読し、発火時は ①`diagnosticLogger.error("engine", "Coordinator Workerが異常終了しました", detail)` を記録（`ErrorEvent` の `message` / `filename` / `lineno` / `colno` や `Event.type` から安全に構築）、②`ZipArchiveError("READ_ERROR", "Coordinator Workerが異常終了しました")` を生成・保持してリスナーを解除、③保留中の非同期 RPC（`openArchive`, `requestVisiblePages`, `closeArchive`）および以後の非同期 RPC 呼び出しを即座に同エラーで reject する（ただし `dispose()` 済みセッションは既存 Comlink 契約通り同期的に `rawApi` へフォワードし、`wrapWorker` 例外送出時および `dispose()` 実行時も `removeEventListener`・セッション購読解除を漏れなく実行する）。
    - **Decode Worker 監視（`src/engine/workers/DecodeWorkerPool.ts` ＆ `src/engine/workers/coordinator.worker.ts`）**:
      - `DecodeWorkerHandle` はオプショナルな `subscribeError?: (listener: (event: unknown) => void) => () => void` を持ち、`coordinator.worker.ts` からは条件分岐ゼロで `worker.addEventListener("error", listener)` / `worker.addEventListener("messageerror", listener)` と解除関数を返す純粋結線のみを行う。
      - `DecodeWorkerPool` はコンストラクタで `handle.subscribeError` を購読し、対象スロットでエラーが発生した場合は当該スロットを `broken = true` にして購読解除・`activeCount = 0` リセットを行い、当該スロットで実行中の保留 `decodePageSlice` を即座に `ZipArchiveError("DECODE_FAILED", ...)` で reject する。他の健全スロット（`!slot.broken`）が生存していれば後続の `decodePageSlice` は健全スロットのみへ最小負荷＋ラウンドロビンでルーティングし、全スロットが `broken` の場合は後続呼び出しを即座に `ZipArchiveError("DECODE_FAILED", ...)` で reject する。`dispose()` 時は全スロットの `unsubscribeError?.()` を呼び、保留中呼び出しを `DECODE_FAILED` で解放した上で `terminate?.()` する。
@@ -260,19 +298,21 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 
 ## 5. 受け入れ条件（`AC-ENG-xx`）
 
-|    AC ID    | 受け入れ条件                                                                                                                                                                                                                                                                                                                                                                                                         |
-| :---------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AC-ENG-01` | `LocalFileReader` は `File.slice` で指定範囲を読み取り、ファイル末尾超過時は実サイズまで安全にクランプし、`AbortSignal` で中断できる。                                                                                                                                                                                                                                                                               |
-| `AC-ENG-02` | `zipParser.ts`（論理名 `ZipParserCore`: `parseZipDirectory`）は末尾 128KB から標準 ZIP の EOCD と CDH を解析し、128KB 超の巨大 CD も追加 1 RTT で完全解析できる。                                                                                                                                                                                                                                                    |
-| `AC-ENG-03` | 画像拡張子（`.jpg/.jpeg/.png/.webp/.avif` 大小非区別）のみ抽出し、`__MACOSX/`・`._*`・`Thumbs.db`・`.DS_Store`・`desktop.ini`・ディレクトリを除外し、`/`・`\` セグメント単位の日本語自然順でソートする。                                                                                                                                                                                                             |
-| `AC-ENG-04` | GPBF Bit 11 判定＋UTF-8 非厳格／strict 失敗時 CP932（Shift_JIS）フォールバックで日本語ファイル名も正しくデコードし、暗号化・未対応圧縮・空アーカイブ・破損／マルチディスク ZIP には明示的 `ZipErrorCode` を返す。                                                                                                                                                                                                    |
-| `AC-ENG-05` | LFH 可変長 `extraFieldLength` を LFH 先頭から実読取りし、全 CDH 基準の `physicalEnd` 境界内で 1 RTT（`+1KB` マージン）により正確な圧縮ペイロードを切り出せる。                                                                                                                                                                                                                                                       |
-| `AC-ENG-06` | `DecodeWorkerCore` は Store (`0`) と Deflate (`8`: `DecompressionStream` ＋ `fflate` フォールバック) の双方を `ImageBitmap` へデコードできる。                                                                                                                                                                                                                                                                       |
-| `AC-ENG-07` | `CoordinatorCore` は古い `requestEpoch` の進行中 `readRange`（Fast-Path および Warm Prefetch 双方）を `AbortController` で即時中断し、遅延到着した `ImageBitmap` は即 `bitmap.close()` して破棄する。                                                                                                                                                                                                                |
-| `AC-ENG-08` | §1 の `*.worker.ts` を除く全純粋 TypeScript モジュール（`constants` / `LocalFileReader` / `zipParser.ts`［論理名 `ZipParserCore`］ / `zipIndexValidation` / `errors` / `L2ByteCache` / `AdaptivePrefetcher` / `DecodeWorkerCore` / `DecodeWorkerPool` / `CoordinatorCore` / `comlinkErrorHandler` / `coordinatorTransfer`）および `coordinatorClient` のすべてが C0/C1/Functions/Lines 100% 単体テストを PASS する。 |
-| `AC-ENG-09` | ZIP64 EOCD Locator / ZIP64 EOCD Record（4GB 超オフセット・`0x0001` Extra Field 全 CDH 先行解決含む）を安全整数範囲内で完全解析し、マルチディスク ZIP・`Number.MAX_SAFE_INTEGER` 超過・`totalEntries * 46 > cdSize` を `CORRUPT_ZIP` として拒否できる。                                                                                                                                                               |
-| `AC-ENG-10` | GPBF Bit 11 未設定の Shift_JIS（CP932）日本語ファイル名を文字化けせず復元でき、`readCompressedPageSlice` の 2 RTT 経路も `byteOffset === 0` の独立バッファ直接返却により不要な二重コピーを発生させない（`HO-03` 前半）。                                                                                                                                                                                             |
-| `AC-ENG-11` | `DexieZipIndexCacheRepository`（Dexie `version(2)` `zipIndexCache`・最大 500 件 LRU・不整合レコード自動削除フォールバック）と `ReaderPage` / `CoordinatorCore.openArchive` の連携により、同一アーカイブ 2 回目以降を 0 RTT（`fromIndexCache: true`）で開ける。                                                                                                                                                       |
-| `AC-ENG-12` | `L2ByteCache` は `L2_CACHE_MAX_BYTES`（80MB）上限で独立 `Uint8Array` を LRU 保持・退避し、単一 80MB 超例外画像は現在表示ページ（`allowOversized: true`）のみ一時保持して表示対象外移動時および `closeArchive()` 時に即座に解放する。                                                                                                                                                                                 |
-| `AC-ENG-13` | `AdaptivePrefetcher` は優先順 10MB 予算選抜（単一 10MB 超〜80MB 以下単独許容・80MB 超除外）後に `localHeaderOffset` 昇順・物理ギャップ 64KB 以内・実 Range 長 10MB 以内で `readRange` を結合し、末尾 LFH 1KB 超過補完および一部破損時の正常ページ救済を行える。                                                                                                                                                      |
-| `AC-ENG-14` | `markSharedBuffer` / `prepareDecodeTransfer`（`HO-03` 後半）により `L2ByteCache` 保持バッファが `Comlink.transfer` でデタッチ破壊されず、同世代 In-Flight 共有で重複 `readRange` を防ぎつつ L1 退避後の再めくりでも L2 から 0 RTT で再デコードできる。                                                                                                                                                               |
+|    AC ID    | 受け入れ条件                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| :---------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `AC-ENG-01` | `LocalFileReader` は `File.slice` で指定範囲を読み取り、ファイル末尾超過時は実サイズまで安全にクランプし、`AbortSignal` で中断できる。                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `AC-ENG-02` | `zipParser.ts`（論理名 `ZipParserCore`: `parseZipDirectory`）は末尾 128KB から標準 ZIP の EOCD と CDH を解析し、128KB 超の巨大 CD も追加 1 RTT で完全解析できる。                                                                                                                                                                                                                                                                                                                                                                                       |
+| `AC-ENG-03` | 画像拡張子（`.jpg/.jpeg/.png/.webp/.avif` 大小非区別）のみ抽出し、`__MACOSX/`・`._*`・`Thumbs.db`・`.DS_Store`・`desktop.ini`・ディレクトリを除外し、`/`・`\` セグメント単位の日本語自然順でソートする。                                                                                                                                                                                                                                                                                                                                                |
+| `AC-ENG-04` | GPBF Bit 11 判定＋UTF-8 非厳格／strict 失敗時 CP932（Shift_JIS）フォールバックで日本語ファイル名も正しくデコードし、暗号化・未対応圧縮・空アーカイブ・破損／マルチディスク ZIP には明示的 `ZipErrorCode` を返す。                                                                                                                                                                                                                                                                                                                                       |
+| `AC-ENG-05` | LFH 可変長 `extraFieldLength` を LFH 先頭から実読取りし、全 CDH 基準の `physicalEnd` 境界内で 1 RTT（`+1KB` マージン）により正確な圧縮ペイロードを切り出せる。                                                                                                                                                                                                                                                                                                                                                                                          |
+| `AC-ENG-06` | `DecodeWorkerCore` は Store (`0`) と Deflate (`8`: `DecompressionStream` ＋ `fflate` フォールバック) の双方を `ImageBitmap` へデコードできる。                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `AC-ENG-07` | `CoordinatorCore` は古い `requestEpoch` の進行中 `readRange`（Fast-Path および Warm Prefetch 双方）を `AbortController` で即時中断し、遅延到着した `ImageBitmap` は即 `bitmap.close()` して破棄する。                                                                                                                                                                                                                                                                                                                                                   |
+| `AC-ENG-08` | §1 の `*.worker.ts` を除く全純粋 TypeScript モジュール（`constants` / `LocalFileReader` / `GoogleDriveRangeReader` / `zipParser.ts`［論理名 `ZipParserCore`］ / `zipIndexValidation` / `errors` / `L2ByteCache` / `AdaptivePrefetcher` / `DecodeWorkerCore` / `DecodeWorkerPool` / `CoordinatorCore` / `comlinkErrorHandler` / `coordinatorTransfer`）および `coordinatorClient` のすべてが C0/C1/Functions/Lines 100% 単体テストを PASS する。                                                                                                         |
+| `AC-ENG-09` | ZIP64 EOCD Locator / ZIP64 EOCD Record（4GB 超オフセット・`0x0001` Extra Field 全 CDH 先行解決含む）を安全整数範囲内で完全解析し、マルチディスク ZIP・`Number.MAX_SAFE_INTEGER` 超過・`totalEntries * 46 > cdSize` を `CORRUPT_ZIP` として拒否できる。                                                                                                                                                                                                                                                                                                  |
+| `AC-ENG-10` | GPBF Bit 11 未設定の Shift_JIS（CP932）日本語ファイル名を文字化けせず復元でき、`readCompressedPageSlice` の 2 RTT 経路も `byteOffset === 0` の独立バッファ直接返却により不要な二重コピーを発生させない（`HO-03` 前半）。                                                                                                                                                                                                                                                                                                                                |
+| `AC-ENG-11` | `DexieZipIndexCacheRepository`（Dexie `version(2)` `zipIndexCache`・最大 500 件 LRU・不整合レコード自動削除フォールバック）と `ReaderPage` / `CoordinatorCore.openArchive` の連携により、同一アーカイブ 2 回目以降を 0 RTT（`fromIndexCache: true`）で開ける。                                                                                                                                                                                                                                                                                          |
+| `AC-ENG-12` | `L2ByteCache` は `L2_CACHE_MAX_BYTES`（80MB）上限で独立 `Uint8Array` を LRU 保持・退避し、単一 80MB 超例外画像は現在表示ページ（`allowOversized: true`）のみ一時保持して表示対象外移動時および `closeArchive()` 時に即座に解放する。                                                                                                                                                                                                                                                                                                                    |
+| `AC-ENG-13` | `AdaptivePrefetcher` は優先順 10MB 予算選抜（単一 10MB 超〜80MB 以下単独許容・80MB 超除外）後に `localHeaderOffset` 昇順・物理ギャップ 64KB 以内・実 Range 長 10MB 以内で `readRange` を結合し、末尾 LFH 1KB 超過補完および一部破損時の正常ページ救済を行える。                                                                                                                                                                                                                                                                                         |
+| `AC-ENG-14` | `markSharedBuffer` / `prepareDecodeTransfer`（`HO-03` 後半）により `L2ByteCache` 保持バッファが `Comlink.transfer` でデタッチ破壊されず、同世代 In-Flight 共有で重複 `readRange` を防ぎつつ L1 退避後の再めくりでも L2 から 0 RTT で再デコードできる。                                                                                                                                                                                                                                                                                                  |
+| `AC-ENG-15` | `GoogleDriveRangeReader` は `alt=media&supportsAllDrives=true` に対し `Range: bytes=start-end` で `206 Partial Content`（および全体要求時のみの `200 OK`）を取得し、部分要求時の `200 OK` や `byteLength !== expectedLength`（短尺切断および `Content-Length` 省略超過応答）を遮断して OOM とオフセット不整合を防ぎ、`401` 時は `failedToken` 付き Single-Flight トークン更新後に 1 回だけ透過リトライし、`403`/`404`/`416`/`429`/`5xx`/通信断時はマスク済み診断通知の上で `ZipArchiveError("READ_ERROR")` を送出し、`AbortSignal` で即座に中断できる。 |
+| `AC-ENG-16` | `CoordinatorCore`・`coordinator.worker.ts`（条件分岐ゼロ中継）・`coordinatorClient` は `source.kind === "gdrive"` オープンに対応し、通常時および時差 `401` 更新済み時（`this.accessToken !== failedToken`）は Worker 保持トークンで IPC ゼロ通信を行いつつ、未保持または初回 `401` 時のみ `Comlink.proxy` 経由で新トークン取得・`tokenVersion` 保護更新・診断ログ転送を行い、新規セッション生成時の `getCachedSession()` 初期同期および `dispose()` 時の購読解除を行う。                                                                                |
