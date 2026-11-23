@@ -4,7 +4,6 @@ import type {
   DriveFolderMetadata,
   DriveFolderPage,
   ListChildFoldersOptions,
-  ResolveDriveFolderOptions,
 } from "./types";
 
 export interface MockDriveFolderNode {
@@ -91,9 +90,9 @@ export class MockDriveFolderClient implements DriveFolderClient {
 
   async resolveFolderById(
     folderId: string,
-    options?: ResolveDriveFolderOptions,
+    signal?: AbortSignal,
   ): Promise<DriveFolderMetadata> {
-    this.assertReady(options?.signal);
+    this.assertReady(signal);
     const normalizedId = folderId.trim();
     if (normalizedId.length === 0 || normalizedId.toLowerCase() === "root") {
       throw new DriveApiError(

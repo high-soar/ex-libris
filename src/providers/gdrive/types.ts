@@ -17,10 +17,6 @@ export interface DriveFolderPage {
   readonly nextPageToken: string | null;
 }
 
-export interface ResolveDriveFolderOptions {
-  readonly signal?: AbortSignal;
-}
-
 export interface ListChildFoldersOptions {
   readonly pageToken?: string;
   readonly signal?: AbortSignal;
@@ -29,7 +25,7 @@ export interface ListChildFoldersOptions {
 export interface DriveFolderClient {
   resolveFolderById(
     folderId: string,
-    options?: ResolveDriveFolderOptions,
+    signal?: AbortSignal,
   ): Promise<DriveFolderMetadata>;
   listChildFolders(
     parentFolderId: string,

@@ -416,9 +416,7 @@ describe("GoogleDriveFolderClient", () => {
 
     const activeController = new AbortController();
     await expect(
-      client.resolveFolderById("default-folder", {
-        signal: activeController.signal,
-      }),
+      client.resolveFolderById("default-folder", activeController.signal),
     ).resolves.toEqual({
       id: "default-folder",
       name: "Default",
@@ -428,9 +426,7 @@ describe("GoogleDriveFolderClient", () => {
     const abortedController = new AbortController();
     abortedController.abort();
     await expect(
-      client.resolveFolderById("default-folder", {
-        signal: abortedController.signal,
-      }),
+      client.resolveFolderById("default-folder", abortedController.signal),
     ).rejects.toMatchObject({ name: "AbortError" });
     fetchSpy.mockRestore();
   });

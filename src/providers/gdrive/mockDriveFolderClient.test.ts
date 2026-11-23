@@ -71,7 +71,7 @@ describe("MockDriveFolderClient", () => {
     const controller = new AbortController();
     controller.abort();
     await expect(
-      client.resolveFolderById("f1", { signal: controller.signal }),
+      client.resolveFolderById("f1", controller.signal),
     ).rejects.toMatchObject({ name: "AbortError" });
     await expect(
       client.listChildFolders("root", { signal: controller.signal }),

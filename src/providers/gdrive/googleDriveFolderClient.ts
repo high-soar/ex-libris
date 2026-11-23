@@ -13,7 +13,6 @@ import type {
   DriveFolderMetadata,
   DriveFolderPage,
   ListChildFoldersOptions,
-  ResolveDriveFolderOptions,
 } from "./types";
 
 const DIAGNOSTIC_SCOPE = "gdrive-folder";
@@ -93,7 +92,16 @@ function buildListChildFoldersUrl(
   return `${GOOGLE_DRIVE_FILES_API_BASE}?${params.toString()}`;
 }
 
-async function extractDriveErrorMetadata(response: Response): Promise<{
+function cancelResponseBody(response: Response): void {
+  if (response.body !== null) {
+    void response.body.cancel().catch(() => undefined);
+  }
+}
+
+async function extractDriveErrorMetadata(
+  response: Response,
+  signal?: AbortSignal,
+): Promise<{
   readonly reasons: string[];
   readonly apiMessage: string;
 }> {
@@ -111,7 +119,11 @@ async function extractDriveErrorMetadata(response: Response): Promise<{
           .filter((reason): reason is string => typeof reason === "string");
       }
     }
-  } catch {
+  } catch (error) {
+    throwIfAborted(signal);
+    if (isAbortError(error)) {
+      throw error;
+    }
     // 非 JSON 応答時はステータスコードのみで分類する
   }
   return { reasons, apiMessage };
@@ -284,8 +296,12 @@ export class GoogleDriveFolderClient implements DriveFolderClient {
 
   private async createHttpDriveApiError(
     response: Response,
+    signal?: AbortSignal,
   ): Promise<DriveApiError> {
-    const { reasons, apiMessage } = await extractDriveErrorMetadata(response);
+    const { reasons, apiMessage } = await extractDriveErrorMetadata(
+      response,
+      signal,
+    );
     const code = mapHttpStatusToErrorCode(response.status, reasons);
     const detail = apiMessage
       ? `status=${response.status} ${apiMessage}`
@@ -308,6 +324,7 @@ export class GoogleDriveFolderClient implements DriveFolderClient {
     let token = await this.acquireAccessToken();
     let response = await this.executeFetch(url, token, signal);
     if (response.status === 401) {
+      cancelResponseBody(response);
       token = await this.acquireAccessToken({
         forceRefresh: true,
         failedToken: token,
@@ -315,11 +332,15 @@ export class GoogleDriveFolderClient implements DriveFolderClient {
       response = await this.executeFetch(url, token, signal);
     }
     if (!response.ok) {
-      throw await this.createHttpDriveApiError(response);
+      throw await this.createHttpDriveApiError(response, signal);
     }
     try {
       return (await response.json()) as unknown;
     } catch (error) {
+      throwIfAborted(signal);
+      if (isAbortError(error)) {
+        throw error;
+      }
       this.logger.error(
         DIAGNOSTIC_SCOPE,
         "Google Drive API JSON応答の解析に失敗しました",
@@ -335,7 +356,7 @@ export class GoogleDriveFolderClient implements DriveFolderClient {
 
   async resolveFolderById(
     folderId: string,
-    options?: ResolveDriveFolderOptions,
+    signal?: AbortSignal,
   ): Promise<DriveFolderMetadata> {
     const normalizedId = folderId.trim();
     if (normalizedId.length === 0 || normalizedId.toLowerCase() === "root") {
@@ -346,7 +367,7 @@ export class GoogleDriveFolderClient implements DriveFolderClient {
     }
 
     const url = `${GOOGLE_DRIVE_FILES_API_BASE}/${encodeURIComponent(normalizedId)}?fields=id,name,mimeType,trashed&supportsAllDrives=true`;
-    const payload = await this.fetchDriveJson(url, options?.signal);
+    const payload = await this.fetchDriveJson(url, signal);
     return parseResolveFolderResponse(payload, this.logger);
   }
 
