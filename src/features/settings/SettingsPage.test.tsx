@@ -1374,6 +1374,79 @@ describe("SettingsPage", () => {
     });
     expect(secondListSignal?.aborted).toBe(true);
     expect(getPickerProps().isOpen).toBe(false);
+    expect(getPickerProps().isLoading).toBe(false);
+    expect(getPickerProps().isLoadingMore).toBe(false);
+
+    // onLoadMore 待機中に別フォルダ移動・パンくず移動・選択保存しても isLoadingMore が固着しないこと (PR #82 P2)
+    const staleLoadMoreDeferred = createDeferred<DriveFolderPage>();
+    const staleLoadMoreForSave = createDeferred<DriveFolderPage>();
+    vi.mocked(folderClient.listChildFolders)
+      .mockResolvedValueOnce({
+        folders: [{ id: "f-comics", name: "Comics" }],
+        nextPageToken: "page-2",
+      })
+      .mockImplementationOnce(() => staleLoadMoreDeferred.promise)
+      .mockResolvedValueOnce({
+        folders: [{ id: "f-sub", name: "Sub" }],
+        nextPageToken: "sub-p2",
+      })
+      .mockImplementationOnce(() => staleLoadMoreForSave.promise)
+      .mockResolvedValueOnce({
+        folders: [{ id: "f-reopen", name: "Reopened" }],
+        nextPageToken: null,
+      });
+
+    await act(async () => {
+      getSyncRootsProps().onOpenFolderPicker();
+      await flushMicrotasks();
+    });
+    expect(getPickerProps().nextPageToken).toBe("page-2");
+
+    act(() => {
+      getPickerProps().onLoadMore();
+    });
+    expect(getPickerProps().isLoadingMore).toBe(true);
+
+    // 1. loadMore 待機中に別階層へ移動すると即座に isLoadingMore が解除され、読込完了後も再操作可能
+    act(() => {
+      getPickerProps().onOpenFolder({ id: "f-comics", name: "Comics" });
+    });
+    expect(getPickerProps().isLoadingMore).toBe(false);
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    expect(getPickerProps().isLoading).toBe(false);
+    expect(getPickerProps().isLoadingMore).toBe(false);
+    expect(getPickerProps().nextPageToken).toBe("sub-p2");
+    await act(async () => {
+      staleLoadMoreDeferred.reject(new DOMException("aborted", "AbortError"));
+      await flushMicrotasks();
+    });
+
+    // 2. loadMore 待機中にフォルダを選択確定して閉じると、isLoadingMore/isLoading が確実に解除される
+    act(() => {
+      getPickerProps().onLoadMore();
+    });
+    expect(getPickerProps().isLoadingMore).toBe(true);
+    await act(async () => {
+      await getPickerProps().onSelectFolder({ id: "f-sub", name: "Sub" });
+    });
+    expect(getPickerProps().isOpen).toBe(false);
+    expect(getPickerProps().isLoading).toBe(false);
+    expect(getPickerProps().isLoadingMore).toBe(false);
+    await act(async () => {
+      staleLoadMoreForSave.reject(new DOMException("aborted", "AbortError"));
+      await flushMicrotasks();
+    });
+
+    await act(async () => {
+      getSyncRootsProps().onOpenFolderPicker();
+      await flushMicrotasks();
+    });
+    expect(getPickerProps().isLoadingMore).toBe(false);
+    act(() => {
+      getPickerProps().onClose();
+    });
 
     // 読込中のアンマウント後の resolve 無視
     const pendingListForUnmount = createDeferred<DriveFolderPage>();
