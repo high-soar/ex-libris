@@ -110,6 +110,16 @@ export class GoogleDriveRangeReader implements RandomAccessReader {
     );
   }
 
+  private failRead(
+    diagnosticMessage: string,
+    errorMessage: string,
+    detail: string,
+    cause?: unknown,
+  ): never {
+    this.emitDiagnostic("error", diagnosticMessage, detail);
+    throw new ZipArchiveError("READ_ERROR", errorMessage, cause);
+  }
+
   private async acquireToken(
     options: GetRangeAccessTokenOptions | undefined,
     rangeHeader: string,
@@ -123,14 +133,10 @@ export class GoogleDriveRangeReader implements RandomAccessReader {
           : await this.getAccessToken();
     } catch (error) {
       rethrowIfAbortedError(error, signal);
-      this.emitDiagnostic(
-        "error",
+      this.failRead(
         "Google Drive Range取得用アクセストークンの取得に失敗しました",
-        `fileId=${this.driveFileId} range=${rangeHeader} ${formatErrorDetail(error)}`,
-      );
-      throw new ZipArchiveError(
-        "READ_ERROR",
         `Google Drive Range取得用アクセストークンの取得に失敗しました: ${this.driveFileId}`,
+        `fileId=${this.driveFileId} range=${rangeHeader} ${formatErrorDetail(error)}`,
         error,
       );
     }
@@ -160,14 +166,10 @@ export class GoogleDriveRangeReader implements RandomAccessReader {
       });
     } catch (error) {
       rethrowIfAbortedError(error, signal);
-      this.emitDiagnostic(
-        "error",
+      this.failRead(
         "Google Drive Range通信に失敗しました",
-        `fileId=${this.driveFileId} range=${rangeHeader} ${formatErrorDetail(error)}`,
-      );
-      throw new ZipArchiveError(
-        "READ_ERROR",
         `Google Drive Range通信に失敗しました: ${this.driveFileId} (${rangeHeader})`,
+        `fileId=${this.driveFileId} range=${rangeHeader} ${formatErrorDetail(error)}`,
         error,
       );
     }
@@ -178,6 +180,76 @@ export class GoogleDriveRangeReader implements RandomAccessReader {
     }
 
     return response;
+  }
+
+  private validateRangeResponse(
+    response: Response,
+    rangeHeader: string,
+    expectedLength: number,
+    isFullFileRequest: boolean,
+  ): void {
+    if (response.status === 200 && !isFullFileRequest) {
+      cancelResponseBody(response);
+      this.failRead(
+        "Google Drive部分Range要求に対して200 OKが返却されたためOOM防御のため遮断しました",
+        `部分範囲要求に対して200 OKが返却されました: ${this.driveFileId} (${rangeHeader})`,
+        `fileId=${this.driveFileId} range=${rangeHeader}`,
+      );
+    }
+
+    if (response.status !== 206 && response.status !== 200) {
+      cancelResponseBody(response);
+      this.failRead(
+        "Google Drive Range取得がエラー応答を返しました",
+        `Google Drive Range取得に失敗しました (status=${response.status}): ${this.driveFileId} (${rangeHeader})`,
+        `fileId=${this.driveFileId} range=${rangeHeader} status=${response.status}`,
+      );
+    }
+
+    const contentLength = parseContentLength(response.headers);
+    if (contentLength !== null && contentLength > expectedLength) {
+      cancelResponseBody(response);
+      this.failRead(
+        "Google Drive Range応答のContent-Lengthが要求長を超過したため遮断しました",
+        `Google Drive Range応答のContent-Lengthが超過しています: contentLength=${contentLength}, expected=${expectedLength}`,
+        `fileId=${this.driveFileId} range=${rangeHeader} contentLength=${contentLength} expected=${expectedLength}`,
+      );
+    }
+  }
+
+  private async readResponseBytes(
+    response: Response,
+    rangeHeader: string,
+    expectedLength: number,
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await response.arrayBuffer();
+    } catch (error) {
+      rethrowIfAbortedError(error, signal);
+      this.failRead(
+        "Google Drive Rangeレスポンスボディの読込に失敗しました",
+        `Google Drive Rangeレスポンスの読込に失敗しました: ${this.driveFileId} (${rangeHeader})`,
+        `fileId=${this.driveFileId} range=${rangeHeader} ${formatErrorDetail(error)}`,
+        error,
+      );
+    }
+
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    const bytes = new Uint8Array(buffer);
+    if (bytes.byteLength !== expectedLength) {
+      this.failRead(
+        "Google Drive Range応答のバイト長が要求長と一致しません",
+        `Google Drive Range応答サイズが一致しません: expected=${expectedLength}, actual=${bytes.byteLength}`,
+        `fileId=${this.driveFileId} range=${rangeHeader} actual=${bytes.byteLength} expected=${expectedLength}`,
+      );
+    }
+
+    return bytes;
   }
 
   async readRange(
@@ -234,80 +306,18 @@ export class GoogleDriveRangeReader implements RandomAccessReader {
       response = await this.executeRangeFetch(url, token, rangeHeader, signal);
     }
 
-    if (response.status === 200 && !isFullFileRequest) {
-      cancelResponseBody(response);
-      this.emitDiagnostic(
-        "error",
-        "Google Drive部分Range要求に対して200 OKが返却されたためOOM防御のため遮断しました",
-        `fileId=${this.driveFileId} range=${rangeHeader}`,
-      );
-      throw new ZipArchiveError(
-        "READ_ERROR",
-        `部分範囲要求に対して200 OKが返却されました: ${this.driveFileId} (${rangeHeader})`,
-      );
-    }
+    this.validateRangeResponse(
+      response,
+      rangeHeader,
+      expectedLength,
+      isFullFileRequest,
+    );
 
-    if (response.status !== 206 && response.status !== 200) {
-      cancelResponseBody(response);
-      this.emitDiagnostic(
-        "error",
-        "Google Drive Range取得がエラー応答を返しました",
-        `fileId=${this.driveFileId} range=${rangeHeader} status=${response.status}`,
-      );
-      throw new ZipArchiveError(
-        "READ_ERROR",
-        `Google Drive Range取得に失敗しました (status=${response.status}): ${this.driveFileId} (${rangeHeader})`,
-      );
-    }
-
-    const contentLength = parseContentLength(response.headers);
-    if (contentLength !== null && contentLength > expectedLength) {
-      cancelResponseBody(response);
-      this.emitDiagnostic(
-        "error",
-        "Google Drive Range応答のContent-Lengthが要求長を超過したため遮断しました",
-        `fileId=${this.driveFileId} range=${rangeHeader} contentLength=${contentLength} expected=${expectedLength}`,
-      );
-      throw new ZipArchiveError(
-        "READ_ERROR",
-        `Google Drive Range応答のContent-Lengthが超過しています: contentLength=${contentLength}, expected=${expectedLength}`,
-      );
-    }
-
-    let buffer: ArrayBuffer;
-    try {
-      buffer = await response.arrayBuffer();
-    } catch (error) {
-      rethrowIfAbortedError(error, signal);
-      this.emitDiagnostic(
-        "error",
-        "Google Drive Rangeレスポンスボディの読込に失敗しました",
-        `fileId=${this.driveFileId} range=${rangeHeader} ${formatErrorDetail(error)}`,
-      );
-      throw new ZipArchiveError(
-        "READ_ERROR",
-        `Google Drive Rangeレスポンスの読込に失敗しました: ${this.driveFileId} (${rangeHeader})`,
-        error,
-      );
-    }
-
-    if (signal?.aborted) {
-      throw new DOMException("Aborted", "AbortError");
-    }
-
-    const bytes = new Uint8Array(buffer);
-    if (bytes.byteLength !== expectedLength) {
-      this.emitDiagnostic(
-        "error",
-        "Google Drive Range応答のバイト長が要求長と一致しません",
-        `fileId=${this.driveFileId} range=${rangeHeader} actual=${bytes.byteLength} expected=${expectedLength}`,
-      );
-      throw new ZipArchiveError(
-        "READ_ERROR",
-        `Google Drive Range応答サイズが一致しません: expected=${expectedLength}, actual=${bytes.byteLength}`,
-      );
-    }
-
-    return bytes;
+    return this.readResponseBytes(
+      response,
+      rangeHeader,
+      expectedLength,
+      signal,
+    );
   }
 }

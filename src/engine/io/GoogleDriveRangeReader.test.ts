@@ -134,6 +134,8 @@ describe("GoogleDriveRangeReader", () => {
     const controller = new AbortController();
     const slice1 = await reader.readRange(1, 3, controller.signal);
     expect(slice1).toEqual(new Uint8Array([20, 30, 40]));
+    expect(slice1.byteOffset).toBe(0);
+    expect(slice1.buffer.byteLength).toBe(3);
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
       "https://www.googleapis.com/drive/v3/files/id%2Fwith%20space?alt=media&supportsAllDrives=true",
