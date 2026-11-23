@@ -8,7 +8,9 @@ import {
   buildTlvBlock,
   createMemoryReader,
   createVirtualOffsetReader,
+  type SpyMemoryReader,
 } from "./__fixtures__/zipBuilder";
+import { prepareDecodeTransfer } from "../workers/coordinatorTransfer";
 import {
   computeEntryFetchSpan,
   extractCompressedSliceFromBuffer,
@@ -1300,4 +1302,169 @@ describe("zipParser", () => {
     expect(extracted).toEqual(payload1);
     expect(memoryReader.reads).toHaveLength(0);
   });
+
+  it("80MB超ページ(L2_CACHE_MAX_BYTES超過)でLFHヘッダのみ先行取得しCase2a/2b境界でbyteOffset===0の独立ArrayBufferをZero-Copy転送可能に返すこと (AC-ENG-05, AC-ENG-10, AC-ENG-14)", async () => {
+    const oversizedSize = ENGINE_BUDGETS.L2_CACHE_MAX_BYTES + 1;
+    const headerBaseLength = 30 + 7 + ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES;
+
+    const createOversizedScenario = (lfhExtraLength: number) => {
+      const localHeaderOffset = 100;
+      const dataStart = 30 + 7 + lfhExtraLength;
+      const physicalEnd = localHeaderOffset + dataStart + oversizedSize;
+      const reader = createOversizedVirtualReader({
+        localHeaderOffset,
+        entryName: "big.jpg",
+        lfhExtraLength,
+        compressedSize: oversizedSize,
+        totalSize: physicalEnd + 128,
+      });
+      const entry: ZipPageEntry = {
+        pageIndex: 0,
+        entryName: "big.jpg",
+        entryNameByteLength: 7,
+        compressionMethod: 0,
+        compressedSize: oversizedSize,
+        uncompressedSize: oversizedSize,
+        localHeaderOffset,
+        physicalEnd,
+        crc32: 0,
+      };
+      return { reader, entry, dataStart };
+    };
+
+    // 1. Case 2a (dataStart < headerFetchLength)
+    const case2a = createOversizedScenario(100);
+    const slice2a = await readCompressedPageSlice(case2a.reader, case2a.entry);
+    expect(case2a.reader.reads).toHaveLength(2);
+    expect(case2a.reader.reads[0]).toEqual({
+      offset: 100,
+      length: headerBaseLength,
+    });
+    expect(case2a.reader.reads[1]).toEqual({
+      offset: 100 + headerBaseLength,
+      length: oversizedSize - (headerBaseLength - case2a.dataStart),
+    });
+    expect(slice2a.byteOffset).toBe(0);
+    expect(slice2a.byteLength).toBe(oversizedSize);
+    expect(slice2a.buffer.byteLength).toBe(oversizedSize);
+    expect(slice2a[0]).toBe(0xaa);
+    expect(slice2a[1024]).toBe(0x55);
+    expect(slice2a[oversizedSize - 1]).toBe(0xbb);
+    const prepared2a = prepareDecodeTransfer(slice2a);
+    expect(prepared2a.data).toBe(slice2a);
+    expect(prepared2a.transferables).toEqual([slice2a.buffer]);
+
+    // 2. Case 2b 境界 (dataStart === headerFetchLength)
+    const case2bExact = createOversizedScenario(
+      ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES,
+    );
+    const slice2bExact = await readCompressedPageSlice(
+      case2bExact.reader,
+      case2bExact.entry,
+    );
+    expect(case2bExact.reader.reads).toHaveLength(2);
+    expect(case2bExact.reader.reads[0]).toEqual({
+      offset: 100,
+      length: headerBaseLength,
+    });
+    expect(case2bExact.reader.reads[1]).toEqual({
+      offset: 100 + case2bExact.dataStart,
+      length: oversizedSize,
+    });
+    expect(slice2bExact.byteOffset).toBe(0);
+    expect(slice2bExact.byteLength).toBe(oversizedSize);
+    expect(slice2bExact.buffer.byteLength).toBe(oversizedSize);
+    expect(slice2bExact[0]).toBe(0xaa);
+    expect(slice2bExact[oversizedSize - 1]).toBe(0xbb);
+    const prepared2bExact = prepareDecodeTransfer(slice2bExact);
+    expect(prepared2bExact.data).toBe(slice2bExact);
+    expect(prepared2bExact.transferables).toEqual([slice2bExact.buffer]);
+
+    // 3. Case 2b 超過 (dataStart > headerFetchLength)
+    const case2bOver = createOversizedScenario(2_000);
+    const slice2bOver = await readCompressedPageSlice(
+      case2bOver.reader,
+      case2bOver.entry,
+    );
+    expect(case2bOver.reader.reads).toHaveLength(2);
+    expect(case2bOver.reader.reads[0]).toEqual({
+      offset: 100,
+      length: headerBaseLength,
+    });
+    expect(case2bOver.reader.reads[1]).toEqual({
+      offset: 100 + case2bOver.dataStart,
+      length: oversizedSize,
+    });
+    expect(slice2bOver.byteOffset).toBe(0);
+    expect(slice2bOver.byteLength).toBe(oversizedSize);
+    expect(slice2bOver.buffer.byteLength).toBe(oversizedSize);
+    expect(slice2bOver[0]).toBe(0xaa);
+    expect(slice2bOver[oversizedSize - 1]).toBe(0xbb);
+    const prepared2bOver = prepareDecodeTransfer(slice2bOver);
+    expect(prepared2bOver.data).toBe(slice2bOver);
+    expect(prepared2bOver.transferables).toEqual([slice2bOver.buffer]);
+
+    // 4. maxSpan がヘッダ長未満にクランプされる異常エントリは 1回目読込を maxSpan に抑えて CORRUPT_ZIP を送出
+    const clamped = createOversizedScenario(0);
+    await expect(
+      readCompressedPageSlice(clamped.reader, {
+        ...clamped.entry,
+        physicalEnd: clamped.entry.localHeaderOffset + 500,
+      }),
+    ).rejects.toMatchObject({ code: "CORRUPT_ZIP" });
+    expect(clamped.reader.reads).toEqual([{ offset: 100, length: 500 }]);
+  });
 });
+
+function createOversizedVirtualReader(params: {
+  readonly localHeaderOffset: number;
+  readonly entryName: string;
+  readonly lfhExtraLength: number;
+  readonly compressedSize: number;
+  readonly totalSize: number;
+}): SpyMemoryReader {
+  const nameBytes = new TextEncoder().encode(params.entryName);
+  const lfh = new Uint8Array(30 + nameBytes.byteLength + params.lfhExtraLength);
+  const lfhView = new DataView(lfh.buffer);
+  lfhView.setUint32(0, 0x04034b50, true);
+  lfhView.setUint16(26, nameBytes.byteLength, true);
+  lfhView.setUint16(28, params.lfhExtraLength, true);
+  lfh.set(nameBytes, 30);
+
+  const payloadStart = params.localHeaderOffset + lfh.byteLength;
+  const reads: Array<{ readonly offset: number; readonly length: number }> = [];
+
+  return {
+    sourceId: "virtual-oversized:test.zip",
+    totalSize: params.totalSize,
+    reads,
+    async readRange(offset, length) {
+      reads.push({ offset, length });
+      const end = Math.min(offset + length, params.totalSize);
+      const out = new Uint8Array(Math.max(0, end - offset));
+
+      const lfhStart = params.localHeaderOffset;
+      const lfhEnd = lfhStart + lfh.byteLength;
+      const overlapStart = Math.max(offset, lfhStart);
+      const overlapEnd = Math.min(end, lfhEnd);
+      if (overlapStart < overlapEnd) {
+        out.set(
+          lfh.subarray(overlapStart - lfhStart, overlapEnd - lfhStart),
+          overlapStart - offset,
+        );
+      }
+
+      const sentinels: Array<[number, number]> = [
+        [payloadStart, 0xaa],
+        [payloadStart + 1024, 0x55],
+        [payloadStart + params.compressedSize - 1, 0xbb],
+      ];
+      for (const [pos, byte] of sentinels) {
+        if (pos >= offset && pos < end) {
+          out[pos - offset] = byte;
+        }
+      }
+      return out;
+    },
+  };
+}
