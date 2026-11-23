@@ -103,7 +103,8 @@ related_tests:
 | `LocalArchiveEmptyState`    | `src/features/bookshelf/LocalArchiveEmptyState.tsx`    | 空本棚カード、目立つ「ローカル ZIP を開く」CTA、D&D ガイド、不正拡張子エラー表示                                            |
 | `RecentLocalHistorySection` | `src/features/bookshelf/RecentLocalHistorySection.tsx` | 直近ローカル閲覧履歴（最大10件、0件時 `null`、進捗バー、再選択導線、個別削除・一括クリア）                                  |
 
-- 親 `BookshelfPage` の単体テストでは子コンポーネント（`BookshelfHeader`, `DriveSetupBanner`, `LocalArchiveEmptyState`, `RecentLocalHistorySection`）をすべて `vi.spyOn(...).mockImplementation(() => null)` で完全分離する。
+- **親子分離 UT**: 親 `BookshelfPage` の単体テストでは子コンポーネント（`BookshelfHeader`, `DriveSetupBanner`, `LocalArchiveEmptyState`, `RecentLocalHistorySection`）をすべて `vi.spyOn(...).mockImplementation(() => null)` で完全分離する。
+- **Storybook / VRT 決定論性保証**: `BookshelfPage.stories.tsx`（および `App.stories.tsx` のホーム表示ストーリー）では、マウント後の非同期 `getSession()` / `countEnabled()` 解決と VRT 撮影タイミングが競合しないよう、`initialDriveSetupState`（例: `{ kind: "unauthenticated" }` 等）および `initialRecentHistory` を同期注入する（または即時解決された `MockGoogleAuthAdapter` 状態を明示設定する）ことで 1280px / 375px VRT を 100% 決定論的に描画する。
 
 ---
 

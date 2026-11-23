@@ -48,7 +48,7 @@ related_tests:
    - スレート系ダークテーマ統一（背景 `bg-slate-950`、セクションカード `bg-slate-900`、境界 `border-slate-800`）。
    - `<header>` には `paddingTop: "calc(1rem + env(safe-area-inset-top, 0px))"`、ページ下部には `paddingBottom: "calc(2rem + env(safe-area-inset-bottom, 0px))"` を設定し、Android Edge-to-Edge 環境でのシステムバー重複を防止する。
 2. **上部ヘッダー領域（`SettingsHeader`）**:
-   - 左側: **「本棚へ戻る」ボタン**（`data-testid="settings-back-button"`, `TR-09`、認証処理中 `isAuthBusy === true` の間は `disabled`）＋ 画面タイトル「ストレージ連携・設定」。
+   - 左側: **「本棚へ戻る」ボタン**（`data-testid="settings-back-button"`, `TR-09`、優先度 1 ブロック条件 `isBackBlocked === true`［OAuth `signIn`/`signOut` 実行中 または フォルダ登録確定保存中］の間は `disabled`）＋ 画面タイトル「ストレージ連携・設定」。
    - 右側: アプリバージョンバッジ（`v${APP_VERSION}`）。
 3. **セクション①：Google アカウント連携（`GoogleAccountSection`）**:
    - **未連携状態**: 接続ステータスバッジ「未連携」、説明文（`drive.readonly` 読み取り専用スコープで ZIP を直接ストリーミングする旨）、および **「Google でログイン」ボタン**（`data-testid="google-signin-button"`）を表示する。
@@ -60,7 +60,7 @@ related_tests:
      - **未連携時**: フォルダ追加操作（URL/ID 入力欄・追加ボタン・ピッカー起動ボタン）を `disabled` とし、「フォルダを追加するには先に Google アカウントと連携してください」の案内を表示する。**既存の登録済みフォルダ一覧自体は消去せず表示・保持** し、削除や有効/無効切替はローカル設定として操作可能とする。
      - **連携済み時**:
        1. **アプリ内フォルダ選択モーダル起動ボタン**（`data-testid="open-folder-picker-button"`：「Drive からフォルダを選択」）。
-       2. **フォルダ URL / ID 直接登録フォーム**: テキスト入力（`data-testid="folder-input"`）＋ **「URL / ID で追加」ボタン**（`data-testid="add-folder-by-input-button"`）。`parseDriveFolderInput` で ID を抽出し、`DriveFolderClient.resolveFolderById` で実在かつフォルダ（非ゴミ箱）であることを検証して `DriveSyncRootsRepository.upsertRoot` へ保存する（検証失敗時は `role="alert"` `data-testid="sync-roots-error"` を表示）。
+       2. **フォルダ URL / ID 直接登録フォーム**: テキスト入力（`data-testid="folder-input"`）＋ **「URL / ID で追加」ボタン**（`data-testid="add-folder-by-input-button"`）。`parseDriveFolderInput` で ID を抽出し（予約エイリアス `"root"` や不正 URL/ID はこの段階で拒否）、`DriveFolderClient.resolveFolderById` で実在かつフォルダ（非ゴミ箱）であることを検証して `DriveSyncRootsRepository.upsertRoot` へ保存する（検証・保存失敗時は `role="alert"` `data-testid="sync-roots-error"` を表示）。
    - **登録済みフォルダ行（`data-testid="sync-root-item"`）**:
      - `folderName`・`folderId`・同期対象トグルボタン（`data-testid="toggle-sync-root-button"`, `aria-pressed={root.enabled === 1}`：有効 `1` ↔ 一時無効 `0`）・登録解除ボタン（`data-testid="remove-sync-root-button"`：`DriveSyncRootsRepository.removeRoot` による `deletedAt` Tombstone 論理削除）を表示する。
      - 非同期 DB 更新失敗時は直前の表示状態へロールバックし `role="alert"` で通知する（[testing.md §3.4](../../guidelines/testing.md#3-単体テストvrt結合テストitの衛生非同期規律継承-kaizen)）。
@@ -70,10 +70,10 @@ related_tests:
    - パンくずリスト（起点: `"マイドライブ"` `id: "root"` → 選択したサブフォルダ階層へドリルダウン・上位階層への戻り移動）、現在表示中フォルダ配下のサブフォルダ一覧（`DriveFolderClient.listChildFolders`）、`nextPageToken` 存在時の **「さらに読み込む」ボタン**（`data-testid="folder-picker-load-more"`）、および以下の確定アクションを備える：
      - 各サブフォルダ行の「開く」（下位階層へ移動）および「選択して追加」（`data-testid="select-subfolder-button"`）
      - 現在開いている階層自体（`"root"` マイドライブ直下選択は全ドライブ混入防止のため不可とし、1階層目以降のフォルダで活性）を登録する **「このフォルダを追加」ボタン**（`data-testid="confirm-current-folder-button"`）
-     - 「キャンセル / 閉じる」ボタン（`data-testid="close-folder-picker-button"`）
+     - 「キャンセル / 閉じる」ボタン（`data-testid="close-folder-picker-button"`、確定保存中 `isSavingSyncRoot === true` の間は `disabled`）
 6. **セクション③：アプリ内診断ログ確認・コピー（`DiagnosticsSection`）**:
-   - `diagnosticLogger.getEntries()` の保持件数バッジと、最新エントリが先頭またはスクロール確認しやすい順序で並んだオンメモリログビューア（`data-testid="diagnostics-log-list"`、0 件時は空状態メッセージ `data-testid="diagnostics-empty"`）を表示する。
-   - **「診断ログをコピー」ボタン**（`data-testid="settings-copy-diagnostics-button"`、`diagnosticLogger.formatReport()` をクリップボードへ出力し結果ステータス `data-testid="settings-copy-diagnostics-status"` を表示）および **「ログをクリア」ボタン**（`data-testid="settings-clear-diagnostics-button"`、`diagnosticLogger.clear()` を実行して表示を即時更新）を備える。
+   - 注入された `logger`（デフォルトはシングルトン `diagnosticLogger`）の保持件数バッジと、最新エントリが確認しやすい順序で並んだオンメモリログビューア（`data-testid="diagnostics-log-list"`、0 件時は空状態メッセージ `data-testid="diagnostics-empty"`）を表示する。
+   - **「診断ログをコピー」ボタン**（`data-testid="settings-copy-diagnostics-button"`、`logger.formatReport()` をクリップボードへ出力し結果ステータス `data-testid="settings-copy-diagnostics-status"` を表示）および **「ログをクリア」ボタン**（`data-testid="settings-clear-diagnostics-button"`、`logger.clear()` を実行して表示を即時更新）を備える。
 
 ---
 
@@ -83,35 +83,36 @@ related_tests:
    - `SCR-01` のヘッダー「設定」ボタンまたは未連携／フォルダ未設定ガイドバナーの CTA から `/settings` へ遷移する際、現在の `window.scrollY` を `bookshelfUiStateStore` に保存する（`TR-03`）。
    - `SCR-04` から戻る際（ヘッダー「本棚へ戻る」、ブラウザ `popstate`、Android ハードウェア戻る優先度 4）は `/` へ遷移し、`SCR-01` マウント時に保存されていたスクロール位置を復元する（`TR-09`）。
 2. **Android ハードウェア戻るボタン ＆ `Escape` キー優先度（[screen-transitions.md §4](../screen-transitions.md#4-android-ハードウェア戻るボタンback-button優先制御契約) 準拠）**:
-   - **優先度 1（非同期クリティカル処理中のブロック）**: OAuth `signIn` / `signOut` 実行中、またはフォルダ登録確定保存中は戻る操作・モーダル閉鎖を無視して状態不整合を防ぐ。
-   - **優先度 2（モーダル閉鎖）**: `DriveFolderPickerModal` が開いている状態では、Android `backButton`・キーボード `Escape`・バックドロップクリックのすべてで `/settings` からの離脱を行わずモーダルのみを閉じる。
-   - **優先度 4（`SCR-01` への復帰）**: モーダルが閉じておりブロック中でない場合は `TR-09` で `/` へ戻る。
+   - **優先度 1（非同期クリティカル処理中のブロック：`isBackBlocked = isAuthBusy || isSavingSyncRoot`）**: OAuth `signIn` / `signOut` 実行中、またはフォルダ登録確定保存中（URL/ID 追加処理中・モーダル確定処理中の双方）は、ヘッダー戻るボタン `disabled`・モーダル閉鎖抑止・ブラウザ `popstate` 抑止・Android `backButton` 無視を一貫適用して状態不整合を防ぐ。
+   - **優先度 2（モーダル閉鎖）**: `DriveFolderPickerModal` が開いており `!isBackBlocked` の状態では、Android `backButton`・キーボード `Escape`・バックドロップクリックのすべてで `/settings` からの離脱を行わずモーダルのみを閉じる。
+   - **優先度 4（`SCR-01` への復帰）**: モーダルが閉じており `!isBackBlocked` の場合は `TR-09` で `/` へ戻る。
 
 ---
 
-## 3. コンポーネント構成と親子分離（1対1 Story / UT 対象）
+## 3. コンポーネント構成・親子分離・Storybook VRT 決定論性契約
 
-| コンポーネント           | ファイルパス                                       | 責務（テスト分離方針）                                                                                                                |
-| :----------------------- | :------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------ |
-| `SettingsPage`           | `src/features/settings/SettingsPage.tsx`           | `GoogleAuthBridge`・`DriveSyncRootsRepository`・`DriveFolderClient`・`diagnosticLogger` 統合、モーダル状態、優先度 1/2/4 戻る制御登録 |
-| `SettingsHeader`         | `src/features/settings/SettingsHeader.tsx`         | セーフエリア対応上部ヘッダー、戻るボタン、タイトル、バージョン表示（Pure Presentational）                                             |
-| `GoogleAccountSection`   | `src/features/settings/GoogleAccountSection.tsx`   | 未連携／処理中／連携済み（メール表示）UI、ログイン・ログアウト CTA、エラーアラート（Pure Presentational）                             |
-| `DriveSyncRootsSection`  | `src/features/settings/DriveSyncRootsSection.tsx`  | ルートフォルダ一覧、有効/無効切替、削除、URL/ID 追加フォーム、ピッカー起動導線（Pure Presentational）                                 |
-| `DriveFolderPickerModal` | `src/features/settings/DriveFolderPickerModal.tsx` | アプリ内 Drive フォルダ階層移動、パンくず、ページネーション、フォルダ選択確定モーダル（Pure Presentational）                          |
-| `DiagnosticsSection`     | `src/features/settings/DiagnosticsSection.tsx`     | リングバッファ診断ログ一覧表示、1タップコピー、ログクリア UI（Pure Presentational）                                                   |
+| コンポーネント           | ファイルパス                                       | 責務（テスト分離方針）                                                                                                       |
+| :----------------------- | :------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------- |
+| `SettingsPage`           | `src/features/settings/SettingsPage.tsx`           | `GoogleAuthBridge`・`DriveSyncRootsRepository`・`DriveFolderClient`・`logger` 統合、モーダル状態、優先度 1/2/4 戻る制御登録  |
+| `SettingsHeader`         | `src/features/settings/SettingsHeader.tsx`         | セーフエリア対応上部ヘッダー、戻るボタン（`isBackBlocked` 連動 `disabled`）、タイトル、バージョン表示（Pure Presentational） |
+| `GoogleAccountSection`   | `src/features/settings/GoogleAccountSection.tsx`   | 未連携／処理中／連携済み（メール表示）UI、ログイン・ログアウト CTA、エラーアラート（Pure Presentational）                    |
+| `DriveSyncRootsSection`  | `src/features/settings/DriveSyncRootsSection.tsx`  | ルートフォルダ一覧、有効/無効切替、削除、URL/ID 追加フォーム、ピッカー起動導線（Pure Presentational）                        |
+| `DriveFolderPickerModal` | `src/features/settings/DriveFolderPickerModal.tsx` | アプリ内 Drive フォルダ階層移動、パンくず、ページネーション、フォルダ選択確定モーダル（Pure Presentational）                 |
+| `DiagnosticsSection`     | `src/features/settings/DiagnosticsSection.tsx`     | リングバッファ診断ログ一覧表示、1タップコピー、ログクリア UI（Pure Presentational）                                          |
 
-- 親 `SettingsPage` の単体テストでは直下の子コンポーネント（`SettingsHeader`, `GoogleAccountSection`, `DriveSyncRootsSection`, `DriveFolderPickerModal`, `DiagnosticsSection`）をすべて `vi.spyOn(...).mockImplementation(() => null)` で完全分離する。
+- **親子分離 UT**: 親 `SettingsPage` の単体テストでは直下の子コンポーネント（`SettingsHeader`, `GoogleAccountSection`, `DriveSyncRootsSection`, `DriveFolderPickerModal`, `DiagnosticsSection`）をすべて `vi.spyOn(...).mockImplementation(() => null)` で完全分離する。
+- **Storybook / VRT 決定論性保証**: シングルトン `diagnosticLogger` の実時刻（`new Date().toISOString()`）や他ストーリーの残留エントリによる VRT フレークを防ぐため、`SettingsPageProps` にはオプショナルな `initialSnapshot?: SettingsPageInitialSnapshot`（固定タイムスタンプ付き `diagnosticEntries`・`authState`・`syncRoots` 等を同期注入し初期非同期フェッチをスキップする `ReaderPage` と同型のスナップショット Prop）および注入可能 `logger?: DiagnosticLogger` を設け、1280px / 375px VRT を 100% 決定論的に描画する。
 
 ---
 
 ## 4. 受け入れ条件（`AC-ST-xx`）
 
-|   AC ID    | 受け入れ条件                                                                                                                                                                                                                                 |
-| :--------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AC-ST-01` | `/settings`（`SCR-04`）で Google アカウントの接続状態（未連携／処理中／連携済みメールアドレス）を確認でき、ログインおよびログアウトを実行できる。                                                                                            |
-| `AC-ST-02` | 連携済み状態で「Drive からフォルダを選択」モーダルを開き、マイドライブからの階層移動（`nextPageToken` 追加読込含む）によって任意のフォルダを `driveSyncRoots` へ登録できる（マイドライブ直下 `"root"` 自体は誤全件同期防止のため選択不可）。 |
-| `AC-ST-03` | 連携済み状態で Google Drive フォルダ URL またはフォルダ ID を直接入力して実在フォルダを登録でき、不正入力・非フォルダ・ゴミ箱内フォルダ時はインライン警告（`role="alert"`）を表示する。                                                      |
-| `AC-ST-04` | 登録済みルートフォルダの一覧表示、`enabled`（有効 `1` ↔ 無効 `0`）切替、および登録解除（`deletedAt` 論理削除）ができ、ログアウトしても登録済みフォルダ設定は消失せず保持される（未連携中は追加導線のみ非活性）。                             |
-| `AC-ST-05` | オンメモリ診断ログの一覧（マスク済み内容）・件数を画面上で確認でき、1タップでのクリップボードコピーおよびログクリアが動作する。                                                                                                              |
-| `AC-ST-06` | OAuth 処理中は戻る操作がブロック（優先度 1）され、フォルダ選択モーダル表示中は `backButton` / `Escape` / バックドロップでモーダルのみが閉じ（優先度 2）、通常時は `SCR-01` のスクロール位置を復元して `/` へ戻る（優先度 4 / `TR-09`）。     |
-| `AC-ST-07` | `SCR-04` の全コンポーネントが 1対1 の `*.stories.tsx`・親子分離 `*.test.tsx`（C0/C1/Functions/Lines 100%）・1280px/375px VRT を PASS する。                                                                                                  |
+|   AC ID    | 受け入れ条件                                                                                                                                                                                                                                                                                                   |
+| :--------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AC-ST-01` | `/settings`（`SCR-04`）で Google アカウントの接続状態（未連携／処理中／連携済みメールアドレス）を確認でき、ログインおよびログアウトを実行できる。                                                                                                                                                              |
+| `AC-ST-02` | 連携済み状態で「Drive からフォルダを選択」モーダルを開き、マイドライブからの階層移動（`nextPageToken` 追加読込含む）によって任意のフォルダを `driveSyncRoots` へ登録できる（マイドライブ直下 `"root"` 自体は誤全件同期防止のため選択不可）。                                                                   |
+| `AC-ST-03` | 連携済み状態で Google Drive フォルダ URL またはフォルダ ID を直接入力して実在フォルダを登録でき、予約語 `"root"`（直接入力・URL 双方）・不正入力・非フォルダ・ゴミ箱内フォルダ時はインライン警告（`role="alert"`）を表示して拒否する。                                                                         |
+| `AC-ST-04` | 登録済みルートフォルダの一覧表示、`enabled`（有効 `1` ↔ 無効 `0`）切替、および登録解除（`deletedAt` 論理削除）ができ、ログアウトしても登録済みフォルダ設定は消失せず保持される（未連携中は追加導線のみ非活性）。                                                                                               |
+| `AC-ST-05` | オンメモリ診断ログの一覧（マスク済み内容）・件数を画面上で確認でき、1タップでのクリップボードコピーおよびログクリアが動作する。                                                                                                                                                                                |
+| `AC-ST-06` | OAuth 処理中およびフォルダ登録確定保存中（`isBackBlocked === true`）は戻る操作・モーダル閉鎖がブロック（優先度 1）され、フォルダ選択モーダル表示中は `backButton` / `Escape` / バックドロップでモーダルのみが閉じ（優先度 2）、通常時は `SCR-01` のスクロール位置を復元して `/` へ戻る（優先度 4 / `TR-09`）。 |
+| `AC-ST-07` | `SCR-04` の全コンポーネントが 1対1 の `*.stories.tsx`・親子分離 `*.test.tsx`（C0/C1/Functions/Lines 100%）・決定的初期状態注入による 1280px/375px VRT を PASS する。                                                                                                                                           |

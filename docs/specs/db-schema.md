@@ -142,7 +142,7 @@ erDiagram
   - **非同期操作の FIFO 直列化**: 連続した有効/無効切替・削除・再登録・`SCR-01` マウント時の有効件数参照が競合しないよう、内部 Promise キューで全メソッド（`listActive`, `countEnabled`, `upsertRoot`, `setEnabled`, `removeRoot`）を FIFO 直列実行する。
   - **レコード検証と正規化**: `folderId` および `folderName` は前後空白トリム後の非空文字列、`enabled` は `0 | 1`、`addedAt` / `updatedAt` は有限数（`Number.isFinite`）、`deletedAt` は `null` または有限数であることを検証する（破損レコードは読み取り対象から除外し自動削除する）。
   - **登録・再登録（`upsertRoot`）**: 未登録の `folderId` は `{ folderId, folderName, enabled: 1, addedAt: now, updatedAt: now, deletedAt: null }` として保存する。既に同一 `folderId` が存在する場合（過去に論理削除され `deletedAt !== null` となっている Tombstone レコードを含む）は、元の `addedAt` を維持したまま `{ folderName, enabled: 1, updatedAt: now, deletedAt: null }` へ更新・復活させる。
-  - **論理削除（`removeRoot`）とログアウト時の保持**: `v1.0` の `appDataFolder` LWW 端末間同期で削除を伝播できるよう、登録解除時は物理削除ではなく `{ enabled: 0, deletedAt: now, updatedAt: now }` の Tombstone 更新を行う（`listActive()` および `countEnabled()` は `deletedAt === null` のアクティブ行のみを対象とし、`addedAt` 昇順・同値時 `folderId` 昇順で決定論的に返す）。また Google アカウントの一時ログアウト（`GoogleAuthBridge.signOut()`）では `driveSyncRoots` を削除せずそのまま保持する。
+  - **論理削除（`removeRoot`）とログアウト時の保持**: `v1.0` の `appDataFolder` LWW 端末間同期で削除を伝播できるよう、登録解除時は物理削除ではなく `{ enabled: 0, deletedAt: now, updatedAt: now }` の Tombstone 更新を行う（`listActive()` は `deletedAt === null` のアクティブ行のみを対象として `addedAt` 昇順・同値時 `folderId` 昇順で決定論的に返し、`countEnabled()` は **`deletedAt === null && enabled === 1`** を満たす有効行の件数 `number` を返す）。また Google アカウントの一時ログアウト（`GoogleAuthBridge.signOut()`）では `driveSyncRoots` を削除せずそのまま保持する。
 
 ### 3.5 `series`（作品シリーズ / `v0.2`〜）
 

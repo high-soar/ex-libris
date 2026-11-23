@@ -291,10 +291,11 @@ export interface CoordinatorWorkerApi {
 export interface CoordinatorHostCallbacks {
   /**
    * Worker 内の GoogleDriveRangeReader が未保持または 401 応答を検知した際、
-   * Comlink.proxy 経由で Main Thread の Single-Flight トークン更新を呼び出す。
+   * Comlink.proxy 経由で Main Thread の Single-Flight（Compare-and-Refresh 付き）トークン更新を呼び出す。
    */
   refreshAccessToken(options?: {
     readonly forceRefresh?: boolean;
+    readonly failedToken?: string;
   }): Promise<string>;
 
   /**
@@ -421,21 +422,25 @@ export interface PageDimensions {
     readonly expiresAt: number;
   }
 
+  export interface GetAccessTokenOptions {
+    readonly forceRefresh?: boolean;
+    readonly failedToken?: string;
+  }
+
   export type AuthSessionListener = (session: GoogleAuthSession | null) => void;
 
   export interface GoogleAuthBridge {
+    getCachedSession(): GoogleAuthSession | null;
     getSession(): Promise<GoogleAuthSession | null>;
     signIn(): Promise<GoogleAuthSession>;
     signOut(): Promise<void>;
-    getValidAccessToken(options?: {
-      readonly forceRefresh?: boolean;
-    }): Promise<string>;
+    getValidAccessToken(options?: GetAccessTokenOptions): Promise<string>;
     subscribeSession(listener: AuthSessionListener): () => void;
   }
   ```
-  - Android ネイティブ環境では `GoogleAuthPlugin.java`（Play Services `Identity.getAuthorizationClient` ＋ `SharedPreferences` 連携フラグによる起動時サイレント復元）、Web / Vitest / Storybook / Playwright IT では `MockGoogleAuthAdapter` へ自動フォールバックし、`NFR-05` のゼロコンフィグ動作を保証する。
-  - アクセストークン有効期限の残り **5 分未満**（取得後 55 分経過時点）、または Google Drive API から **`401 Unauthorized`** が返却された際、複数の並列 Range リクエストやフォルダ参照が一斉にリフレッシュを走らせないよう、**Single-Flight Promise（進行中の更新 Promise を共有）** と世代カウンタ `authEpoch`（`signOut` / 新規 `signIn` 時の古い更新結果破棄）で 1 回だけネイティブ側 `clearToken` ＋ 再取得を実行する。
-  - 通常時の Worker 内 `GoogleDriveRangeReader` は `CoordinatorCore` 保持の `accessToken` で IPC ゼロで通信し、未保持または `401` 発生時のみ `Comlink.proxy` 経由の `CoordinatorHostCallbacks.refreshAccessToken({ forceRefresh: true })` を呼び出して新トークンを取得・`updateAccessToken()` 配信した上で 1 回だけ透過リトライする（通信異常ログも `reportDiagnostic` 経由で Main Thread `diagnosticLogger` へ `[REDACTED]` マスク付きで転送する）。
+  - Android ネイティブ環境では `GoogleAuthPlugin.java`（Play Services `Identity.getAuthorizationClient` ＋ `SharedPreferences` 連携フラグによる起動時サイレント復元・オフライン時の設定保持保護）、Web / Vitest / Storybook / Playwright IT では `MockGoogleAuthAdapter` へ自動フォールバックし、`NFR-05` のゼロコンフィグ動作を保証する。
+  - アクセストークン有効期限の残り **5 分未満**（取得後 55 分経過時点）、または Google Drive API から **`401 Unauthorized`** が返却された際、複数の並列 Range リクエストやフォルダ参照が一斉または時差到着で重複リフレッシュ・新トークン破棄を起こさないよう、**`failedToken` 比較ガード（Compare-and-Refresh：既に別トークンへ更新済みなら `clearToken` をスキップして現トークンを即返却）＋ Single-Flight Promise（進行中の更新 Promise を共有）＋ 世代カウンタ `authEpoch`（`signOut` / 新規 `signIn` 時の古い更新結果破棄）** で 1 回だけネイティブ側 `clearToken` ＋ 再取得を実行する。
+  - 通常時の Worker 内 `GoogleDriveRangeReader` は `CoordinatorCore` 保持の `accessToken` で IPC ゼロで通信し、未保持または `401` 発生時のみ `Comlink.proxy` 経由の `CoordinatorHostCallbacks.refreshAccessToken({ forceRefresh: true, failedToken })` を呼び出して新トークンを取得・`updateAccessToken()` 配信した上で 1 回だけ透過リトライする（通信異常ログも `reportDiagnostic` 経由で Main Thread `diagnosticLogger` へ `[REDACTED]` マスク付きで転送する）。
 
 ---
 
