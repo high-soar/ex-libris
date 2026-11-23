@@ -16,6 +16,7 @@ related_specs:
   - docs/specs/features/reader.md
   - docs/guidelines/testing.md
 related_tests:
+  - src/app/ServiceProvider.test.tsx
   - src/storage/db.test.ts
   - src/storage/repositories/zipIndexCacheRepository.test.ts
   - src/storage/repositories/readingProgressRepository.test.ts
@@ -99,6 +100,7 @@ erDiagram
 
 - **LRU 容量上限・整理ポリシー**: 最大保持件数は **500 件**（`ZIP_INDEX_CACHE_MAX_ENTRIES = 500`）。キャッシュヒット時（有効レコード検証後）に `cachedAt = Date.now()` を更新し、`put` 保存時に 500 件を超過した場合は `cachedAt` 昇順で最古の超過分を削除する。
 - **破損／不整合キャッシュの自動修復**: 取得時に空配列・`pageCount !== entries.length`・必須フィールド欠落・非有限数値・`localHeaderOffset >= physicalEnd` 等の不整合を検出した場合は、該当レコードを即時削除して `null` を返し、`parseZipDirectory` へ透過フォールバックする。
+- **ローカルキー維持とページ復号時 1 回限り自己修復フォールバック（`R1-06`）**: 端末ローカル一時 ZIP のキャッシュ識別キーは `local:${rawFileName}:${fileSize}` を維持し、同一セッション内で `fromIndexCache: true` オープン後のページ読込・デコード（`ReaderPage.fetchAndStorePages`）において `CORRUPT_ZIP` または `DECODE_FAILED` を検知した場合は、`ReaderPage` 側で同一セッション 1 回限り `zipIndexCacheRepo.delete(cacheKey)` → `cachedEntries = null` での `parseZipDirectory` 再解析と新 `entries` 保存（自己修復フォールバック）を実行する。
 
 ### 3.3 `readingProgress`（読書進捗・レジューム位置・既読状態 / `v0.1`〜）
 
@@ -199,3 +201,4 @@ erDiagram
    - `v0.1` で `version(2)`（`zipIndexCache`, `readingProgress`）を先行定義し、`#19` で `ZipIndexCacheRepository` による `zipIndexCache` 読み書き・LRU 整理を有効化し、`#22` で `readingProgress` の Repository / UI 利用を有効化する。`v0.2` で `version(3)`（`driveSyncRoots`, `series`, `volumes`）、`v0.3` で `version(4)`（`collections`, `seriesCollections`）、`v0.4` で `version(5)`（`bookmarks`）を加算的に定義する。
 2. **`resetTestDb()` の不変契約**:
    - `resetTestDb(targetDb = db)` は、その時点で `ExLibrisDatabase` に定義されている **`targetDb.tables` 全件に対して `table.clear()` をトランザクションまたは並列で実行** し、テスト間の状態汚染を完全にゼロにする。
+   - `ServiceProvider` による `window.__exLibrisServices.resetTestDb` への公開は `!Capacitor.isNativePlatform() && (import.meta.env.DEV || import.meta.env.MODE === "test" || navigator.webdriver === true)`（`shouldExposeResetTestDb`）を満たす開発・テスト・E2E（WebDriver）環境のみに限定し、Android ネイティブ実機および通常の本番ブラウザ環境ではプロパティを省略（`undefined`）して誤削除経路を公開しない。

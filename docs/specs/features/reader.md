@@ -3,7 +3,7 @@ type: spec-feature
 title: "WebGL2 ストリーミングリーダー画面仕様書（SCR-03: Reader）"
 description: "SCR-03（/read/local）のインテリジェント見開き、1ページずらし、右開き/左開き、シークバー、1パス画質補正シート（優先度2戻る制御・syncMetaデフォルト保存）、readingProgress自動レジューム、Fast-Path＋L1 5頁窓連携、およびTR-08/TR-10仕様の正本"
 status: "Approved (#22)"
-updated: "2026-11-22"
+updated: "2026-11-23"
 tags:
   [
     feature,
@@ -67,18 +67,24 @@ related_tests:
    - **優先度 2 戻る制御**: 致命的エラーが発生しておらず画質補正ボトムシート（`ReaderShaderSheet`）が開いている状態（`activeFatalError === null && isShaderSheetOpen`）で Android ハードウェア戻るボタン（`AppBridge` `backButton`）、キーボード `Escape` キー、またはシート外バックドロップタップが発生した場合は、**`TR-08` を発火せず `isShaderSheetOpen = false` のみを実行してフルスクリーン閲覧状態へ戻る**。
    - **優先度 3 リーダー終了（`TR-08`）**: 上部 HUD の「戻る」ボタン、エラー画面の「ホームへ戻る」ボタン、ボトムシート非表示時（または致命的エラー表示中）の `Escape` キー／Android ハードウェア戻るボタン、またはブラウザ戻る（`popstate`）によるルート離脱で発動し、以下の順序でリソースを確定解放して `/` へ戻る：
      1. 有効閲覧中であれば現在のページ進捗と `spreadPageOffset` を `ReadingProgressRepository.put(...)` へ即時フラッシュ発行（Repository 内の FIFO 直列化により、遷移先 `SCR-01` の `listRecentLocal(10)` より先に確実にコミットされる）
-     2. 進行中 `requestEpoch` を無効化（`cancelEpochBelow`）＋ `CoordinatorWorker.closeArchive()` 呼び出し（Worker 内 `L2ByteCache` 全破棄含む）
-     3. `L1PageCache.clear()` により保持中の全 `ImageBitmap.close()` ＋ `WebGLRendererCore` 全テクスチャ（複数タイル含む）`gl.deleteTexture()` 実行
-     4. `WebGLRendererCore.dispose()` 実行
-     5. オンメモリ `File` セッションを `null` へクリア
-     6. `router.back()`（`pushState` 履歴戻り、直接遷移等では `router.replace("/")`、`popstate` 時は現在履歴を維持）
-3. **`zipIndexCache` 0 RTT オープン・`readingProgress` 自動レジューム・共通画質補正デフォルト復元**:
+     2. 進行中 `requestEpoch` を無効化（`l1Cache.setMinActiveEpoch` / `coordinator.api.cancelEpochBelow`）＋ `coordinator.api.closeArchive()` 呼び出し（Worker 内 `L2ByteCache` 全破棄含む）
+     3. `L1PageCache.clear()` により保持中の全 `ImageBitmap.close()` ＋ `rendererHandleRef.current?.clearAllTextures()` による `WebGLRendererCore` 全テクスチャ（複数タイル含む）`gl.deleteTexture()` 実行
+     4. `coordinator.dispose()` 実行（Comlink プロキシ解放 ＆ Coordinator Worker 終了）
+     5. オンメモリ `File` セッションを `null` へクリア（`clearSession()`）
+     6. `router.back()`（`pushState` 履歴戻り、直接遷移等では `router.replace("/")`、`popstate` 時は現在履歴を維持）を実行し、`<ReaderCanvas>` アンマウント時のクリーンアップで `WebGLRendererCore.dispose()` を実行
+3. **`zipIndexCache` 0 RTT オープン・自己修復フォールバック・`readingProgress` 自動レジューム・共通画質補正デフォルト復元**:
    - アーカイブオープン時（`initialSnapshot === undefined` 時）：
      - オープン試行開始時に `currentPageIndex = 0`, `spreadPageOffset = 0`, `totalPages = 0` へ初期化する。
-     - `ServiceContext.readerSettingsRepo.getShaderDefaults()` を非同期取得し、取得完了までにユーザーが手動でスライダー操作を行っていなければ `shaderParams` へ初期適用する（失敗時は警告ログ記録の上でニュートラル初期値を維持）。
+     - `ServiceContext.readerSettingsRepo.getShaderDefaults()` を非同期取得し、**同一アーカイブセッション生存中（`runtimeRef.current === runtime`、ページ遷移や向き変化に伴う `requestEpoch` 更新では破棄しない）** かつ取得完了までにユーザーが手動でスライダー操作を行っていなければ `shaderParams` へ初期適用する（失敗時は同一セッション生存中のみ警告ログ記録の上でニュートラル初期値を維持）。
      - `ServiceContext.zipIndexCacheRepo.get(source.indexCacheKey)` および `ServiceContext.readingProgressRepo.get(source.progressTargetKey)` を安全に参照する（IndexedDB エラー時や破損レコード時は警告ログ記録の上で `null` へフォールバック）。
      - `openArchive` 成功後、保存済み進捗レコードが存在する場合は **`readStatus` が `"reading"` か `"completed"` かを問わず、`spreadPageOffset = result.pageCount > 1 ? saved.spreadPageOffset : 0`（1 ページ本では `0` へ正規化）および `currentPageIndex = Math.min(result.pageCount - 1, Math.max(0, saved.currentPageIndex))` を復元** して初回 `loadPageWindow` を開始する（未保存時は `pageIndex = 0`, `spreadPageOffset = 0`）。
    - `!result.fromIndexCache` で通常オープンに成功した場合は `zipIndexCacheRepo.put(source.indexCacheKey, result.entries)` を非ブロッキングで保存する。
+   - **`fromIndexCache: true` セッションの 1 回限り自己修復フォールバック（`R1-06`）**:
+     - ローカル識別キー `local:${rawFileName}:${fileSize}` を維持したまま `fromIndexCache: true` で開いた同一セッション内で、ページ読込（`fetchAndStorePages`）時に `CORRUPT_ZIP` または `DECODE_FAILED`（エラーフレームまたは同エラーコード例外）を検知し、かつ当該セッションで未修復（`!hasAttemptedCacheRepair`）である場合は、同一セッション 1 回限りの自己修復フォールバックを実行する：
+       1. 無限ループ防止のため即座に修復試行済みフラグ・`fromIndexCache = false` を確定し、同一バッチ内正常フレームの `ImageBitmap.close()`（`closeReadyFrames`）＋新 `repairEpoch` 発行（`cancelEpochBelow`・`L1PageCache.clear()`・全テクスチャ破棄・既知寸法／表示フレーム／`spreadHistory` リセット・`isOpening = true`）を同期的に確定させ、外側の旧エポック `loadPageWindow` による進捗汚染・再描画を遮断する。
+       2. `diagnosticLogger.warn("reader", ...)` を記録した上で `zipIndexCacheRepo.delete(source.indexCacheKey)` を安全に実行する（削除失敗時は warn のみ記録して続行）。
+       3. 同一セッション生存中（`runtimeRef === runtime && epochRef === repairEpoch`）を再確認し、`coordinator.api.openArchive(source, null, repairEpoch)`（`cachedEntries = null` による `parseZipDirectory` 再解析）を実行する。
+       4. 再オープン成功時（`pageCount <= 0` は `EMPTY_ARCHIVE`）は新 `entries` を `zipIndexCacheRepo.put` で非ブロッキング保存し、`currentPageIndex` と `spreadPageOffset`（`pageCount > 1` 判定含む）を安全クランプした上で `isOpening = false` → `loadPageWindow` でページを再取得・描画する。再オープン自体が失敗した場合（`AbortError` やセッション終了後を除く）は `reportArchiveError` でアーカイブエラー画面を表示し、修復後の `fromIndexCache: false` 実行で再びページエラーとなった場合は 2 回目の自己修復へ入らず通常のページエラー表示を行う。
 4. **`readingProgress` 永続化トリガーと寸法確定ベースの `readStatus` 判定**:
    - `initialSnapshot === undefined && session !== null && !isOpening && totalPages > 0 && archiveError === null && webglFatalError === null` の条件下でのみ進捗を保存する（破損・空アーカイブ等の異常時は一切書き込まない）。
    - **寸法未確定時の早期 `completed` 誤判定防止**: `computeViewportSlotLayout` は未デコードの隣接ページを暫定的に縦長と仮定して 2 スロット `[N, N+1]` を返すため、`persistCurrentProgress` では見開き第 2 スロット（`N + 1`）は **`N` と `N + 1` の双方が `knownDimensions` 上で非横長（`width <= height`）と確定している場合のみ** 表示済みに含める（`moveToPage` 直後やデコード完了前の離脱で寸法未確定の間は `currentPageIndex` 単独基準とする）。この確定表示最大ページ `confirmedMaxDisplayedPageIndex >= totalPages - 1` であれば `readStatus = "completed"`、それより手前であれば `readStatus = "reading"` とし、`local:${rawFileName}:${fileSize}`（`volumeId: null`）で保存する（失敗時は `diagnosticLogger.warn("reader", ...)` のみ記録し閲覧を継続）。
@@ -186,11 +192,11 @@ related_tests:
 
 ### 4.2 個別ページデコード・読込エラー（閲覧継続可能・見開き片側エラー対応）
 
-特定ページ `k` が `DecodedPageFrame`（`status: "error"`, `errorCode: "DECODE_FAILED" | "CORRUPT_ZIP" | "READ_ERROR"`）で失敗した場合：
+特定ページ `k` が `DecodedPageFrame`（`status: "error"`, `errorCode: ZipErrorCode` 全種許容）で失敗した場合（ただし `fromIndexCache: true` セッションにおける初回 `CORRUPT_ZIP` / `DECODE_FAILED` 検知時は §1.3 の自己修復フォールバックを優先し、修復不能時・再発時・非キャッシュセッション時に本節の表示を行う）：
 
-- `diagnosticLogger.error("reader", ...)` へ記録し、`L1PageCache` へ `error` 状態を格納する。
-- `ReaderErrorView`（`mode="page"`）は全 `slotPosition`（`"center" | "left" | "right"`、デフォルト `"center"`）において `data-slot-position={slotPosition}` を出力する。
-- **単ページ時、または見開き 2 ページとも失敗時**: 画面中央（`slotPosition="center"`, `pageNumber` 省略）にページエラーカード（`data-testid="reader-page-error"`, `data-slot-position="center"`）を 1 枚表示する。見開き両側失敗時は **基準ページ（`currentPageIndex` 側、該当なし時は先頭スロット）の `errorCode` / `message` を代表** として採用する。
+- `diagnosticLogger.error("reader", ...)` へ `errorCode` とともに Worker 由来の生エラー詳細 `frame.message` を記録し、`L1PageCache` へ `error` 状態を格納する。
+- `ReaderErrorView`（`mode="page"`）へ渡す表示文言 `message` は `readerErrors.ts` の `getReaderErrorMessage(frame.errorCode)` で解決し（例: `DECODE_FAILED` は「`ページの画像デコードに失敗しました`」）、Worker 生 `frame.message` は画面には露出せず診断ログ詳細にのみ記録する。`ReaderErrorView` は全 `slotPosition`（`"center" | "left" | "right"`、デフォルト `"center"`）において `data-slot-position={slotPosition}` を出力する。
+- **単ページ時、または見開き 2 ページとも失敗時**: 画面中央（`slotPosition="center"`, `pageNumber` 省略）にページエラーカード（`data-testid="reader-page-error"`, `data-slot-position="center"`）を 1 枚表示する。見開き両側失敗時は **基準ページ（`currentPageIndex` 側、該当なし時は先頭エラー枠）の `errorCode` を代表** として採用し、対応する `getReaderErrorMessage(errorCode)` を表示する。
 - **見開きで片側のみ失敗し相方が `status: "ready"` 時**: 正常ページは WebGL2 で対応スロット（`left` / `right`）にそのまま描画し、失敗した側の半面（`slotPosition: "left" | "right"`, `w-1/2`, `data-slot-position="left" | "right"`）のみに該当 1 始まり `pageNumber` 付きのページエラーカードを重ねて表示する。いずれの場合も **前後ページへの移動・スワイプ・HUD・戻る操作はそのまま継続可能** とする。
 
 ### 4.3 ローディング表示
@@ -201,14 +207,16 @@ related_tests:
 
 ## 5. コンポーネント構成と親子分離（1対1 Story / UT 対象）
 
-| モジュール / コンポーネント | ファイルパス                                | 責務（テスト分離方針）                                                                                                                                                        |
-| :-------------------------- | :------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spreadLayout`              | `src/features/reader/spreadLayout.ts`       | `effectiveSpreadMode` 判定、見開きスロット計算、動的ペアリング/前頁アンカー/`1ページずらし`、L1 5頁窓・先読み対象算出、`rtl`/`ltr` 入力判定純関数群                           |
-| `ReaderPage`                | `src/features/reader/ReaderPage.tsx`        | `TR-10` ガード、向き追跡、0RTT 目次・`readingProgress` レジューム/保存、`readerSettings` 読込/保存、優先度2戻る制御、シーク＆Fast-Path / Epoch / `L1PageCache` 制御、終了解放 |
-| `ReaderCanvas`              | `src/webgl/ReaderCanvas.tsx`                | 生 WebGL2 2スロット・1パス画質補正対応キャンバス、`ResizeObserver`、非同期 `MAX_TEXTURE_SIZE` 再描画、コンテキストロスト復帰（`webgl2-renderer.md`）                          |
-| `ReaderHudOverlay`          | `src/features/reader/ReaderHudOverlay.tsx`  | 上部バー（戻る・ファイル名・画質補正）＆下部 3 段バー（`rtl`/`ltr` 連動シークバー・ドラッグプレビュー・次前ナビ・表示モード・1ページずらし・右/左開き）                       |
-| `ReaderShaderSheet`         | `src/features/reader/ReaderShaderSheet.tsx` | クイック画質補正ボトムシート（4スライダー・リアルタイム反映・ワンタップリセット・デフォルト保存・透明クリックキャッチバックドロップ）                                         |
-| `ReaderErrorView`           | `src/features/reader/ReaderErrorView.tsx`   | アーカイブ全体エラーパネルおよびスロット位置対応（`center` / `left` / `right`）個別ページデコードエラー表示                                                                   |
+| モジュール / コンポーネント | ファイルパス                                     | 責務（テスト分離方針）                                                                                                                                                              |
+| :-------------------------- | :----------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spreadLayout`              | `src/features/reader/spreadLayout.ts`            | `effectiveSpreadMode` 判定、見開きスロット計算、動的ペアリング/前頁アンカー/`1ページずらし`、L1 5頁窓・先読み対象算出、`rtl`/`ltr` 入力判定純関数群                                 |
+| `readerErrors`              | `src/features/reader/readerErrors.ts`            | `ReaderFatalErrorCode`（`ZipErrorCode` / `WebGLFatalErrorCode`）から日本語ユーザーメッセージへのマッピング（`getReaderErrorMessage`）および構造化エラー抽出（`extractReaderError`） |
+| `localReaderSessionStore`   | `src/features/reader/localReaderSessionStore.ts` | 選択されたローカル `File` と遷移元パスを保持する Zustand セッションストア（`openLocalFile` / `clearSession`）                                                                       |
+| `ReaderPage`                | `src/features/reader/ReaderPage.tsx`             | `TR-10` ガード、向き追跡、0RTT 目次・`readingProgress` レジューム/保存、`readerSettings` 読込/保存、優先度2戻る制御、シーク＆Fast-Path / Epoch / `L1PageCache` 制御、終了解放       |
+| `ReaderCanvas`              | `src/webgl/ReaderCanvas.tsx`                     | 生 WebGL2 2スロット・1パス画質補正対応キャンバス、`ResizeObserver`、非同期 `MAX_TEXTURE_SIZE` 再描画、コンテキストロスト復帰（`webgl2-renderer.md`）                                |
+| `ReaderHudOverlay`          | `src/features/reader/ReaderHudOverlay.tsx`       | 上部バー（戻る・ファイル名・画質補正）＆下部 3 段バー（`rtl`/`ltr` 連動シークバー・ドラッグプレビュー・次前ナビ・表示モード・1ページずらし・右/左開き）                             |
+| `ReaderShaderSheet`         | `src/features/reader/ReaderShaderSheet.tsx`      | クイック画質補正ボトムシート（4スライダー・リアルタイム反映・ワンタップリセット・デフォルト保存・透明クリックキャッチバックドロップ）                                               |
+| `ReaderErrorView`           | `src/features/reader/ReaderErrorView.tsx`        | アーカイブ全体エラーパネルおよびスロット位置対応（`center` / `left` / `right`）個別ページデコードエラー表示                                                                         |
 
 - `ReaderPage` の単体テストでは `ReaderCanvas`, `ReaderHudOverlay`, `ReaderShaderSheet`, `ReaderErrorView` を `vi.spyOn(...).mockImplementation(() => null)` で完全分離する。
 
