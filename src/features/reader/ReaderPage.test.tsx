@@ -3064,6 +3064,235 @@ describe("ReaderPage", () => {
     expect(diagnosticLogger.getEntries()).toEqual([]);
   });
 
+  it("getShaderDefaults()保留中にopenArchive完了およびページ遷移(epochRef更新)が発生しても未手動操作時は解決後に適用され、TR-08終了後や別セッション切替後の遅延解決は適用されないこと (R1-01)", async () => {
+    setWindowSize(375, 667);
+
+    // 1. getShaderDefaults() 保留中に openArchive 完了 -> ページ遷移(epoch=1 -> 2)後も未手動操作なら適用される
+    const defaultsDeferred1 = createDeferred<ShaderCorrectionParams>();
+    const settingsRepo1 = createMockReaderSettingsRepo({
+      getShaderDefaults: vi.fn(() => defaultsDeferred1.promise),
+    });
+    const session1 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 4,
+        entries: [],
+        fromIndexCache: false,
+      })),
+    });
+
+    const { unmount: unmount1 } = renderWithSession(
+      {},
+      () => session1.handle,
+      new File(["r1-01-a"], "r1-01-a.cbz"),
+      undefined,
+      undefined,
+      settingsRepo1,
+    );
+
+    await waitFor(() => {
+      expect(getLatestCanvasProps().slots).toEqual([
+        {
+          slot: { pageIndex: 0, position: "center" },
+          frame: expect.objectContaining({ status: "ready", pageIndex: 0 }),
+        },
+      ]);
+    });
+    expect(getLatestCanvasProps().shaderParams).toEqual(
+      DEFAULT_SHADER_CORRECTION_PARAMS,
+    );
+
+    // ページ遷移で epochRef を 1 -> 2 へ進める
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(1);
+    expect(session1.api.cancelEpochBelow).toHaveBeenCalledWith(2);
+
+    const savedDefaults1: ShaderCorrectionParams = {
+      sharpness: 0.55,
+      whitePoint: 0.91,
+      blackPoint: 0.07,
+      gamma: 0.85,
+    };
+    await act(async () => {
+      defaultsDeferred1.resolve(savedDefaults1);
+      await flushMicrotasks();
+    });
+
+    expect(getLatestCanvasProps().shaderParams).toEqual(savedDefaults1);
+    expect(getLatestHudProps().shaderModified).toBe(true);
+    unmount1();
+
+    // 2. TR-08 (onClose) でセッション終了後の遅延 resolve / reject は適用も警告ログ記録も行わない
+    window.history.replaceState(null, "", "/read/local");
+    diagnosticLogger.clear();
+    const defaultsDeferred2 = createDeferred<ShaderCorrectionParams>();
+    const settingsRepo2 = createMockReaderSettingsRepo({
+      getShaderDefaults: vi.fn(() => defaultsDeferred2.promise),
+    });
+    const session2 = createMockCoordinatorSession();
+    const { unmount: unmount2 } = renderWithSession(
+      {},
+      () => session2.handle,
+      new File(["r1-01-b"], "r1-01-b.cbz"),
+      undefined,
+      undefined,
+      settingsRepo2,
+    );
+
+    await waitFor(() => {
+      expect(settingsRepo2.getShaderDefaults).toHaveBeenCalledTimes(1);
+    });
+    const canvasCallCountBeforeClose = canvasSpy.mock.calls.length;
+    act(() => {
+      getLatestHudProps().onClose();
+    });
+    expect(useLocalReaderSessionStore.getState().session).toBeNull();
+
+    await act(async () => {
+      defaultsDeferred2.resolve({
+        sharpness: 0.9,
+        whitePoint: 0.85,
+        blackPoint: 0.15,
+        gamma: 0.7,
+      });
+      await flushMicrotasks();
+    });
+    expect(canvasSpy.mock.calls.length).toBe(canvasCallCountBeforeClose);
+    unmount2();
+
+    window.history.replaceState(null, "", "/read/local");
+    diagnosticLogger.clear();
+    const defaultsRejectDeferred = createDeferred<ShaderCorrectionParams>();
+    const settingsRepoReject = createMockReaderSettingsRepo({
+      getShaderDefaults: vi.fn(() => defaultsRejectDeferred.promise),
+    });
+    const sessionReject = createMockCoordinatorSession();
+    const { unmount: unmountReject } = renderWithSession(
+      {},
+      () => sessionReject.handle,
+      new File(["r1-01-c"], "r1-01-c.cbz"),
+      undefined,
+      undefined,
+      settingsRepoReject,
+    );
+    await waitFor(() => {
+      expect(settingsRepoReject.getShaderDefaults).toHaveBeenCalledTimes(1);
+    });
+    act(() => {
+      getLatestHudProps().onClose();
+    });
+    await act(async () => {
+      defaultsRejectDeferred.reject(new Error("after TR-08 reject"));
+      await flushMicrotasks();
+    });
+    expect(diagnosticLogger.getEntries()).toEqual([]);
+    unmountReject();
+
+    // 3. セッション A 終了→別セッション B へ切替後にセッション A の保留結果が遅延解決しても上書きしない
+    window.history.replaceState(null, "", "/read/local");
+    const staleSessionADeferred = createDeferred<ShaderCorrectionParams>();
+    const sessionBDeferred = createDeferred<ShaderCorrectionParams>();
+    let getCallCount = 0;
+    const switchSettingsRepo = createMockReaderSettingsRepo({
+      getShaderDefaults: vi.fn(() => {
+        getCallCount += 1;
+        return getCallCount === 1
+          ? staleSessionADeferred.promise
+          : sessionBDeferred.promise;
+      }),
+    });
+    const sessionA = createMockCoordinatorSession();
+    const sessionB = createMockCoordinatorSession();
+    let sessionCallCount = 0;
+
+    function SessionSwitchHost() {
+      const { route, navigate } = useRouter();
+      return route.name === "reader-local" ? (
+        <ReaderPage />
+      ) : (
+        <button
+          type="button"
+          data-testid="open-session-b"
+          onClick={() => {
+            useLocalReaderSessionStore
+              .getState()
+              .openLocalFile(new File(["b"], "session-b.cbz"));
+            navigate("/read/local");
+          }}
+        >
+          open-b
+        </button>
+      );
+    }
+
+    useLocalReaderSessionStore
+      .getState()
+      .openLocalFile(new File(["a"], "session-a.cbz"));
+    render(
+      <ServiceProvider
+        createCoordinatorSession={() => {
+          sessionCallCount += 1;
+          return sessionCallCount === 1 ? sessionA.handle : sessionB.handle;
+        }}
+        readingProgressRepo={createMockReadingProgressRepo()}
+        readerSettingsRepo={switchSettingsRepo}
+      >
+        <RouterProvider initialPath="/read/local">
+          <SessionSwitchHost />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+
+    await waitFor(() => {
+      expect(sessionA.api.openArchive).toHaveBeenCalledTimes(1);
+    });
+    act(() => {
+      getLatestHudProps().onClose();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("open-session-b")).toBeVisible();
+    });
+
+    fireEvent.click(screen.getByTestId("open-session-b"));
+    await waitFor(() => {
+      expect(sessionB.api.openArchive).toHaveBeenCalledTimes(1);
+    });
+    expect(getLatestCanvasProps().shaderParams).toEqual(
+      DEFAULT_SHADER_CORRECTION_PARAMS,
+    );
+
+    // セッション A の古い結果が遅れて解決してもセッション B へ適用されない
+    await act(async () => {
+      staleSessionADeferred.resolve({
+        sharpness: 0.95,
+        whitePoint: 0.82,
+        blackPoint: 0.2,
+        gamma: 0.65,
+      });
+      await flushMicrotasks();
+    });
+    expect(getLatestCanvasProps().shaderParams).toEqual(
+      DEFAULT_SHADER_CORRECTION_PARAMS,
+    );
+    expect(getLatestHudProps().shaderModified).toBe(false);
+
+    // セッション B 自身のデフォルト解決は正常に適用される
+    const sessionBDefaults: ShaderCorrectionParams = {
+      sharpness: 0.25,
+      whitePoint: 0.96,
+      blackPoint: 0.02,
+      gamma: 0.95,
+    };
+    await act(async () => {
+      sessionBDeferred.resolve(sessionBDefaults);
+      await flushMicrotasks();
+    });
+    expect(getLatestCanvasProps().shaderParams).toEqual(sessionBDefaults);
+    expect(getLatestHudProps().shaderModified).toBe(true);
+  });
+
   it("優先度2戻る制御・致命的エラー時のシート閉鎖・inputフォーカス/シート表示中のキーボード競合保護が動作すること (AC-RD-13)", async () => {
     setWindowSize(375, 667);
     const mockSession = createMockCoordinatorSession();
