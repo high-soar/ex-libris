@@ -23,6 +23,7 @@ related_tests:
   - src/storage/repositories/zipIndexCacheRepository.test.ts
   - src/storage/repositories/readingProgressRepository.test.ts
   - src/storage/repositories/readerSettingsRepository.test.ts
+  - src/storage/repositories/driveSyncRootsRepository.test.ts
   - src/engine/zip/zipIndexValidation.test.ts
   - src/features/bookshelf/BookshelfPage.test.tsx
   - src/features/reader/ReaderPage.test.tsx

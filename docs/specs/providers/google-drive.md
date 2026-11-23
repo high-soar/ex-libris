@@ -29,6 +29,14 @@ related_tests:
   - scripts/android-build-config.test.ts
   - src/app/ServiceProvider.test.tsx
   - src/diagnostics/diagnosticLogger.test.ts
+  - src/bridges/oauth/googleAuthErrors.test.ts
+  - src/bridges/oauth/capacitorGoogleAuthAdapter.test.ts
+  - src/bridges/oauth/mockGoogleAuthAdapter.test.ts
+  - src/bridges/oauth/googleAuthTokenManager.test.ts
+  - src/providers/gdrive/driveApiErrors.test.ts
+  - src/providers/gdrive/driveFolderInput.test.ts
+  - src/providers/gdrive/googleDriveFolderClient.test.ts
+  - src/providers/gdrive/mockDriveFolderClient.test.ts
 ---
 
 # Google OAuth（Single-Flight）＆ Google Drive フォルダ参照プロバイダ仕様書
