@@ -54,36 +54,27 @@ export class DecodeWorkerPool implements DecodeWorkerApi {
     }
   }
 
-  private handleSlotError(slot: WorkerSlot): void {
-    if (this.disposed || slot.broken) {
-      return;
-    }
-    slot.broken = true;
+  private drainSlotPending(slot: WorkerSlot, error: ZipArchiveError): void {
     slot.activeCount = 0;
     this.cleanupSlotSubscription(slot);
-    const error = new ZipArchiveError(
-      "DECODE_FAILED",
-      "Decode Workerが異常終了しました",
-    );
     for (const rejectPending of [...slot.pendingRejects]) {
       rejectPending(error);
     }
     slot.pendingRejects.clear();
   }
 
-  decodePageSlice(
-    compressedData: Uint8Array,
-    compressionMethod: ZipCompressionMethod,
-  ): Promise<DecodeSliceResult> {
-    if (this.disposed) {
-      return Promise.reject(
-        new ZipArchiveError(
-          "DECODE_FAILED",
-          "DecodeWorkerPoolは破棄されています",
-        ),
-      );
+  private handleSlotError(slot: WorkerSlot): void {
+    if (this.disposed || slot.broken) {
+      return;
     }
+    slot.broken = true;
+    this.drainSlotPending(
+      slot,
+      new ZipArchiveError("DECODE_FAILED", "Decode Workerが異常終了しました"),
+    );
+  }
 
+  private selectHealthySlot(): WorkerSlot | null {
     let chosenIndex = -1;
     let lowestActive = Number.POSITIVE_INFINITY;
     for (let offset = 0; offset < this.slots.length; offset += 1) {
@@ -99,6 +90,28 @@ export class DecodeWorkerPool implements DecodeWorkerApi {
     }
 
     if (chosenIndex < 0) {
+      return null;
+    }
+
+    this.nextIndex = (chosenIndex + 1) % this.slots.length;
+    return this.slots[chosenIndex];
+  }
+
+  decodePageSlice(
+    compressedData: Uint8Array,
+    compressionMethod: ZipCompressionMethod,
+  ): Promise<DecodeSliceResult> {
+    if (this.disposed) {
+      return Promise.reject(
+        new ZipArchiveError(
+          "DECODE_FAILED",
+          "DecodeWorkerPoolは破棄されています",
+        ),
+      );
+    }
+
+    const slot = this.selectHealthySlot();
+    if (slot === null) {
       return Promise.reject(
         new ZipArchiveError(
           "DECODE_FAILED",
@@ -107,8 +120,6 @@ export class DecodeWorkerPool implements DecodeWorkerApi {
       );
     }
 
-    this.nextIndex = (chosenIndex + 1) % this.slots.length;
-    const slot = this.slots[chosenIndex];
     slot.activeCount += 1;
 
     return new Promise<DecodeSliceResult>((resolve, reject) => {
@@ -118,6 +129,15 @@ export class DecodeWorkerPool implements DecodeWorkerApi {
         slot.pendingRejects.delete(rejectPending);
         reject(error);
       };
+      const settleFromWorker = (done: () => void) => {
+        if (!settled) {
+          settled = true;
+          slot.pendingRejects.delete(rejectPending);
+          slot.activeCount -= 1;
+          done();
+        }
+      };
+
       slot.pendingRejects.add(rejectPending);
 
       let rpcPromise: Promise<DecodeSliceResult>;
@@ -127,30 +147,13 @@ export class DecodeWorkerPool implements DecodeWorkerApi {
           compressionMethod,
         );
       } catch (syncError) {
-        settled = true;
-        slot.pendingRejects.delete(rejectPending);
-        slot.activeCount -= 1;
-        reject(syncError);
+        settleFromWorker(() => reject(syncError));
         return;
       }
 
       rpcPromise.then(
-        (result) => {
-          if (!settled) {
-            settled = true;
-            slot.pendingRejects.delete(rejectPending);
-            slot.activeCount -= 1;
-            resolve(result);
-          }
-        },
-        (error) => {
-          if (!settled) {
-            settled = true;
-            slot.pendingRejects.delete(rejectPending);
-            slot.activeCount -= 1;
-            reject(error);
-          }
-        },
+        (result) => settleFromWorker(() => resolve(result)),
+        (error) => settleFromWorker(() => reject(error)),
       );
     });
   }
@@ -165,12 +168,7 @@ export class DecodeWorkerPool implements DecodeWorkerApi {
       "DecodeWorkerPoolは破棄されています",
     );
     for (const slot of this.slots) {
-      this.cleanupSlotSubscription(slot);
-      slot.activeCount = 0;
-      for (const rejectPending of [...slot.pendingRejects]) {
-        rejectPending(disposedError);
-      }
-      slot.pendingRejects.clear();
+      this.drainSlotPending(slot, disposedError);
       slot.handle.terminate?.();
     }
   }
