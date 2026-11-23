@@ -171,21 +171,174 @@ export function buildDeterministicStoreZip(entries) {
 }
 
 /**
- * CP932(Shift_JIS)およびZIP64構造でZIP/CBZバイト列を組み立てる（Redスタブ）
+ * CP932(Shift_JIS)およびZIP64構造でZIP/CBZバイト列を組み立てる
  * @param {readonly { name: string | Uint8Array; data: Uint8Array; flags?: number; compressionMethod?: 0 | 8 }[]} entries
  * @returns {Buffer}
  */
 export function buildDeterministicCp932Zip64(entries) {
-  void entries;
-  return Buffer.alloc(0);
+  /** @type {Buffer[]} */
+  const locals = [];
+  /** @type {Buffer[]} */
+  const centrals = [];
+  let offset = 0;
+
+  for (const entry of entries) {
+    const nameBytes =
+      typeof entry.name === "string"
+        ? Buffer.from(entry.name, "utf8")
+        : Buffer.from(entry.name);
+    const data = Buffer.from(entry.data);
+    const compressionMethod = entry.compressionMethod === 8 ? 8 : 0;
+    const compressed =
+      compressionMethod === 8 ? zlib.deflateRawSync(data, { level: 9 }) : data;
+    const flags =
+      entry.flags !== undefined
+        ? entry.flags
+        : typeof entry.name === "string"
+          ? 0x0800
+          : 0;
+    const crc = computeCrc32(data);
+
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(flags, 6);
+    localHeader.writeUInt16LE(compressionMethod, 8);
+    localHeader.writeUInt16LE(0, 10);
+    localHeader.writeUInt16LE(0, 12);
+    localHeader.writeUInt32LE(crc, 14);
+    localHeader.writeUInt32LE(compressed.length, 18);
+    localHeader.writeUInt32LE(data.length, 22);
+    localHeader.writeUInt16LE(nameBytes.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+
+    locals.push(localHeader, nameBytes, compressed);
+
+    const zip64Extra = Buffer.alloc(28);
+    zip64Extra.writeUInt16LE(0x0001, 0);
+    zip64Extra.writeUInt16LE(24, 2);
+    zip64Extra.writeBigUInt64LE(BigInt(data.length), 4);
+    zip64Extra.writeBigUInt64LE(BigInt(compressed.length), 12);
+    zip64Extra.writeBigUInt64LE(BigInt(offset), 20);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(0x0314, 4);
+    central.writeUInt16LE(45, 6);
+    central.writeUInt16LE(flags, 8);
+    central.writeUInt16LE(compressionMethod, 10);
+    central.writeUInt16LE(0, 12);
+    central.writeUInt16LE(0, 14);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(0xffffffff, 20);
+    central.writeUInt32LE(0xffffffff, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt16LE(zip64Extra.length, 30);
+    central.writeUInt16LE(0, 32);
+    central.writeUInt16LE(0, 34);
+    central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38);
+    central.writeUInt32LE(0xffffffff, 42);
+
+    centrals.push(central, nameBytes, zip64Extra);
+    offset += localHeader.length + nameBytes.length + compressed.length;
+  }
+
+  const centralBuf = Buffer.concat(centrals);
+  const cdOffset = offset;
+  const zip64EocdOffset = cdOffset + centralBuf.length;
+
+  const z64Eocd = Buffer.alloc(56);
+  z64Eocd.writeUInt32LE(0x06064b50, 0);
+  z64Eocd.writeBigUInt64LE(44n, 4);
+  z64Eocd.writeUInt16LE(0x032d, 12);
+  z64Eocd.writeUInt16LE(45, 14);
+  z64Eocd.writeUInt32LE(0, 16);
+  z64Eocd.writeUInt32LE(0, 20);
+  z64Eocd.writeBigUInt64LE(BigInt(entries.length), 24);
+  z64Eocd.writeBigUInt64LE(BigInt(entries.length), 32);
+  z64Eocd.writeBigUInt64LE(BigInt(centralBuf.length), 40);
+  z64Eocd.writeBigUInt64LE(BigInt(cdOffset), 48);
+
+  const z64Locator = Buffer.alloc(20);
+  z64Locator.writeUInt32LE(0x07064b50, 0);
+  z64Locator.writeUInt32LE(0, 4);
+  z64Locator.writeBigUInt64LE(BigInt(zip64EocdOffset), 8);
+  z64Locator.writeUInt32LE(1, 16);
+
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0xffff, 4);
+  eocd.writeUInt16LE(0xffff, 6);
+  eocd.writeUInt16LE(0xffff, 8);
+  eocd.writeUInt16LE(0xffff, 10);
+  eocd.writeUInt32LE(0xffffffff, 12);
+  eocd.writeUInt32LE(0xffffffff, 16);
+  eocd.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...locals, centralBuf, z64Eocd, z64Locator, eocd]);
 }
 
 /**
- * HO-05 実機検証用: CP932(GPBF Bit11=0)・__MACOSX除外・物理逆順・ZIP64飽和構造の 4 ページ CBZ を生成する（Redスタブ）
+ * HO-05 実機検証用: CP932(GPBF Bit11=0)・__MACOSX除外・物理逆順・ZIP64飽和構造の 4 ページ CBZ を生成する
  * @returns {Buffer}
  */
 export function buildHo05Cp932Zip64TestArchive() {
-  return Buffer.alloc(0);
+  const red = /** @type {const} */ ([239, 68, 68, 255]);
+  const yellow = /** @type {const} */ ([234, 179, 8, 255]);
+  const green = /** @type {const} */ ([16, 185, 129, 255]);
+  const blue = /** @type {const} */ ([37, 99, 235, 255]);
+
+  // Shift_JIS (CP932, Bit 11 = 0) バイト列: 第(91 e6), 話(98 62), ①(87 40), 特(93 c1), 典(93 54)
+  const ep10Name = Buffer.from([
+    0x91, 0xe6, 0x31, 0x30, 0x98, 0x62, 0x2f, 0x30, 0x31, 0x30, 0x2e, 0x70,
+    0x6e, 0x67,
+  ]); // "第10話/010.png"
+  const ep2Name = Buffer.from([
+    0x91, 0xe6, 0x32, 0x98, 0x62, 0x2f, 0x30, 0x30, 0x32, 0x2e, 0x70, 0x6e,
+    0x67,
+  ]); // "第2話/002.png"
+  const ep1BonusName = Buffer.from([
+    0x91, 0xe6, 0x31, 0x98, 0x62, 0x2f, 0x87, 0x40, 0x93, 0xc1, 0x93, 0x54,
+    0x2e, 0x70, 0x6e, 0x67,
+  ]); // "第1話/①特典.png"
+  const ep1Name = Buffer.from([
+    0x91, 0xe6, 0x31, 0x98, 0x62, 0x2f, 0x30, 0x30, 0x31, 0x2e, 0x70, 0x6e,
+    0x67,
+  ]); // "第1話/001.png"
+
+  return buildDeterministicCp932Zip64([
+    {
+      name: Buffer.from("__MACOSX/._001.png", "ascii"),
+      data: Buffer.from([0xde, 0xad, 0xbe, 0xef]),
+      flags: 0,
+      compressionMethod: 0,
+    },
+    {
+      name: ep10Name,
+      data: createSeekColoredPagePng(4, 4, blue, blue, 600, 900),
+      flags: 0,
+      compressionMethod: 8,
+    },
+    {
+      name: ep2Name,
+      data: createSeekColoredPagePng(3, 4, green, green, 600, 900),
+      flags: 0,
+      compressionMethod: 0,
+    },
+    {
+      name: ep1BonusName,
+      data: createSeekColoredPagePng(2, 4, yellow, yellow, 600, 900),
+      flags: 0,
+      compressionMethod: 8,
+    },
+    {
+      name: ep1Name,
+      data: createSeekColoredPagePng(1, 4, red, red, 600, 900),
+      flags: 0,
+      compressionMethod: 0,
+    },
+  ]);
 }
 
 /**
@@ -590,6 +743,10 @@ export function buildHo08ShaderSeekTestArchive() {
 }
 
 export const MANUAL_TEST_ARCHIVES = [
+  {
+    filename: "ho05-cp932-zip64-test.cbz",
+    build: buildHo05Cp932Zip64TestArchive,
+  },
   {
     filename: "ho07-max-texture-test.cbz",
     build: buildHo07MaxTextureTestArchive,
