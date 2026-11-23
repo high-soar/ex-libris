@@ -3,7 +3,7 @@ import { RouterProvider } from "./RouterProvider";
 import { useRouter } from "./routerContext";
 
 function RoutePreviewCard() {
-  const { currentPath, route } = useRouter();
+  const { currentPath, route, isBackBlocked } = useRouter();
 
   return (
     <div
@@ -34,6 +34,15 @@ function RoutePreviewCard() {
               className="font-mono text-emerald-300"
             >
               {currentPath}
+            </dd>
+          </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-slate-400">isBackBlocked</dt>
+            <dd
+              data-testid="story-back-blocked"
+              className="font-mono text-slate-200"
+            >
+              {String(isBackBlocked)}
             </dd>
           </div>
         </dl>
@@ -67,6 +76,15 @@ export const LocalReaderRoute: Story = {
   name: "ローカルリーダールート（/read/local）",
   args: {
     initialPath: "/read/local",
+    children: <RoutePreviewCard />,
+  },
+};
+
+/** ストレージ連携・設定ルート（/settings）の表示状態 */
+export const SettingsRoute: Story = {
+  name: "設定ルート（/settings）",
+  args: {
+    initialPath: "/settings",
     children: <RoutePreviewCard />,
   },
 };

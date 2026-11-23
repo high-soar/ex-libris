@@ -7,23 +7,39 @@ import { RouterProvider } from "./RouterProvider";
 import * as stories from "./RouterProvider.stories";
 import { useRouter } from "./routerContext";
 
-const { Default, LocalReaderRoute, UnknownFallbackRoute } =
+const { Default, LocalReaderRoute, SettingsRoute, UnknownFallbackRoute } =
   composeStories(stories);
 
 function RouterConsumerProbe() {
-  const { currentPath, route, navigate, replace, back } = useRouter();
+  const {
+    currentPath,
+    route,
+    navigate,
+    replace,
+    back,
+    isBackBlocked,
+    setBackBlocked,
+  } = useRouter();
 
   return (
     <div>
       <span data-testid="probe-current-path">{currentPath}</span>
       <span data-testid="probe-route-name">{route.name}</span>
       <span data-testid="probe-route-path">{route.path}</span>
+      <span data-testid="probe-back-blocked">{String(isBackBlocked)}</span>
       <button
         type="button"
         data-testid="btn-nav-reader"
         onClick={() => navigate("/read/local")}
       >
         to reader
+      </button>
+      <button
+        type="button"
+        data-testid="btn-nav-settings"
+        onClick={() => navigate("/settings")}
+      >
+        to settings
       </button>
       <button
         type="button"
@@ -49,6 +65,20 @@ function RouterConsumerProbe() {
       <button type="button" data-testid="btn-back" onClick={back}>
         back
       </button>
+      <button
+        type="button"
+        data-testid="btn-block-back"
+        onClick={() => setBackBlocked(true)}
+      >
+        block back
+      </button>
+      <button
+        type="button"
+        data-testid="btn-unblock-back"
+        onClick={() => setBackBlocked(false)}
+      >
+        unblock back
+      </button>
     </div>
   );
 }
@@ -65,13 +95,14 @@ describe("RouterProvider", () => {
     window.history.replaceState(null, "", originalUrl || "/");
   });
 
-  it("全Storybookストーリー（Default / LocalReaderRoute / UnknownFallbackRoute）を描画できること", () => {
+  it("全Storybookストーリー（Default / LocalReaderRoute / SettingsRoute / UnknownFallbackRoute）を描画できること", () => {
     const { unmount: unmountDefault } = render(<Default />);
     expect(screen.getByTestId("story-route-name")).toHaveTextContent(
       "bookshelf",
     );
     expect(screen.getByTestId("story-route-path")).toHaveTextContent("/");
     expect(screen.getByTestId("story-current-path")).toHaveTextContent("/");
+    expect(screen.getByTestId("story-back-blocked")).toHaveTextContent("false");
     unmountDefault();
 
     const { unmount: unmountReader } = render(<LocalReaderRoute />);
@@ -85,6 +116,18 @@ describe("RouterProvider", () => {
       "/read/local",
     );
     unmountReader();
+
+    const { unmount: unmountSettings } = render(<SettingsRoute />);
+    expect(screen.getByTestId("story-route-name")).toHaveTextContent(
+      "settings",
+    );
+    expect(screen.getByTestId("story-route-path")).toHaveTextContent(
+      "/settings",
+    );
+    expect(screen.getByTestId("story-current-path")).toHaveTextContent(
+      "/settings",
+    );
+    unmountSettings();
 
     render(<UnknownFallbackRoute />);
     expect(screen.getByTestId("story-route-name")).toHaveTextContent(
@@ -322,5 +365,129 @@ describe("RouterProvider", () => {
 
     expect(screen.getByTestId("redirect-current-path")).toHaveTextContent("/");
     expect(window.location.pathname).toBe("/");
+  });
+
+  it("back()はsettings時に'/'起点ならwindow.history.back()、起点不在時はreplace('/')へフォールバックすること (TR-09)", async () => {
+    const user = userEvent.setup();
+    const historyBackSpy = vi.spyOn(window.history, "back");
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
+
+    const { unmount } = render(
+      <RouterProvider initialPath="/">
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+
+    await user.click(screen.getByTestId("btn-nav-settings"));
+    expect(screen.getByTestId("probe-route-name")).toHaveTextContent(
+      "settings",
+    );
+    expect(screen.getByTestId("probe-current-path")).toHaveTextContent(
+      "/settings",
+    );
+    replaceStateSpy.mockClear();
+
+    await user.click(screen.getByTestId("btn-back"));
+    expect(historyBackSpy).toHaveBeenCalledTimes(1);
+    expect(replaceStateSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(screen.getByTestId("probe-current-path")).toHaveTextContent("/");
+      });
+    });
+    expect(screen.getByTestId("probe-route-name")).toHaveTextContent(
+      "bookshelf",
+    );
+    unmount();
+
+    // 直接 /settings 到達時は replace("/") へフォールバック
+    window.history.replaceState(null, "", "/settings");
+    historyBackSpy.mockClear();
+    replaceStateSpy.mockClear();
+
+    render(
+      <RouterProvider>
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+
+    expect(screen.getByTestId("probe-route-name")).toHaveTextContent(
+      "settings",
+    );
+    await user.click(screen.getByTestId("btn-back"));
+    expect(historyBackSpy).not.toHaveBeenCalled();
+    expect(replaceStateSpy).toHaveBeenCalledWith(null, "", "/");
+    expect(screen.getByTestId("probe-current-path")).toHaveTextContent("/");
+  });
+
+  it("isBackBlockedがtrueの間はback()とpopstateによる離脱を抑止しURLと履歴状態を保持すること (AC-ST-06)", async () => {
+    const user = userEvent.setup();
+    const historyBackSpy = vi.spyOn(window.history, "back");
+    const pushStateSpy = vi.spyOn(window.history, "pushState");
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
+
+    render(
+      <RouterProvider initialPath="/">
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+
+    await user.click(screen.getByTestId("btn-nav-settings"));
+    expect(screen.getByTestId("probe-route-name")).toHaveTextContent(
+      "settings",
+    );
+
+    await user.click(screen.getByTestId("btn-block-back"));
+    expect(screen.getByTestId("probe-back-blocked")).toHaveTextContent("true");
+
+    historyBackSpy.mockClear();
+    pushStateSpy.mockClear();
+    replaceStateSpy.mockClear();
+
+    // 1. back() はブロック中はノーオペ
+    await user.click(screen.getByTestId("btn-back"));
+    expect(historyBackSpy).not.toHaveBeenCalled();
+    expect(replaceStateSpy).not.toHaveBeenCalled();
+    expect(screen.getByTestId("probe-current-path")).toHaveTextContent(
+      "/settings",
+    );
+
+    // 2. popstate で URL が "/" へ変わっていた場合は元の "/settings" へ戻して離脱を防ぐ
+    act(() => {
+      window.history.replaceState(null, "", "/");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(pushStateSpy).toHaveBeenCalledWith(
+      { exLibrisCanGoBackFrom: "/" },
+      "",
+      "/settings",
+    );
+    expect(window.location.pathname).toBe("/settings");
+    expect(screen.getByTestId("probe-current-path")).toHaveTextContent(
+      "/settings",
+    );
+
+    // 3. popstate で URL が変わっていない場合は pushState せずそのまま抑止
+    pushStateSpy.mockClear();
+    act(() => {
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(pushStateSpy).not.toHaveBeenCalled();
+    expect(screen.getByTestId("probe-current-path")).toHaveTextContent(
+      "/settings",
+    );
+
+    // 4. ブロック解除後は back() で "/" へ戻れること
+    await user.click(screen.getByTestId("btn-unblock-back"));
+    expect(screen.getByTestId("probe-back-blocked")).toHaveTextContent("false");
+
+    await user.click(screen.getByTestId("btn-back"));
+    expect(historyBackSpy).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(screen.getByTestId("probe-current-path")).toHaveTextContent("/");
+      });
+    });
   });
 });

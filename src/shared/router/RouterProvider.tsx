@@ -111,6 +111,8 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
       navigate,
       replace,
       back,
+      isBackBlocked: false,
+      setBackBlocked: () => {},
     }),
     [currentPath, route, navigate, replace, back],
   );

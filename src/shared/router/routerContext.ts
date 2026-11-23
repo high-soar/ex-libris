@@ -7,6 +7,8 @@ export interface RouterContextValue {
   readonly navigate: (to: string, options?: { replace?: boolean }) => void;
   readonly replace: (to: string) => void;
   readonly back: () => void;
+  readonly isBackBlocked: boolean;
+  readonly setBackBlocked: (blocked: boolean) => void;
 }
 
 export const RouterContext = createContext<RouterContextValue | null>(null);
