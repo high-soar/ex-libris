@@ -60,6 +60,7 @@ describe("coordinatorClient", () => {
             return [];
           },
           updateAccessToken() {},
+          setHostCallbacks() {},
           cancelEpochBelow() {},
           async closeArchive() {},
         };
@@ -130,6 +131,7 @@ describe("coordinatorClient", () => {
       openArchive: vi.fn(),
       requestVisiblePages: vi.fn(),
       updateAccessToken: vi.fn(),
+      setHostCallbacks: vi.fn(),
       cancelEpochBelow: vi.fn(),
       closeArchive: vi.fn(),
     };
@@ -221,6 +223,7 @@ describe("coordinatorClient", () => {
           }),
       ),
       updateAccessToken: vi.fn(),
+      setHostCallbacks: vi.fn(),
       cancelEpochBelow: vi.fn(),
       closeArchive: vi.fn(() => {
         if (disposedFlag) {
@@ -382,6 +385,7 @@ describe("coordinatorClient", () => {
       openArchive: vi.fn(() => new Promise<OpenArchiveResult>(() => {})),
       requestVisiblePages: vi.fn(async () => []),
       updateAccessToken: vi.fn(),
+      setHostCallbacks: vi.fn(),
       cancelEpochBelow: vi.fn(),
       closeArchive: vi.fn(async () => {}),
     };
@@ -422,6 +426,7 @@ describe("coordinatorClient", () => {
       }),
       requestVisiblePages: vi.fn(async () => []),
       updateAccessToken: vi.fn(),
+      setHostCallbacks: vi.fn(),
       cancelEpochBelow: vi.fn(),
       closeArchive: vi.fn(async () => {}),
     };

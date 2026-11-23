@@ -208,6 +208,9 @@ function createMockCoordinatorSession(
   const updateAccessToken = vi.fn<CoordinatorWorkerApi["updateAccessToken"]>(
     overrides.updateAccessToken,
   );
+  const setHostCallbacks = vi.fn<CoordinatorWorkerApi["setHostCallbacks"]>(
+    overrides.setHostCallbacks,
+  );
   const cancelEpochBelow = vi.fn<CoordinatorWorkerApi["cancelEpochBelow"]>(
     overrides.cancelEpochBelow,
   );
@@ -219,6 +222,7 @@ function createMockCoordinatorSession(
     openArchive,
     requestVisiblePages,
     updateAccessToken,
+    setHostCallbacks,
     cancelEpochBelow,
     closeArchive,
   };

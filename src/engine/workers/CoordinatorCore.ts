@@ -3,6 +3,7 @@ import { LocalFileReader } from "../io/LocalFileReader";
 import { runPrefetchBatches } from "../prefetch/AdaptivePrefetcher";
 import type {
   ArchiveSourceDescriptor,
+  CoordinatorHostCallbacks,
   CoordinatorWorkerApi,
   DecodeWorkerApi,
   DecodedPageFrame,
@@ -500,6 +501,8 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
   updateAccessToken(accessToken: string | null): void {
     this.accessToken = accessToken;
   }
+
+  setHostCallbacks(_callbacks: CoordinatorHostCallbacks | null): void {}
 
   cancelEpochBelow(minActiveEpoch: number): void {
     if (minActiveEpoch > this.minActiveEpoch) {

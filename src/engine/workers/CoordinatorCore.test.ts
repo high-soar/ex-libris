@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ENGINE_BUDGETS } from "../constants";
 import type {
   ArchiveSourceDescriptor,
+  CoordinatorHostCallbacks,
   DecodeWorkerApi,
   RandomAccessReader,
   ZipPageEntry,
@@ -43,7 +44,41 @@ function createLocalSource(
   };
 }
 
+function createGdriveSource(
+  bytes: Uint8Array,
+  driveFileId = "drive-file-1",
+): ArchiveSourceDescriptor {
+  return {
+    kind: "gdrive",
+    volumeId: "vol-1",
+    driveFileId,
+    fileSize: bytes.byteLength,
+    md5Checksum: null,
+    indexCacheKey: `gdrive:${driveFileId}:${bytes.byteLength}`,
+    progressTargetKey: "vol:vol-1",
+  };
+}
+
+function parseRangeHeader(
+  headers: HeadersInit | undefined,
+  totalSize: number,
+): { readonly start: number; readonly end: number } {
+  const range = new Headers(headers).get("Range") ?? "";
+  const match = /^bytes=(\d+)-(\d+)$/.exec(range);
+  if (!match) {
+    throw new Error(`Unexpected Range header: ${range}`);
+  }
+  const start = Number(match[1]);
+  const end = Math.min(Number(match[2]) + 1, totalSize);
+  return { start, end };
+}
+
 describe("CoordinatorCore", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
   it("local-sessionアーカイブを開きFast-Pathと複数ページをデコード返却すること (AC-ENG-07, AC-ENG-08)", async () => {
     const page0Bytes = new Uint8Array([1, 2, 3, 4]);
     const page1Bytes = new Uint8Array([5, 6, 7, 8]);
@@ -200,22 +235,6 @@ describe("CoordinatorCore", () => {
     const coordinator = new CoordinatorCore({
       decodePool: { decodePageSlice: vi.fn() },
     });
-
-    await expect(
-      coordinator.openArchive(
-        {
-          kind: "gdrive",
-          volumeId: "v1",
-          driveFileId: "d1",
-          fileSize: 100,
-          md5Checksum: null,
-          indexCacheKey: "gdrive:d1:100",
-          progressTargetKey: "vol:v1",
-        },
-        null,
-        1,
-      ),
-    ).rejects.toMatchObject({ code: "READ_ERROR" });
 
     await expect(
       coordinator.openArchive(
@@ -1227,6 +1246,208 @@ describe("CoordinatorCore", () => {
     expect(sliceByteLength).toBe(oversizedSize);
     expect(firstByte).toBe(0xde);
     expect(lastByte).toBe(0xad);
+  });
+
+  it("gdriveソースでGoogleDriveRangeReaderを生成し保持トークン0-IPC・未保持更新・時差401防御・tokenVersion保護・診断中継を行うこと (AC-ENG-16)", async () => {
+    const page0Bytes = new Uint8Array([10, 20, 30, 40]);
+    const zipBytes = buildSyntheticZip({
+      entries: [{ name: "001.jpg", data: page0Bytes, compressionMethod: 0 }],
+    });
+
+    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
+      const { start, end } = parseRangeHeader(
+        init?.headers,
+        zipBytes.byteLength,
+      );
+      const slice = zipBytes.slice(start, end);
+      return new Response(slice, {
+        status: 206,
+        headers: { "Content-Length": String(slice.byteLength) },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const refreshAccessToken = vi.fn<
+      CoordinatorHostCallbacks["refreshAccessToken"]
+    >(async () => "ya29.host-fetched");
+    const reportDiagnostic =
+      vi.fn<CoordinatorHostCallbacks["reportDiagnostic"]>();
+
+    const coordinator = new CoordinatorCore({
+      decodePool: {
+        decodePageSlice: vi.fn(async (data) => ({
+          bitmap: createFakeBitmap(data.byteLength, 100),
+          width: data.byteLength,
+          height: 100,
+        })),
+      },
+    });
+    coordinator.setHostCallbacks({ refreshAccessToken, reportDiagnostic });
+
+    // 1. 事前 updateAccessToken 済み -> IPC ゼロ (refreshAccessToken 0 回) でオープン＆ページ取得
+    coordinator.updateAccessToken("ya29.cached-initial");
+    const openCached = await coordinator.openArchive(
+      createGdriveSource(zipBytes),
+      null,
+      1,
+    );
+    expect(openCached.pageCount).toBe(1);
+    const framesCached = await coordinator.requestVisiblePages([0], [], 1);
+    expect(framesCached[0]).toMatchObject({ status: "ready", pageIndex: 0 });
+    expect(refreshAccessToken).not.toHaveBeenCalled();
+    expect(
+      new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("Authorization"),
+    ).toBe("Bearer ya29.cached-initial");
+
+    // 2. accessToken 未設定(null)および空文字("")時 -> hostCallbacks.refreshAccessToken を呼び出して保持・再利用
+    for (const unsetToken of [null, ""]) {
+      refreshAccessToken.mockClear();
+      fetchMock.mockClear();
+      coordinator.updateAccessToken(unsetToken);
+      await coordinator.openArchive(createGdriveSource(zipBytes), null, 2);
+      expect(refreshAccessToken).toHaveBeenCalledTimes(1);
+      expect(refreshAccessToken).toHaveBeenCalledWith({
+        forceRefresh: false,
+        failedToken: undefined,
+      });
+
+      await coordinator.requestVisiblePages([0], [], 2);
+      expect(refreshAccessToken).toHaveBeenCalledTimes(1);
+      expect(
+        new Headers(fetchMock.mock.calls.at(-1)?.[1]?.headers).get(
+          "Authorization",
+        ),
+      ).toBe("Bearer ya29.host-fetched");
+    }
+
+    // 3. 401 発生時: 初回 401 (this.accessToken === failedToken) は refreshAccessToken({ forceRefresh: true, failedToken }) と warn 診断中継
+    refreshAccessToken.mockClear();
+    reportDiagnostic.mockClear();
+    fetchMock.mockClear();
+    coordinator.updateAccessToken("ya29.expired-1");
+    refreshAccessToken.mockResolvedValueOnce("ya29.refreshed-2");
+
+    let return401Once = true;
+    fetchMock.mockImplementation(async (_url, init) => {
+      if (return401Once) {
+        return401Once = false;
+        return new Response(null, { status: 401 });
+      }
+      const { start, end } = parseRangeHeader(
+        init?.headers,
+        zipBytes.byteLength,
+      );
+      const slice = zipBytes.slice(start, end);
+      return new Response(slice, {
+        status: 206,
+        headers: { "Content-Length": String(slice.byteLength) },
+      });
+    });
+
+    await coordinator.openArchive(createGdriveSource(zipBytes), null, 3);
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1);
+    expect(refreshAccessToken).toHaveBeenCalledWith({
+      forceRefresh: true,
+      failedToken: "ya29.expired-1",
+    });
+    expect(reportDiagnostic).toHaveBeenCalledWith(
+      "warn",
+      "gdrive-range",
+      expect.any(String),
+      expect.any(String),
+    );
+
+    // 4. 時差 401 到着時: fetch 中に updateAccessToken("ya29.newer") が先行到着した場合は IPC ゼロで現トークン即返却
+    refreshAccessToken.mockClear();
+    let triggerStaggeredUpdate = true;
+    fetchMock.mockImplementation(async (_url, init) => {
+      if (triggerStaggeredUpdate) {
+        triggerStaggeredUpdate = false;
+        coordinator.updateAccessToken("ya29.newer-from-host");
+        return new Response(null, { status: 401 });
+      }
+      const { start, end } = parseRangeHeader(
+        init?.headers,
+        zipBytes.byteLength,
+      );
+      const slice = zipBytes.slice(start, end);
+      return new Response(slice, {
+        status: 206,
+        headers: { "Content-Length": String(slice.byteLength) },
+      });
+    });
+
+    const staggeredFrames = await coordinator.requestVisiblePages([0], [], 3);
+    expect(staggeredFrames[0]).toMatchObject({ status: "ready", pageIndex: 0 });
+    expect(refreshAccessToken).not.toHaveBeenCalled();
+    expect(
+      new Headers(fetchMock.mock.calls.at(-1)?.[1]?.headers).get(
+        "Authorization",
+      ),
+    ).toBe("Bearer ya29.newer-from-host");
+
+    // 5. refreshAccessToken 待機中に updateAccessToken(null) 割り込み -> tokenVersion 不一致で古いトークンが上書き復活しないこと
+    coordinator.updateAccessToken(null);
+    let resolveStaleRefresh!: (token: string) => void;
+    refreshAccessToken.mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveStaleRefresh = resolve;
+        }),
+    );
+    fetchMock.mockImplementation(async (_url, init) => {
+      const { start, end } = parseRangeHeader(
+        init?.headers,
+        zipBytes.byteLength,
+      );
+      const slice = zipBytes.slice(start, end);
+      return new Response(slice, {
+        status: 206,
+        headers: { "Content-Length": String(slice.byteLength) },
+      });
+    });
+
+    const interruptedOpen = coordinator.openArchive(
+      createGdriveSource(zipBytes),
+      null,
+      4,
+    );
+    await vi.waitFor(() => expect(resolveStaleRefresh).toBeDefined());
+    coordinator.updateAccessToken(null);
+    resolveStaleRefresh("ya29.stale-should-not-stick");
+    await interruptedOpen;
+
+    // tokenVersion 保護により this.accessToken は null のまま -> 次回リクエストで再度 refreshAccessToken が呼ばれる
+    refreshAccessToken.mockResolvedValueOnce("ya29.fresh-after-logout");
+    await coordinator.requestVisiblePages([0], [], 4);
+    expect(refreshAccessToken).toHaveBeenCalledTimes(2);
+
+    // 6. error 診断中継 + hostCallbacks 未設定時の安全遮断
+    reportDiagnostic.mockClear();
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
+    await expect(
+      coordinator.openArchive(createGdriveSource(zipBytes), null, 5),
+    ).rejects.toMatchObject({ code: "READ_ERROR" });
+    expect(reportDiagnostic).toHaveBeenCalledWith(
+      "error",
+      "gdrive-range",
+      expect.any(String),
+      expect.stringContaining("status=500"),
+    );
+
+    // hostCallbacks = null かつ保持トークンありで 500 -> reportDiagnostic なしで READ_ERROR
+    coordinator.setHostCallbacks(null);
+    coordinator.updateAccessToken("ya29.no-callback-tok");
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
+    await expect(
+      coordinator.openArchive(createGdriveSource(zipBytes), null, 6),
+    ).rejects.toMatchObject({ code: "READ_ERROR" });
+
+    // hostCallbacks = null かつトークン未保持 -> refreshAccessToken 不可で READ_ERROR
+    coordinator.updateAccessToken(null);
+    await expect(
+      coordinator.openArchive(createGdriveSource(zipBytes), null, 7),
+    ).rejects.toMatchObject({ code: "READ_ERROR" });
   });
 });
 

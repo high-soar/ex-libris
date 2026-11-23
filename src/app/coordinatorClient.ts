@@ -162,6 +162,7 @@ function createGuardedCoordinatorApi(
       ),
     updateAccessToken: (accessToken) =>
       forwardSyncRpc(() => rawApi.updateAccessToken(accessToken)),
+    setHostCallbacks: () => {},
     cancelEpochBelow: (minActiveEpoch) =>
       forwardSyncRpc(() => rawApi.cancelEpochBelow(minActiveEpoch)),
     closeArchive: () => trackAsyncRpc(() => rawApi.closeArchive()),
