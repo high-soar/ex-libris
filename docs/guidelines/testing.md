@@ -3,7 +3,7 @@ type: guideline
 title: "テスト・実装規律の正本（SSOT）"
 description: "ExLibrisの4層テスト体系（Streaming Engine / Metadata Provider / Dexie Storage / WebGL2 Viewer & Bridge）、TDDコミット規約、1対1 Story/UT、親子分離、C0/C1 100%、VRT、およびKaizen再発防止ルールの正本。"
 status: "Approved"
-updated: "2026-11-20"
+updated: "2026-11-23"
 tags:
   [
     testing,
@@ -43,13 +43,13 @@ related_tests: []
    単体テスト（`*.test.ts`, `*.test.tsx`）および Storybook ファイル（`*.stories.tsx`）は、対象ソースファイルと同一ディレクトリに配置する。
 5. **例外なしの 1 対 1 対応原則**:
    - 全 `*.tsx` ファイル（初期マウント `src/main.tsx` を除く）に対して、同階層に **`*.stories.tsx`（必須）** と **`*.test.tsx`（Portable Stories `composeStories` 全件実行 ＋ ロジック補完）** を 1 対 1 で作成する。
-   - 全 `*.ts` ファイル（型定義専用ファイル `types.ts` / `*.d.ts` および静的フィクスチャ `src/**/__fixtures__/*.ts` を除く）に対して、同階層に **`*.test.ts`** を 1 対 1 で作成する（実行時定数ファイル `constants/*.ts`、バレルエクスポート `index.ts`、GLSL シェーダー定数モジュールも対象）。
+   - 全 `*.ts` ファイル（型定義専用ファイル `types.ts` / `*.d.ts`、静的フィクスチャ `src/**/__fixtures__/*.ts`、テスト環境セットアップ `src/test/**`、および `Comlink.expose` 等のみを行う数行の Web Worker エントリーラッパー `*.worker.ts` を除く）に対して、同階層に **`*.test.ts`** を 1 対 1 で作成する（実行時定数ファイル `constants/*.ts`、バレルエクスポート `index.ts`、GLSL シェーダー定数モジュール、および Worker から抽出した `*Core.ts` / `*Transfer.ts` はすべて対象）。
 6. **親子コンポーネント完全分離原則（`vi.spyOn(...).mockImplementation(() => null)` 徹底）**:
-   Container / Page 等の親テストでは、直下の子コンポーネントに `vi.spyOn(...).mockImplementation(() => null)` を適用して子・孫の DOM 描画やタイマー/WebGL 初期化の巻き込みを根絶し、「状態管理・Loading/Error/Ready の切り替え・子への Props ＆ コールバック配線」のみを決定論的に検証する。`describe` 先頭には必ず `afterEach(() => { vi.restoreAllMocks(); })` を配置する。
+   Container / Page 等の親テストでは、直下の子コンポーネントに `vi.spyOn(...).mockImplementation(() => null)` を適用して子・孫の DOM 描画やタイマー/WebGL 初期化の巻き込みを根絶し、「状態管理・Loading/Error/Ready の切り替え・子への Props ＆ コールバック配線」のみを決定論的に検証する（ただし、ルート統合テスト `App.test.tsx` 等で Context 供給自体が責務である薄い純粋 Context Provider ラッパー［`RouterProvider`, `ServiceProvider`］のみ例外として透過させ、その配下の画面コンポーネント［`BookshelfPage`, `ReaderPage`］を `vi.spyOn(...).mockImplementation(() => null)` で分離することを許可する）。`describe` 先頭には必ず `afterEach(() => { vi.restoreAllMocks(); })` を配置する。
 7. **C0 / C1 / Functions 100% カバレッジ原則**:
    `src/` 配下の全対象ファイルにおいて、ステートメント（C0）・分岐（C1）・関数（Functions）・行（Lines）カバレッジ **100%** を必須基準とする。
 8. **Storybook VRT（1280px タブレット横 / 375px スマホ縦）の一本化**:
-   視覚的回帰テスト（VRT）は Storybook の全 Story を対象として **1280px×800px（タブレット見開き想定）および 375px×667px（スマホ単ページ想定）** の2系統で実施する（非表示モーダル `isOpen: false` のみ `tags: ["skip-vrt"]` 許可）。Playwright IT では VRT を行わず画面遷移と機能結合の振る舞い検証に専念する。
+   視覚的回帰テスト（VRT）は Storybook の全 Story を対象として **1280px×800px（タブレット見開き想定）および 375px×667px（スマホ単ページ想定）** の2系統で実施する（`tags: ["skip-vrt"]` の付与は、非表示モーダル `isOpen: false` およびコンポーネント本体が `null` を返却する非表示空状態ストーリーのみ許可する）。Playwright IT では VRT を行わず画面遷移と機能結合の振る舞い検証に専念する。
 9. **不備記録と原因分類 `D`（設計不備）の即時設計同期義務**:
    実装・テスト・AIレビュー中に検出された不備は製品コードと支援成果物を分離して記録する。原因が `D`（設計・仕様の誤認や不備）である場合、**コードのみを修正して設計書を放置することは厳禁**とし、必ず同一 PR 内で `docs/specs/` の設計書（App 全体正本および進行中の差分仕様）も同時修正する。
 
@@ -94,8 +94,9 @@ flowchart TB
     3. 4GB 超・数千ページの **ZIP64 EOCD Locator / EOCD**、初回末尾 128KB に収まらない場合の追加 1 RTT フォールバック、および `0x0001` Extra Field の飽和項目のみ読み進める厳密パース。
     4. UTF-8 フラグ（Bit 11）未設定時の `TextDecoder('utf-8', { fatal: true })` → `TextDecoder('shift-jis')`（CP932）フォールバック、`__MACOSX/`・`._*`・`Thumbs.db` 除外、および `Intl.Collator('ja', { numeric: true, sensitivity: 'base' })` セグメント自然順ソート。
     5. Fast-Path（初回・シーク直後の最小 1〜2 ページ単独取得）とバイト予算制（8〜12MB 上限）Warm Prefetch、およびシーク時の `AbortController` キャンセルと L2 キャッシュ（60〜100MB `Uint8Array`）LRU 退避。
-- **Worker コアとエントリーポイントの分離**:
+- **Worker コアとエントリーポイントの分離 ＆ 異常終了時即時遮断**:
   - `CoordinatorCore` や `DecodePoolCore` は Worker グローバル（`self`）に直接依存しない純粋な TypeScript クラスとして実装し、Vitest で C0/C1/Functions 100% を直接検証する。`*.worker.ts` は `Comlink.expose(...)` とエラーハンドラ登録・結線のみを行う最小ブートストラップに留め、**条件分岐（`if` / 三項演算子）や `Transferable` 抽出・バッファ所有権判定は必ず純関数モジュール（例: `coordinatorTransfer.ts`）へ分離して 100% UT 対象とする**。
+  - Worker インスタンス管理側（`coordinatorClient`, `DecodeWorkerPool`）は `error` / `messageerror` イベントを必ず購読して診断ログを記録し、保留中・後続 RPC を永久ハングさせず `READ_ERROR` / `DECODE_FAILED` で即時 reject することを UT で検証する。
 
 ### 2.2 Metadata & Filename Provider Layer（ファイル名解析・公開書誌API層）
 
@@ -105,8 +106,11 @@ flowchart TB
 
 ### 2.3 Storage & Sync Layer（Dexie.js 仮想本棚DB・同期層）
 
-- **`fake-indexeddb` と `resetTestDb()` によるテスト独立性**:
+- **`fake-indexeddb` と `resetTestDb()` によるテスト独立性 ＆ テストフック非本番制限**:
   - `src/test/setup.ts` で `fake-indexeddb/auto` を読み込み、各テストの `beforeEach` / `afterEach`（および Playwright IT の各テスト開始前）で必ず `resetTestDb()` を実行してテーブルデータを完全初期化する。
+  - `window.__exLibrisServices.resetTestDb` 等のテスト用グローバルフック公開は `!Capacitor.isNativePlatform() && (DEV || MODE === "test" || navigator.webdriver === true)` に厳格限定し、ネイティブアプリや通常本番ビルドへ露出しないことを UT で検証する（`R1-12`）。
+- **目次キャッシュ破損時の 1 回限り自己修復（`zipIndexCache`）**:
+  - `zipIndexCache` から復元した `0RTT` セッションでページ読込失敗（`CORRUPT_ZIP` / `DECODE_FAILED`）が発生した場合は、破損キャッシュを自動削除して Central Directory 解析で 1 回限り再オープンする自己修復経路とアンカークランプを実装・UT 検証する（`R1-06`）。
 - **新規フィールド追加時の全層伝播チェック（原因 `D` 再発防止）**:
   - Dexie スキーマ定義（バージョンアップ・マイグレーション含む）→ 型定義 → Repository → Store/Hook → Container/Page → View → Storybook/UT/IT の全層伝播を確認する。
 - **LWW 同期タイムスタンプ保護規律**:
@@ -124,6 +128,7 @@ flowchart TB
   - Web 側でネイティブイベントを購読する際は `add*Listener` を先行登録してから有効化し、Promise には `.catch(() => {})`、および非同期解除ウィンドウでの誤発火を防ぐ `!isRemoved` ガードラッパーを付与する。
   - タッチジェスチャーでは `pointerStartRef` と `touchStartRef` を分離管理し（`pointercancel` による Touch 座標誤破棄防止）、複数の画面タップゾーンは幾何学的に排他配置して境界座標テストを行う。
   - 子コンポーネントのマウント `useEffect` から通知され得る致命的エラー状態（WebGL2 初期化失敗等）は親の非同期初期化リセット対象から分離し、`initialSnapshot` なしの通常マウント経路で子スパイが同期 `onFatalError` を発火してワーカー未起動かつエラー維持となることを UT で検証する。
+  - オープン直後の非同期デフォルト設定取得（例: `getShaderDefaults()`）の反映ガードはページ遷移・回転で更新される `openEpoch` ではなく同一ランタイム／アーカイブセッション生存判定（`isCurrentRuntime`）へ結合し、早期操作でのデフォルト適用落ちを防ぐ（`R1-01`）。
   - 履歴遷移（`pushState` / `popstate`）を伴う画面終了契約（`TR-08` 等）は、UI ボタン/`Escape` だけでなく Playwright IT で `page.goBack()` → `page.goForward()` を検証し、`StrictMode` 再マウントと React 19 `popstate` 親先行アンマウント双方で正しく解放されることを UT/IT で保証する。
 
 - **PCレス実機検証用アプリ内診断ログ（`src/diagnostics/`）の機密マスク検証義務**:
@@ -143,9 +148,11 @@ flowchart TB
    - 表紙抽出 2 段キュー（ビューポート優先 `high` ＋ バックグラウンド低速 `low`）やプリフェッチ・検索 Hook では、複数 `await` を跨ぐ処理に世代カウンタ（エポック）を導入し、各 `await` 直後に `isMountedRef.current`・エポック一致・`signal.aborted` を再検証する。また優先度跨ぎのレート制限では全体の最終通信完了時刻を基準にスロットリングを行う。
 2. **VRT 孤児スナップショット検知ガードと全件更新**:
    - `test/vrt/vrt.spec.ts` にて `storybook-static/index.json` の対象ストーリー一覧と `test/vrt/snapshots/*.png` が 1対1 で完全一致すること（0件空振り防止＋孤児 PNG 0件）を検証し、`maxDiffPixelRatio: 0.001` を維持する。
-3. **Playwright IT の確定的初期化待機・固定待機禁止・仮想時計**:
+3. **Playwright IT の確定的初期化待機・明示ビューポート・仮想時計 ＆ CI 契約検証**:
    - 全 `page.goto(...)` / `page.reload()` の直後には、DOM 探索より先に必ず `waitForServicesReady(page)`（`window.__exLibrisServices?.isReady === true`）を待機する。
+   - `SpreadMode = "auto"` 環境下で単ページ表示・ページ順を検証する結合テストでは、暗黙の既定ウィンドウ幅へ依存せず必ず `page.setViewportSize({ width: 375, height: 667 })` を明示指定する（`R1-15`）。
    - 条件分岐（`if (await el.isVisible())`）による暗黙スキップや `page.waitForTimeout`、固定カレンダー日付（Time-bomb）は禁止し、`expect.poll` および `window.Date` `Proxy` 仮想時計（または `Date.now()` 相対オフセット）に統一する。
+   - `.github/workflows/release.yml` 等を変更する際は `scripts/android-build-config.test.ts` で CI `quality-gate` 成功検証・SemVer 後退防止・品質レポート検出正規表現（`v<major>.<minor>.md`）の契約テストを追加維持する（`R1-16`, `R1-20`）。
 4. **モーダル・非同期永続化ロールバック**:
    - 非同期保存失敗時は直前の state へロールバックして `role="alert"` で通知する。確認・競合モーダルは処理中の Escape/背景タップ閉鎖を抑止し、背面 `inert` 化とフォーカストラップを行う。
 
