@@ -14,7 +14,7 @@ export function BookshelfHeader({
   copyStatus,
   onCopyDiagnostics,
   onOpenLocalZip,
-  onOpenSettings: _onOpenSettings,
+  onOpenSettings,
 }: BookshelfHeaderProps): ReactNode {
   return (
     <header
@@ -66,6 +66,14 @@ export function BookshelfHeader({
           className="touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700 transition-colors"
         >
           診断ログをコピー
+        </button>
+        <button
+          type="button"
+          data-testid="header-settings-button"
+          onClick={onOpenSettings}
+          className="touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700 transition-colors"
+        >
+          設定
         </button>
       </div>
     </header>
