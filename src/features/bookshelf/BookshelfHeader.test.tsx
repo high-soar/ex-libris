@@ -3,12 +3,13 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { APP_NAME, APP_VERSION } from "../../shared/constants/app";
+import { BookshelfHeader } from "./BookshelfHeader";
 import * as stories from "./BookshelfHeader.stories";
 
 const { Default, CopiedFeedback, CopyFailedFeedback } = composeStories(stories);
 
 describe("BookshelfHeader", () => {
-  it("Defaultストーリーでタイトル・バージョン・ローカルZIP・診断コピーボタンを表示し初期ステータスを非表示にすること (AC-BS-01, AC-BS-05)", () => {
+  it("Defaultストーリーでタイトル・バージョン・ローカルZIP・診断コピー・設定ボタンを表示し初期ステータスを非表示にすること (AC-BS-01, AC-BS-05, AC-BS-07)", () => {
     render(<Default />);
 
     expect(screen.getByRole("banner")).toHaveClass(
@@ -27,6 +28,9 @@ describe("BookshelfHeader", () => {
     ).toHaveTextContent("ローカル ZIP を開く");
     expect(screen.getByTestId("copy-diagnostics-button")).toHaveTextContent(
       "診断ログをコピー",
+    );
+    expect(screen.getByTestId("header-settings-button")).toHaveTextContent(
+      "設定",
     );
     expect(
       screen.queryByTestId("copy-diagnostics-status"),
@@ -48,15 +52,17 @@ describe("BookshelfHeader", () => {
     );
   });
 
-  it("ローカルZIPを開くボタンおよび診断ログをコピーボタン押下で対応コールバックが呼ばれること (AC-BS-01, AC-BS-05)", async () => {
+  it("ローカルZIPを開く・診断ログをコピー・設定ボタン押下で対応コールバックが呼ばれ、onOpenSettings省略時も安全に動作すること (AC-BS-01, AC-BS-05, AC-BS-07)", async () => {
     const user = userEvent.setup();
     const onOpenLocalZip = vi.fn();
     const onCopyDiagnostics = vi.fn();
+    const onOpenSettings = vi.fn();
 
-    render(
+    const { unmount } = render(
       <Default
         onOpenLocalZip={onOpenLocalZip}
         onCopyDiagnostics={onCopyDiagnostics}
+        onOpenSettings={onOpenSettings}
       />,
     );
 
@@ -65,9 +71,23 @@ describe("BookshelfHeader", () => {
 
     await user.click(screen.getByTestId("copy-diagnostics-button"));
     expect(onCopyDiagnostics).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByTestId("header-settings-button"));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+    unmount();
+
+    // onOpenSettings 省略時も例外なく押下可能であること
+    render(
+      <BookshelfHeader
+        copyStatus="idle"
+        onCopyDiagnostics={vi.fn()}
+        onOpenLocalZip={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByTestId("header-settings-button"));
   });
 
-  it("ヘッダーがセーフエリア上余白を確保しアクションボタンにtouch-manipulationクラスが付与されていること (AC-BS-01, AC-BS-05)", () => {
+  it("ヘッダーがセーフエリア上余白を確保しアクションボタンにtouch-manipulationクラスが付与されていること (AC-BS-01, AC-BS-05, AC-BS-07)", () => {
     render(<Default />);
 
     const header = screen.getByRole("banner");
@@ -80,6 +100,9 @@ describe("BookshelfHeader", () => {
       "touch-manipulation",
     );
     expect(screen.getByTestId("copy-diagnostics-button")).toHaveClass(
+      "touch-manipulation",
+    );
+    expect(screen.getByTestId("header-settings-button")).toHaveClass(
       "touch-manipulation",
     );
   });
