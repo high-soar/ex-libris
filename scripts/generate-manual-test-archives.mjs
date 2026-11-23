@@ -171,6 +171,24 @@ export function buildDeterministicStoreZip(entries) {
 }
 
 /**
+ * CP932(Shift_JIS)およびZIP64構造でZIP/CBZバイト列を組み立てる（Redスタブ）
+ * @param {readonly { name: string | Uint8Array; data: Uint8Array; flags?: number; compressionMethod?: 0 | 8 }[]} entries
+ * @returns {Buffer}
+ */
+export function buildDeterministicCp932Zip64(entries) {
+  void entries;
+  return Buffer.alloc(0);
+}
+
+/**
+ * HO-05 実機検証用: CP932(GPBF Bit11=0)・__MACOSX除外・物理逆順・ZIP64飽和構造の 4 ページ CBZ を生成する（Redスタブ）
+ * @returns {Buffer}
+ */
+export function buildHo05Cp932Zip64TestArchive() {
+  return Buffer.alloc(0);
+}
+
+/**
  * HO-07 実機検証用: MAX_TEXTURE_SIZE（4096/8192/16384）超過画像を含む 6 ページ CBZ を生成する
  * @returns {Buffer}
  */

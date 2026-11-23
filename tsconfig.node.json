@@ -21,5 +21,6 @@
     "playwright.vrt.config.ts",
     "playwright.it.config.ts",
     "scripts/**/*.ts"
-  ]
+  ],
+  "exclude": ["scripts/**/*.test.ts"]
 }
