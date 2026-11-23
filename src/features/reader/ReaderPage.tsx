@@ -315,6 +315,24 @@ function persistZipIndexCacheSafely(
   });
 }
 
+async function deleteZipIndexCacheSafely(
+  repo: ZipIndexCacheRepository,
+  cacheKey: string,
+  isCurrentAttempt: () => boolean,
+): Promise<void> {
+  try {
+    await repo.delete(cacheKey);
+  } catch (deleteError) {
+    if (isCurrentAttempt()) {
+      diagnosticLogger.warn(
+        "reader",
+        "目次キャッシュの削除に失敗しました",
+        `${cacheKey}: ${formatErrorMessage(deleteError)}`,
+      );
+    }
+  }
+}
+
 async function readReadingProgressSafely(
   repo: ReadingProgressRepository,
   targetKey: string,
@@ -352,6 +370,20 @@ async function readShaderDefaultsSafely(
   }
 }
 
+function clampAnchorForPageCount(
+  pageIndex: number,
+  spreadPageOffset: SpreadPageOffset,
+  pageCount: number,
+): {
+  readonly pageIndex: number;
+  readonly spreadPageOffset: SpreadPageOffset;
+} {
+  return {
+    pageIndex: Math.min(pageCount - 1, Math.max(0, pageIndex)),
+    spreadPageOffset: pageCount > 1 ? spreadPageOffset : 0,
+  };
+}
+
 function resolveRestoredProgressAnchor(
   savedProgress: ReadingProgressRecord | null,
   pageCount: number,
@@ -362,13 +394,11 @@ function resolveRestoredProgressAnchor(
   if (savedProgress === null) {
     return { pageIndex: 0, spreadPageOffset: 0 };
   }
-  return {
-    pageIndex: Math.min(
-      pageCount - 1,
-      Math.max(0, savedProgress.currentPageIndex),
-    ),
-    spreadPageOffset: pageCount > 1 ? savedProgress.spreadPageOffset : 0,
-  };
+  return clampAnchorForPageCount(
+    savedProgress.currentPageIndex,
+    savedProgress.spreadPageOffset,
+    pageCount,
+  );
 }
 
 function isConfirmedNonLandscape(dims: PageDimensions | undefined): boolean {
@@ -706,6 +736,24 @@ export function ReaderPage({
     };
   }, [onRegisterExit, handleExitRequest]);
 
+  const applyOpenedArchiveAnchor = useCallback(
+    (
+      pageIndex: number,
+      pageCount: number,
+      spreadPageOffsetValue: SpreadPageOffset,
+    ) => {
+      spreadPageOffsetRef.current = spreadPageOffsetValue;
+      setSpreadPageOffset(spreadPageOffsetValue);
+      currentPageIndexRef.current = pageIndex;
+      setCurrentPageIndex(pageIndex);
+      totalPagesRef.current = pageCount;
+      setTotalPages(pageCount);
+      isOpeningRef.current = false;
+      setIsOpening(false);
+    },
+    [],
+  );
+
   const repairFromIndexCache = useCallback(
     async (
       runtime: ReaderRuntime,
@@ -736,17 +784,11 @@ export function ReaderPage({
       const isRepairActive = () =>
         runtimeRef.current === runtime && epochRef.current === repairEpoch;
 
-      try {
-        await zipIndexCacheRepo.delete(runtime.source.indexCacheKey);
-      } catch (deleteError) {
-        if (isRepairActive()) {
-          diagnosticLogger.warn(
-            "reader",
-            "目次キャッシュの削除に失敗しました",
-            `${runtime.source.indexCacheKey}: ${formatErrorMessage(deleteError)}`,
-          );
-        }
-      }
+      await deleteZipIndexCacheSafely(
+        zipIndexCacheRepo,
+        runtime.source.indexCacheKey,
+        isRepairActive,
+      );
 
       if (!isRepairActive()) {
         return;
@@ -780,21 +822,14 @@ export function ReaderPage({
           result.entries,
         );
 
-        const clampedPage = Math.min(
-          result.pageCount - 1,
-          Math.max(0, currentPageIndexRef.current),
-        );
-        const clampedOffset: SpreadPageOffset =
-          result.pageCount > 1 ? spreadPageOffsetRef.current : 0;
+        const { pageIndex: clampedPage, spreadPageOffset: clampedOffset } =
+          clampAnchorForPageCount(
+            currentPageIndexRef.current,
+            spreadPageOffsetRef.current,
+            result.pageCount,
+          );
 
-        spreadPageOffsetRef.current = clampedOffset;
-        setSpreadPageOffset(clampedOffset);
-        currentPageIndexRef.current = clampedPage;
-        setCurrentPageIndex(clampedPage);
-        totalPagesRef.current = result.pageCount;
-        setTotalPages(result.pageCount);
-        isOpeningRef.current = false;
-        setIsOpening(false);
+        applyOpenedArchiveAnchor(clampedPage, result.pageCount, clampedOffset);
         await loadPageWindowRef.current!(
           runtime,
           clampedPage,
@@ -814,7 +849,7 @@ export function ReaderPage({
         );
       }
     },
-    [reportArchiveError, zipIndexCacheRepo],
+    [applyOpenedArchiveAnchor, reportArchiveError, zipIndexCacheRepo],
   );
 
   const fetchAndStorePages = useCallback(
@@ -1264,14 +1299,11 @@ export function ReaderPage({
         const { pageIndex: restoredPage, spreadPageOffset: restoredOffset } =
           resolveRestoredProgressAnchor(savedProgress, result.pageCount);
 
-        spreadPageOffsetRef.current = restoredOffset;
-        setSpreadPageOffset(restoredOffset);
-        currentPageIndexRef.current = restoredPage;
-        setCurrentPageIndex(restoredPage);
-        totalPagesRef.current = result.pageCount;
-        setTotalPages(result.pageCount);
-        isOpeningRef.current = false;
-        setIsOpening(false);
+        applyOpenedArchiveAnchor(
+          restoredPage,
+          result.pageCount,
+          restoredOffset,
+        );
         await loadPageWindow(
           runtime,
           restoredPage,
@@ -1297,6 +1329,7 @@ export function ReaderPage({
   }, [
     session,
     initialSnapshot,
+    applyOpenedArchiveAnchor,
     applyShaderParams,
     createCoordinatorSession,
     zipIndexCacheRepo,
