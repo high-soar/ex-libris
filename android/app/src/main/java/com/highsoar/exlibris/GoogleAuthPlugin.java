@@ -65,6 +65,7 @@ public class GoogleAuthPlugin extends Plugin {
     private final Object signInLock = new Object();
     private final AtomicInteger authEpoch = new AtomicInteger(0);
     private volatile String pendingSignInCallId;
+    private volatile int pendingSignInEpoch = 0;
     private volatile boolean signInInProgress = false;
     private volatile boolean isDestroyed = false;
 
@@ -90,6 +91,7 @@ public class GoogleAuthPlugin extends Plugin {
         synchronized (signInLock) {
             callIdToRelease = pendingSignInCallId;
             pendingSignInCallId = null;
+            pendingSignInEpoch = 0;
             signInInProgress = false;
         }
         if (callIdToRelease != null && getBridge() != null) {
@@ -125,7 +127,11 @@ public class GoogleAuthPlugin extends Plugin {
         Identity.getAuthorizationClient(activity)
             .authorize(buildAuthorizationRequest())
             .addOnSuccessListener(authResult -> {
-                if (isDestroyed || authEpoch.get() != epochAtStart) {
+                if (isDestroyed) {
+                    return;
+                }
+                if (authEpoch.get() != epochAtStart) {
+                    call.resolve(buildStatusResult("unlinked"));
                     return;
                 }
                 if (authResult.hasResolution()) {
@@ -145,7 +151,11 @@ public class GoogleAuthPlugin extends Plugin {
                     accessToken,
                     true,
                     resolvedEmail -> {
-                        if (isDestroyed || authEpoch.get() != epochAtStart) {
+                        if (isDestroyed) {
+                            return;
+                        }
+                        if (authEpoch.get() != epochAtStart) {
+                            call.resolve(buildStatusResult("unlinked"));
                             return;
                         }
                         saveAuthPreferences(resolvedEmail);
@@ -154,7 +164,11 @@ public class GoogleAuthPlugin extends Plugin {
                 );
             })
             .addOnFailureListener(ex -> {
-                if (isDestroyed || authEpoch.get() != epochAtStart) {
+                if (isDestroyed) {
+                    return;
+                }
+                if (authEpoch.get() != epochAtStart) {
+                    call.resolve(buildStatusResult("unlinked"));
                     return;
                 }
                 // 一時的なネットワーク/GMS障害時は SharedPreferences の連携状態をクリアせず維持する
@@ -170,20 +184,27 @@ public class GoogleAuthPlugin extends Plugin {
             return;
         }
 
+        final int epochAtStart;
         synchronized (signInLock) {
             if (signInInProgress || pendingSignInCallId != null) {
                 call.reject("Google sign-in is already in progress", ERROR_AUTH_FAILED);
                 return;
             }
+            epochAtStart = authEpoch.get();
+            pendingSignInEpoch = epochAtStart;
             signInInProgress = true;
         }
 
-        final int epochAtStart = authEpoch.get();
         Identity.getAuthorizationClient(activity)
             .authorize(buildAuthorizationRequest())
             .addOnSuccessListener(authResult -> {
                 if (isDestroyed) {
                     clearSignInProgress();
+                    return;
+                }
+                if (authEpoch.get() != epochAtStart) {
+                    clearSignInProgress();
+                    call.reject("Google sign-in was superseded by sign-out", ERROR_AUTH_REQUIRED);
                     return;
                 }
                 if (!authResult.hasResolution()) {
@@ -199,7 +220,10 @@ public class GoogleAuthPlugin extends Plugin {
                         false,
                         resolvedEmail -> {
                             clearSignInProgress();
-                            if (isDestroyed || authEpoch.get() != epochAtStart) {
+                            if (isDestroyed) {
+                                return;
+                            }
+                            if (authEpoch.get() != epochAtStart) {
                                 call.reject("Google sign-in was superseded by sign-out", ERROR_AUTH_REQUIRED);
                                 return;
                             }
@@ -218,7 +242,17 @@ public class GoogleAuthPlugin extends Plugin {
                 }
 
                 synchronized (signInLock) {
+                    if (isDestroyed || authEpoch.get() != epochAtStart) {
+                        pendingSignInCallId = null;
+                        pendingSignInEpoch = 0;
+                        signInInProgress = false;
+                        if (!isDestroyed) {
+                            call.reject("Google sign-in was superseded by sign-out", ERROR_AUTH_REQUIRED);
+                        }
+                        return;
+                    }
                     pendingSignInCallId = call.getCallbackId();
+                    pendingSignInEpoch = epochAtStart;
                 }
                 getBridge().saveCall(call);
                 try {
@@ -227,6 +261,7 @@ public class GoogleAuthPlugin extends Plugin {
                 } catch (Exception ex) {
                     synchronized (signInLock) {
                         pendingSignInCallId = null;
+                        pendingSignInEpoch = 0;
                         signInInProgress = false;
                     }
                     getBridge().releaseCall(call);
@@ -236,6 +271,10 @@ public class GoogleAuthPlugin extends Plugin {
             .addOnFailureListener(ex -> {
                 clearSignInProgress();
                 if (isDestroyed) {
+                    return;
+                }
+                if (authEpoch.get() != epochAtStart) {
+                    call.reject("Google sign-in was superseded by sign-out", ERROR_AUTH_REQUIRED);
                     return;
                 }
                 rejectWithAuthError(call, "Google sign-in authorization failed", ex);
@@ -267,9 +306,14 @@ public class GoogleAuthPlugin extends Plugin {
                     }
                 })
                 .addOnFailureListener(ex -> {
-                    if (!isDestroyed && authEpoch.get() == epochAtStart) {
-                        rejectWithAuthError(call, "Failed to clear cached Google access token", ex);
+                    if (isDestroyed) {
+                        return;
                     }
+                    if (authEpoch.get() != epochAtStart) {
+                        call.reject("Google token refresh was superseded by sign-out", ERROR_AUTH_REQUIRED);
+                        return;
+                    }
+                    rejectWithAuthError(call, "Failed to clear cached Google access token", ex);
                 });
             return;
         }
@@ -362,7 +406,11 @@ public class GoogleAuthPlugin extends Plugin {
                 );
             })
             .addOnFailureListener(ex -> {
-                if (isDestroyed || authEpoch.get() != epochAtStart) {
+                if (isDestroyed) {
+                    return;
+                }
+                if (authEpoch.get() != epochAtStart) {
+                    call.reject("Google token refresh was superseded by sign-out", ERROR_AUTH_REQUIRED);
                     return;
                 }
                 rejectWithAuthError(call, "Failed to refresh Google access token", ex);
@@ -371,9 +419,12 @@ public class GoogleAuthPlugin extends Plugin {
 
     private void handleAuthorizationActivityResult(@NonNull ActivityResult activityResult) {
         String callbackId;
+        int epochAtStart;
         synchronized (signInLock) {
             callbackId = pendingSignInCallId;
+            epochAtStart = pendingSignInEpoch;
             pendingSignInCallId = null;
+            pendingSignInEpoch = 0;
         }
 
         if (callbackId == null || getBridge() == null) {
@@ -387,6 +438,16 @@ public class GoogleAuthPlugin extends Plugin {
             return;
         }
         getBridge().releaseCall(savedCall);
+
+        if (isDestroyed) {
+            clearSignInProgress();
+            return;
+        }
+        if (authEpoch.get() != epochAtStart) {
+            clearSignInProgress();
+            savedCall.reject("Google sign-in was superseded by sign-out", ERROR_AUTH_REQUIRED);
+            return;
+        }
 
         if (activityResult.getResultCode() == Activity.RESULT_CANCELED) {
             clearSignInProgress();
@@ -408,7 +469,6 @@ public class GoogleAuthPlugin extends Plugin {
             return;
         }
 
-        final int epochAtResult = authEpoch.get();
         try {
             AuthorizationResult authResult = Identity
                 .getAuthorizationClient(activity)
@@ -426,7 +486,10 @@ public class GoogleAuthPlugin extends Plugin {
                 false,
                 resolvedEmail -> {
                     clearSignInProgress();
-                    if (isDestroyed || authEpoch.get() != epochAtResult) {
+                    if (isDestroyed) {
+                        return;
+                    }
+                    if (authEpoch.get() != epochAtStart) {
                         savedCall.reject("Google sign-in was superseded by sign-out", ERROR_AUTH_REQUIRED);
                         return;
                     }
@@ -436,6 +499,13 @@ public class GoogleAuthPlugin extends Plugin {
             );
         } catch (ApiException ex) {
             clearSignInProgress();
+            if (isDestroyed) {
+                return;
+            }
+            if (authEpoch.get() != epochAtStart) {
+                savedCall.reject("Google sign-in was superseded by sign-out", ERROR_AUTH_REQUIRED);
+                return;
+            }
             if (ex.getStatusCode() == CommonStatusCodes.CANCELED) {
                 savedCall.resolve(buildStatusResult("cancelled"));
                 return;
@@ -443,6 +513,13 @@ public class GoogleAuthPlugin extends Plugin {
             rejectWithAuthError(savedCall, "Failed to extract Google authorization result", ex);
         } catch (Exception ex) {
             clearSignInProgress();
+            if (isDestroyed) {
+                return;
+            }
+            if (authEpoch.get() != epochAtStart) {
+                savedCall.reject("Google sign-in was superseded by sign-out", ERROR_AUTH_REQUIRED);
+                return;
+            }
             savedCall.reject("Unexpected failure while processing Google authorization result", ERROR_AUTH_FAILED, ex);
         }
     }
@@ -603,6 +680,7 @@ public class GoogleAuthPlugin extends Plugin {
     private void clearSignInProgress() {
         synchronized (signInLock) {
             signInInProgress = false;
+            pendingSignInEpoch = 0;
         }
     }
 
