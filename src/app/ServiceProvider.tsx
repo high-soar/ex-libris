@@ -31,6 +31,20 @@ export interface ServiceProviderProps {
   readonly readerSettingsRepo?: ReaderSettingsRepository;
 }
 
+export interface ResetTestDbExposureOptions {
+  readonly isNativePlatform?: boolean;
+  readonly isDev?: boolean;
+  readonly mode?: string;
+  readonly isWebDriver?: boolean;
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function shouldExposeResetTestDb(
+  _options: ResetTestDbExposureOptions = {},
+): boolean {
+  return true;
+}
+
 function createDefaultAppBridge(): AppBridge {
   return Capacitor.isNativePlatform()
     ? new CapacitorAppBridge()
