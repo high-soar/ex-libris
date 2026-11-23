@@ -209,7 +209,7 @@ export function DriveFolderPickerModal({
             onClose();
           }
         }}
-        className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm"
+        className="fixed inset-0 bg-slate-950/80"
       />
       <section
         data-testid="drive-folder-picker-modal"
@@ -222,7 +222,7 @@ export function DriveFolderPickerModal({
         className="relative z-10 flex max-h-[85vh] w-full max-w-lg flex-col rounded-2xl border border-slate-700/80 bg-slate-900 p-5 text-slate-100 shadow-2xl"
       >
         <div className="flex items-center justify-between gap-3">
-          <h2 className="text-base font-bold text-white">
+          <h2 className="min-w-0 text-sm font-bold text-white sm:text-base">
             Google Drive フォルダを選択
           </h2>
           <button
@@ -230,7 +230,7 @@ export function DriveFolderPickerModal({
             data-testid="close-folder-picker-button"
             disabled={isSaving}
             onClick={onClose}
-            className="touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+            className="shrink-0 whitespace-nowrap touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
           >
             閉じる
           </button>
