@@ -211,25 +211,12 @@ describe("coordinatorTransfer", () => {
     expect(transferSpy).not.toHaveBeenCalled();
 
     // デフォルト引数(Comlink.transfer)で Comlink.expose の postMessage へ Transferable が渡されること
-    const workerBus = new EventTarget();
-    const clientBus = new EventTarget();
     const sentTransfers: Transferable[][] = [];
-
-    const serverEndpoint: Comlink.Endpoint = {
-      postMessage(message, transfer = []) {
+    const { serverEndpoint, clientEndpoint } = createInMemoryComlinkPair(
+      (transfer) => {
         sentTransfers.push([...transfer]);
-        clientBus.dispatchEvent(new MessageEvent("message", { data: message }));
       },
-      addEventListener: workerBus.addEventListener.bind(workerBus),
-      removeEventListener: workerBus.removeEventListener.bind(workerBus),
-    };
-    const clientEndpoint: Comlink.Endpoint = {
-      postMessage(message) {
-        workerBus.dispatchEvent(new MessageEvent("message", { data: message }));
-      },
-      addEventListener: clientBus.addEventListener.bind(clientBus),
-      removeEventListener: clientBus.removeEventListener.bind(clientBus),
-    };
+    );
 
     const exposedApi = {
       getMixed: () => transferDecodedFrames(mixedFrames),
@@ -249,3 +236,31 @@ describe("coordinatorTransfer", () => {
     remote[Comlink.releaseProxy]();
   });
 });
+
+function createInMemoryComlinkPair(
+  onServerPostMessage: (transfer: readonly Transferable[]) => void,
+): {
+  readonly serverEndpoint: Comlink.Endpoint;
+  readonly clientEndpoint: Comlink.Endpoint;
+} {
+  const workerBus = new EventTarget();
+  const clientBus = new EventTarget();
+
+  return {
+    serverEndpoint: {
+      postMessage(message, transfer = []) {
+        onServerPostMessage(transfer);
+        clientBus.dispatchEvent(new MessageEvent("message", { data: message }));
+      },
+      addEventListener: workerBus.addEventListener.bind(workerBus),
+      removeEventListener: workerBus.removeEventListener.bind(workerBus),
+    },
+    clientEndpoint: {
+      postMessage(message) {
+        workerBus.dispatchEvent(new MessageEvent("message", { data: message }));
+      },
+      addEventListener: clientBus.addEventListener.bind(clientBus),
+      removeEventListener: clientBus.removeEventListener.bind(clientBus),
+    },
+  };
+}
