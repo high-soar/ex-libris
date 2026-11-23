@@ -29,6 +29,11 @@ related_tests:
   - src/App.test.tsx
   - src/app/ServiceProvider.test.tsx
   - src/diagnostics/diagnosticLogger.test.ts
+  - src/features/settings/DiagnosticsSection.test.tsx
+  - src/features/settings/DriveFolderPickerModal.test.tsx
+  - src/features/settings/DriveSyncRootsSection.test.tsx
+  - src/features/settings/GoogleAccountSection.test.tsx
+  - src/features/settings/SettingsHeader.test.tsx
   - src/shared/router/RouterProvider.test.tsx
   - src/shared/router/routeMatcher.test.ts
 ---

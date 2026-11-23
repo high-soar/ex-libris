@@ -31,6 +31,7 @@ related_tests:
   - src/App.test.tsx
   - src/features/bookshelf/BookshelfPage.test.tsx
   - src/features/bookshelf/BookshelfHeader.test.tsx
+  - src/features/bookshelf/DriveSetupBanner.test.tsx
   - src/features/bookshelf/LocalArchiveEmptyState.test.tsx
   - src/features/bookshelf/RecentLocalHistorySection.test.tsx
   - src/features/reader/localReaderSessionStore.test.ts

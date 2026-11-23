@@ -43,7 +43,13 @@ related_tests:
   - src/engine/workers/CoordinatorCore.test.ts
   - src/features/bookshelf/BookshelfHeader.test.tsx
   - src/features/bookshelf/BookshelfPage.test.tsx
+  - src/features/bookshelf/DriveSetupBanner.test.tsx
   - src/features/reader/ReaderPage.test.tsx
+  - src/features/settings/DiagnosticsSection.test.tsx
+  - src/features/settings/DriveFolderPickerModal.test.tsx
+  - src/features/settings/DriveSyncRootsSection.test.tsx
+  - src/features/settings/GoogleAccountSection.test.tsx
+  - src/features/settings/SettingsHeader.test.tsx
   - src/shared/router/RouterProvider.test.tsx
   - src/shared/router/routeMatcher.test.ts
   - src/storage/db.test.ts
