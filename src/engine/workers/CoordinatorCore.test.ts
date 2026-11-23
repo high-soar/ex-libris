@@ -12,7 +12,7 @@ import {
   buildSyntheticZip,
   createMemoryReader,
 } from "../zip/__fixtures__/zipBuilder";
-import { CoordinatorCore } from "./CoordinatorCore";
+import { CoordinatorCore, canReuseAccessToken } from "./CoordinatorCore";
 import { prepareDecodeTransfer } from "./coordinatorTransfer";
 
 interface FakeBitmapWithSpy extends ImageBitmap {
@@ -63,7 +63,10 @@ function parseRangeHeader(
   headers: HeadersInit | undefined,
   totalSize: number,
 ): { readonly start: number; readonly end: number } {
-  const range = new Headers(headers).get("Range") ?? "";
+  const range =
+    headers instanceof Headers
+      ? (headers.get("Range") ?? "")
+      : ((headers as Record<string, string> | undefined)?.Range ?? "");
   const match = /^bytes=(\d+)-(\d+)$/.exec(range);
   if (!match) {
     throw new Error(`Unexpected Range header: ${range}`);
@@ -1448,6 +1451,8 @@ describe("CoordinatorCore", () => {
     await expect(
       coordinator.openArchive(createGdriveSource(zipBytes), null, 7),
     ).rejects.toMatchObject({ code: "READ_ERROR" });
+
+    expect(canReuseAccessToken("ya29.tok", { forceRefresh: true })).toBe(false);
   });
 });
 

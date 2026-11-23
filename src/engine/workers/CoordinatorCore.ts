@@ -1,4 +1,8 @@
 import { L2ByteCache } from "../cache/L2ByteCache";
+import {
+  type GetRangeAccessTokenOptions,
+  GoogleDriveRangeReader,
+} from "../io/GoogleDriveRangeReader";
 import { LocalFileReader } from "../io/LocalFileReader";
 import { runPrefetchBatches } from "../prefetch/AdaptivePrefetcher";
 import type {
@@ -39,26 +43,19 @@ interface InflightPageRead {
   consumerCount: number;
 }
 
-function defaultCreateReader(
-  source: ArchiveSourceDescriptor,
-  _accessToken: string | null,
-): RandomAccessReader {
-  switch (source.kind) {
-    case "local-session":
-      return new LocalFileReader(source.file);
-    case "gdrive":
-      throw new ZipArchiveError(
-        "READ_ERROR",
-        "Google Driveソースは次期バージョン(v0.2)で対応予定です",
-      );
-    default: {
-      const _exhaustiveCheck: never = source;
-      throw new ZipArchiveError(
-        "READ_ERROR",
-        `未対応のアーカイブソース種別です: ${String((_exhaustiveCheck as { kind?: unknown }).kind)}`,
-      );
-    }
+export function canReuseAccessToken(
+  currentToken: string | null,
+  options: GetRangeAccessTokenOptions,
+): currentToken is string {
+  if (currentToken === null || currentToken.length === 0) {
+    return false;
   }
+  if (options.forceRefresh !== true) {
+    return true;
+  }
+  return (
+    options.failedToken !== undefined && currentToken !== options.failedToken
+  );
 }
 
 function abortControllers(controllers: Iterable<AbortController>): void {
@@ -98,6 +95,8 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
   private entries: ZipPageEntry[] = [];
   private minActiveEpoch = 0;
   private accessToken: string | null = null;
+  private tokenVersion = 0;
+  private hostCallbacks: CoordinatorHostCallbacks | null = null;
   private readonly inflightAbortControllers = new Map<
     number,
     Set<AbortController>
@@ -111,8 +110,67 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
 
   constructor(deps: CoordinatorCoreDeps) {
     this.decodePool = deps.decodePool;
-    this.createReader = deps.createReader ?? defaultCreateReader;
+    this.createReader =
+      deps.createReader ?? ((source) => this.createDefaultReader(source));
     this.l2Cache = new L2ByteCache({ maxBytes: deps.l2MaxBytes });
+  }
+
+  private async resolveDriveAccessToken(
+    options: GetRangeAccessTokenOptions = {},
+  ): Promise<string> {
+    const currentToken = this.accessToken;
+    if (canReuseAccessToken(currentToken, options)) {
+      return currentToken;
+    }
+
+    const callbacks = this.hostCallbacks;
+    if (callbacks === null) {
+      throw new ZipArchiveError(
+        "READ_ERROR",
+        "Google Driveアクセストークン取得用のホストコールバックが未設定です",
+      );
+    }
+
+    const versionAtCall = this.tokenVersion;
+    const nextToken = await callbacks.refreshAccessToken({
+      forceRefresh: options.forceRefresh === true,
+      failedToken: options.failedToken,
+    });
+
+    if (this.tokenVersion === versionAtCall) {
+      this.accessToken = nextToken;
+    }
+    return nextToken;
+  }
+
+  private createDefaultReader(
+    source: ArchiveSourceDescriptor,
+  ): RandomAccessReader {
+    switch (source.kind) {
+      case "local-session":
+        return new LocalFileReader(source.file);
+      case "gdrive":
+        return new GoogleDriveRangeReader({
+          driveFileId: source.driveFileId,
+          totalSize: source.fileSize,
+          getAccessToken: (options) => this.resolveDriveAccessToken(options),
+          onDiagnostic: (level, message, detail) => {
+            this.hostCallbacks?.reportDiagnostic(
+              level,
+              "gdrive-range",
+              message,
+              detail,
+            );
+          },
+        });
+      default: {
+        const _exhaustiveCheck: never = source;
+        throw new ZipArchiveError(
+          "READ_ERROR",
+          `未対応のアーカイブソース種別です: ${String((_exhaustiveCheck as { kind?: unknown }).kind)}`,
+        );
+      }
+    }
   }
 
   private registerAbortController(epoch: number): AbortController {
@@ -499,10 +557,13 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
   }
 
   updateAccessToken(accessToken: string | null): void {
+    this.tokenVersion += 1;
     this.accessToken = accessToken;
   }
 
-  setHostCallbacks(_callbacks: CoordinatorHostCallbacks | null): void {}
+  setHostCallbacks(callbacks: CoordinatorHostCallbacks | null): void {
+    this.hostCallbacks = callbacks;
+  }
 
   cancelEpochBelow(minActiveEpoch: number): void {
     if (minActiveEpoch > this.minActiveEpoch) {
