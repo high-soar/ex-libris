@@ -29,6 +29,9 @@ export function matchRoute(path: string): AppRoute {
   if (normalized === READER_LOCAL_ROUTE.path) {
     return READER_LOCAL_ROUTE;
   }
+  if (normalized === SETTINGS_ROUTE.path) {
+    return SETTINGS_ROUTE;
+  }
   return BOOKSHELF_ROUTE;
 }
 
