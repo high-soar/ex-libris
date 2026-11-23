@@ -351,6 +351,61 @@ describe("Android build, Capacitor & Remote Agent governance invariants", () => 
     expect(release).toContain("gh release create");
   });
 
+  it("release.yml が vX.Y.md と vX.Y-*.md 双方の品質分析レポートを検出し v0.1.md 形式で Release ノートにリンクすること (AC-APK-05, R1-20)", () => {
+    const release = fs.readFileSync(
+      path.resolve(repoRoot, ".github/workflows/release.yml"),
+      "utf8",
+    );
+
+    const patternMatch = release.match(
+      /const\s+reportPattern\s*=\s*new RegExp\((`[^`]+`)\)/,
+    );
+    expect(patternMatch).not.toBeNull();
+
+    // Evaluate the exact template expression for major=0, minor=1
+    const major = "0";
+    const minor = "1";
+    const reportPattern = new RegExp(`^v${major}\\.${minor}(?:-.*)?\\.md$`);
+    expect(release).toContain(
+      "new RegExp(`^v${major}\\\\.${minor}(?:-.*)?\\\\.md$`)",
+    );
+    expect(release).toContain("docs/quality/reports/");
+    expect(reportPattern.test("v0.1.md")).toBe(true);
+    expect(reportPattern.test("v0.1-appendix.md")).toBe(true);
+    expect(reportPattern.test("v0.10.md")).toBe(false);
+    expect(reportPattern.test("v1.1.md")).toBe(false);
+    expect(reportPattern.test("phase3-poc.md")).toBe(false);
+  });
+
+  it("release.yml が必要な権限を持ち APK ビルド前に SemVer 後退防止と対象 SHA の CI quality-gate 成功を検証すること (AC-APK-05, R1-16)", () => {
+    const release = fs.readFileSync(
+      path.resolve(repoRoot, ".github/workflows/release.yml"),
+      "utf8",
+    );
+
+    expect(release).toMatch(
+      /permissions:\s*\n\s+actions:\s*read\s*\n\s+checks:\s*read\s*\n\s+contents:\s*write/,
+    );
+    expect(release).toContain("refs/tags/v");
+    expect(release).toContain("Verify SemVer progression");
+    expect(release).toContain("Verify CI quality-gate passed");
+    expect(release).toContain("actions/workflows/ci.yml/runs");
+    expect(release).toContain("Lint, Test & Quality Gates");
+
+    const checkExistingIdx = release.indexOf("Check existing tag and release");
+    const semverIdx = release.indexOf("Verify SemVer progression");
+    const ciVerifyIdx = release.indexOf("Verify CI quality-gate passed");
+    const buildApkIdx = release.indexOf("Build Signed Release APK");
+    expect(checkExistingIdx).toBeGreaterThan(-1);
+    expect(semverIdx).toBeGreaterThan(checkExistingIdx);
+    expect(ciVerifyIdx).toBeGreaterThan(semverIdx);
+    expect(buildApkIdx).toBeGreaterThan(ciVerifyIdx);
+
+    const semverSection = release.slice(semverIdx, ciVerifyIdx);
+    expect(semverSection).toContain("set -euo pipefail");
+    expect(semverSection).not.toMatch(/git ls-remote[^\n]*\|/);
+  });
+
   it("ci.yml の android-compile ジョブが Secret 非依存で ./gradlew assembleDebug を維持しつつゼロコンフィグ異常系 Gradle ガード検証ステップを含むこと (AC-APK-03)", () => {
     const ci = fs.readFileSync(
       path.resolve(repoRoot, ".github/workflows/ci.yml"),

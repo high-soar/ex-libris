@@ -7,7 +7,7 @@ Android 実機および PC ブラウザでの手動検証（`HO-xx`・境界値�
 ### 1. `ho05-cp932-zip64-test.cbz`（約 9 KB / 8,510 B / 有効 4 ページ＋除外 1 エントリ）
 
 - **用途**: GPBF Bit 11 = 0（UTF-8 フラグ未設定）の Shift_JIS（CP932）日本語ファイル名（機種依存文字 `①` 含む）復元、`__MACOSX/._001.png` 除外、物理逆順格納に対するセグメント自然順ソート（`第1話/001.png` → `第1話/①特典.png` → `第2話/002.png` → `第10話/010.png`）、ZIP64（各 CDH `0x0001` 24B Extra Field＋`0xFFFFFFFF` 飽和・56B ZIP64 EOCD Record・20B ZIP64 Locator・飽和 Standard EOCD）解析（Store/Deflate 混在）、および同一ファイル再オープン時の `zipIndexCache` 0RTT（`fromIndexCache=true`）と TTFP タイムスタンプの実機検証（Issue #19 `HO-05` 用）。
-- **Google Drive 共有配置先**: `ExLibris` フォルダ（ID: `1yVyPgaJohZGoDg4s90aTUFi_S_0g6Tt7`）配下へ配置予定（Step 2 実機検証時に配置）
+- **Google Drive 共有配置先**: `ExLibris` フォルダ（ID: `1yVyPgaJohZGoDg4s90aTUFi_S_0g6Tt7`）内 `ho05-cp932-zip64-test.cbz`（ID: `1tZoy7AiLy2P_gxugsLW8g9I8TwMl4c5H`）
 
 | 論理ページ | 物理順 | エントリ名（CP932 / Bit 11 = 0） | 圧縮方式 | 解像度 (`W × H`) | 期待表示・目視/ログ確認観点                                                                                |
 | :--------: | :----: | :------------------------------- | :------: | :--------------: | :--------------------------------------------------------------------------------------------------------- |
