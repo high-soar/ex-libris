@@ -18,6 +18,7 @@ const meta: Meta<typeof BookshelfHeader> = {
     copyStatus: "idle",
     onCopyDiagnostics: () => {},
     onOpenLocalZip: () => {},
+    onOpenSettings: () => {},
   },
 };
 

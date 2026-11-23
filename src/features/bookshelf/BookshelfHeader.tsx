@@ -7,12 +7,14 @@ export interface BookshelfHeaderProps {
   readonly copyStatus: CopyStatus;
   readonly onCopyDiagnostics: () => void;
   readonly onOpenLocalZip: () => void;
+  readonly onOpenSettings?: () => void;
 }
 
 export function BookshelfHeader({
   copyStatus,
   onCopyDiagnostics,
   onOpenLocalZip,
+  onOpenSettings: _onOpenSettings,
 }: BookshelfHeaderProps): ReactNode {
   return (
     <header
