@@ -2416,17 +2416,26 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     await expect(canvas).toHaveAttribute("data-rendered-page", "1");
     await expect(page.getByTestId("reader-loading")).toBeHidden();
 
+    let settledAfterMoveTimestamp = 0;
     await expect
       .poll(async () => {
         const rec = await readReadingProgressRecord(page, targetKey);
-        return rec?.currentPageIndex ?? -1;
+        if (rec && rec.currentPageIndex === 1) {
+          settledAfterMoveTimestamp = rec.lastReadAt;
+          return true;
+        }
+        return false;
       })
-      .toBe(1);
+      .toBe(true);
 
     // 1. IndexedDB レコード削除後、visibilityState="hidden" + visibilitychange 発火で即時再保存されること
+    await expect
+      .poll(() => page.evaluate(() => Date.now()), { timeout: 2_000 })
+      .toBeGreaterThan(settledAfterMoveTimestamp);
     await deleteReadingProgressRecord(page, targetKey);
     expect(await readReadingProgressRecord(page, targetKey)).toBeNull();
 
+    const visibilityDispatchStartMs = await page.evaluate(() => Date.now());
     await page.evaluate(() => {
       const hadOwnDescriptor = Object.prototype.hasOwnProperty.call(
         document,
@@ -2462,11 +2471,23 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
         readStatus: "reading",
         spreadPageOffset: 0,
       });
+    const afterVisibilityRecord = await readReadingProgressRecord(
+      page,
+      targetKey,
+    );
+    expect(afterVisibilityRecord).not.toBeNull();
+    expect(afterVisibilityRecord!.lastReadAt).toBeGreaterThanOrEqual(
+      visibilityDispatchStartMs,
+    );
 
     // 2. 再削除後に window "pagehide" 発火で即時再保存されること
+    await expect
+      .poll(() => page.evaluate(() => Date.now()), { timeout: 2_000 })
+      .toBeGreaterThan(afterVisibilityRecord!.lastReadAt);
     await deleteReadingProgressRecord(page, targetKey);
     expect(await readReadingProgressRecord(page, targetKey)).toBeNull();
 
+    const pageHideDispatchStartMs = await page.evaluate(() => Date.now());
     await page.evaluate(() => {
       window.dispatchEvent(new Event("pagehide"));
     });
@@ -2481,6 +2502,14 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
         readStatus: "reading",
         spreadPageOffset: 0,
       });
+    const afterPageHideRecord = await readReadingProgressRecord(
+      page,
+      targetKey,
+    );
+    expect(afterPageHideRecord).not.toBeNull();
+    expect(afterPageHideRecord!.lastReadAt).toBeGreaterThanOrEqual(
+      pageHideDispatchStartMs,
+    );
 
     expect(pageErrors).toEqual([]);
   });
