@@ -3183,6 +3183,7 @@ describe("ReaderPage", () => {
     act(() => {
       getLatestHudProps().onClose();
     });
+    diagnosticLogger.clear();
     await act(async () => {
       defaultsRejectDeferred.reject(new Error("after TR-08 reject"));
       await flushMicrotasks();

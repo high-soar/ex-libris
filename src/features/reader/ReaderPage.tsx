@@ -1010,17 +1010,18 @@ export function ReaderPage({
     setTotalPages(0);
 
     const source = buildLocalArchiveSource(session);
+    const isCurrentRuntime = () => runtimeRef.current === runtime;
     const isCurrentAttempt = () =>
-      runtimeRef.current === runtime && epochRef.current === openEpoch;
+      isCurrentRuntime() && epochRef.current === openEpoch;
 
     void (async () => {
       const defaults = await readShaderDefaultsSafely(
         readerSettingsRepo,
-        isCurrentAttempt,
+        isCurrentRuntime,
       );
       if (
         defaults !== null &&
-        isCurrentAttempt() &&
+        isCurrentRuntime() &&
         !hasUserModifiedShaderRef.current
       ) {
         const normalized = normalizeShaderCorrectionParams(defaults);
