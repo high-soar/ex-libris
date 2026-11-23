@@ -26,6 +26,16 @@ export class ExLibrisDatabase extends Dexie {
       zipIndexCache: "cacheKey, cachedAt",
       readingProgress: "targetKey, volumeId, readStatus, lastReadAt, updatedAt",
     });
+    this.version(3).stores({
+      syncMeta: "key",
+      zipIndexCache: "cacheKey, cachedAt",
+      readingProgress: "targetKey, volumeId, readStatus, lastReadAt, updatedAt",
+      driveSyncRoots: "folderId, enabled, updatedAt, deletedAt",
+      series:
+        "id, title, titleReading, *authors, publisher, label, *tags, publicationStatus, lastReadAt, addedAt, updatedAt, deletedAt",
+      volumes:
+        "id, seriesId, [seriesId+volumeNumber], &driveFileId, rootFolderId, md5Checksum, coverStatus, isTrashed, addedAt, updatedAt",
+    });
   }
 }
 
