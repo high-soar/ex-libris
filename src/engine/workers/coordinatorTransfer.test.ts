@@ -1,3 +1,4 @@
+import * as Comlink from "comlink";
 import { describe, expect, it, vi } from "vitest";
 import type { DecodedPageFrame } from "../types";
 import {
@@ -5,6 +6,7 @@ import {
   isSharedBuffer,
   markSharedBuffer,
   prepareDecodeTransfer,
+  transferDecodedFrames,
 } from "./coordinatorTransfer";
 
 function createFakeBitmap(width = 800, height = 1200): ImageBitmap {
@@ -16,7 +18,7 @@ function createFakeBitmap(width = 800, height = 1200): ImageBitmap {
 }
 
 describe("coordinatorTransfer", () => {
-  it("単独所有のArrayBuffer全体を指すUint8ArrayはコピーせずZero-CopyでTransferableを返しstructuredCloneで元バッファがデタッチされること (AC-ENG-06, AC-ENG-08)", () => {
+  it("単独所有のArrayBuffer全体を指すUint8ArrayはコピーせずZero-CopyでTransferableを返しstructuredCloneで元バッファがデタッチされること (AC-ENG-14, AC-ENG-08)", () => {
     const standalone = new Uint8Array([10, 20, 30, 40]);
 
     const prepared = prepareDecodeTransfer(standalone, { shared: false });
@@ -76,7 +78,7 @@ describe("coordinatorTransfer", () => {
     expect(isSharedBuffer(sab)).toBe(false);
   });
 
-  it("byteOffset>0または部分長subarrayの場合は元バッファを保護するためsliceコピーしてTransferableを返すこと (AC-ENG-06, AC-ENG-08)", () => {
+  it("byteOffset>0または部分長subarrayの場合は元バッファを保護するためsliceコピーしてTransferableを返すこと (AC-ENG-14, AC-ENG-08)", () => {
     const backing = new Uint8Array([1, 2, 3, 4, 5, 6]);
 
     // 1. byteOffset > 0 かつ末尾まで
@@ -96,7 +98,7 @@ describe("coordinatorTransfer", () => {
     expect(preparedHead.transferables).toEqual([preparedHead.data.buffer]);
   });
 
-  it("SharedArrayBuffer由来のUint8Arrayは全体ビューでも新規ArrayBufferへコピーしてTransferableを返すこと (AC-ENG-06, AC-ENG-08)", () => {
+  it("SharedArrayBuffer由来のUint8Arrayは全体ビューでも新規ArrayBufferへコピーしてTransferableを返すこと (AC-ENG-14, AC-ENG-08)", () => {
     const sab = new SharedArrayBuffer(4);
     const sharedView = new Uint8Array(sab);
     sharedView.set([7, 8, 9, 10]);
@@ -154,4 +156,111 @@ describe("coordinatorTransfer", () => {
     expect(collectFrameTransferables(errorOnlyFrames)).toEqual([]);
     expect(collectFrameTransferables([])).toEqual([]);
   });
+
+  it("transferDecodedFramesがreadyビットマップ有無に応じてtransfer呼び出し有無を分岐しデフォルトComlink.transferでも実動作すること (AC-ENG-14, AC-ENG-08)", async () => {
+    const bitmap0 = createFakeBitmap(100, 200);
+    const bitmap2 = createFakeBitmap(300, 400);
+
+    const mixedFrames: DecodedPageFrame[] = [
+      {
+        status: "ready",
+        pageIndex: 0,
+        epoch: 1,
+        width: 100,
+        height: 200,
+        bitmap: bitmap0,
+      },
+      {
+        status: "error",
+        pageIndex: 1,
+        epoch: 1,
+        errorCode: "DECODE_FAILED",
+        message: "デコード失敗",
+      },
+      {
+        status: "ready",
+        pageIndex: 2,
+        epoch: 1,
+        width: 300,
+        height: 400,
+        bitmap: bitmap2,
+      },
+    ];
+    const errorOnlyFrames: DecodedPageFrame[] = [
+      {
+        status: "error",
+        pageIndex: 0,
+        epoch: 1,
+        errorCode: "CORRUPT_ZIP",
+        message: "破損ページ",
+      },
+    ];
+    const emptyFrames: DecodedPageFrame[] = [];
+
+    const transferSpy = vi.fn((frames: DecodedPageFrame[]) => frames);
+
+    expect(transferDecodedFrames(mixedFrames, transferSpy)).toBe(mixedFrames);
+    expect(transferSpy).toHaveBeenCalledTimes(1);
+    expect(transferSpy).toHaveBeenCalledWith(mixedFrames, [bitmap0, bitmap2]);
+
+    transferSpy.mockClear();
+    expect(transferDecodedFrames(errorOnlyFrames, transferSpy)).toBe(
+      errorOnlyFrames,
+    );
+    expect(transferDecodedFrames(emptyFrames, transferSpy)).toBe(emptyFrames);
+    expect(transferSpy).not.toHaveBeenCalled();
+
+    // デフォルト引数(Comlink.transfer)で Comlink.expose の postMessage へ Transferable が渡されること
+    const sentTransfers: Transferable[][] = [];
+    const { serverEndpoint, clientEndpoint } = createInMemoryComlinkPair(
+      (transfer) => {
+        sentTransfers.push([...transfer]);
+      },
+    );
+
+    const exposedApi = {
+      getMixed: () => transferDecodedFrames(mixedFrames),
+      getErrorOnly: () => transferDecodedFrames(errorOnlyFrames),
+    };
+    Comlink.expose(exposedApi, serverEndpoint);
+    const remote = Comlink.wrap<typeof exposedApi>(clientEndpoint);
+
+    const receivedMixed = await remote.getMixed();
+    expect(receivedMixed).toBe(mixedFrames);
+    expect(sentTransfers[0]).toEqual([bitmap0, bitmap2]);
+
+    const receivedErrorOnly = await remote.getErrorOnly();
+    expect(receivedErrorOnly).toBe(errorOnlyFrames);
+    expect(sentTransfers[1]).toEqual([]);
+
+    remote[Comlink.releaseProxy]();
+  });
 });
+
+function createInMemoryComlinkPair(
+  onServerPostMessage: (transfer: readonly Transferable[]) => void,
+): {
+  readonly serverEndpoint: Comlink.Endpoint;
+  readonly clientEndpoint: Comlink.Endpoint;
+} {
+  const workerBus = new EventTarget();
+  const clientBus = new EventTarget();
+
+  return {
+    serverEndpoint: {
+      postMessage(message, transfer = []) {
+        onServerPostMessage(transfer);
+        clientBus.dispatchEvent(new MessageEvent("message", { data: message }));
+      },
+      addEventListener: workerBus.addEventListener.bind(workerBus),
+      removeEventListener: workerBus.removeEventListener.bind(workerBus),
+    },
+    clientEndpoint: {
+      postMessage(message) {
+        workerBus.dispatchEvent(new MessageEvent("message", { data: message }));
+      },
+      addEventListener: clientBus.addEventListener.bind(clientBus),
+      removeEventListener: clientBus.removeEventListener.bind(clientBus),
+    },
+  };
+}

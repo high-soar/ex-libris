@@ -155,4 +155,237 @@ describe("DecodeWorkerPool", () => {
       code: "DECODE_FAILED",
     });
   });
+
+  it("対象スロットのエラー発生時に保留RPCを即座にDECODE_FAILEDでreject・購読解除して健全スロットのみで継続し、全スロット異常終了時は即rejectすること", async () => {
+    let fireError0: ((event: unknown) => void) | undefined;
+    let fireError1: ((event: unknown) => void) | undefined;
+    const unsubscribe0 = vi.fn(() => {
+      fireError0 = undefined;
+    });
+    const unsubscribe1 = vi.fn(() => {
+      fireError1 = undefined;
+    });
+
+    let resolveHanging0!: (val: {
+      bitmap: ImageBitmap;
+      width: number;
+      height: number;
+    }) => void;
+    let rejectHanging0!: (err: unknown) => void;
+
+    const decode0 = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<{
+            bitmap: ImageBitmap;
+            width: number;
+            height: number;
+          }>((resolve) => {
+            resolveHanging0 = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<{
+            bitmap: ImageBitmap;
+            width: number;
+            height: number;
+          }>((_, reject) => {
+            rejectHanging0 = reject;
+          }),
+      );
+
+    let resolveSlow1!: (val: {
+      bitmap: ImageBitmap;
+      width: number;
+      height: number;
+    }) => void;
+    const decode1 = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<{
+            bitmap: ImageBitmap;
+            width: number;
+            height: number;
+          }>((resolve) => {
+            resolveSlow1 = resolve;
+          }),
+      )
+      .mockImplementation(async () => ({
+        bitmap: createFakeBitmap(1),
+        width: 101,
+        height: 201,
+      }));
+
+    const pool = new DecodeWorkerPool([
+      {
+        api: { decodePageSlice: decode0 },
+        subscribeError: (listener) => {
+          fireError0 = listener;
+          return unsubscribe0;
+        },
+        terminate: vi.fn(),
+      },
+      {
+        api: { decodePageSlice: decode1 },
+        subscribeError: (listener) => {
+          fireError1 = listener;
+          return unsubscribe1;
+        },
+        terminate: vi.fn(),
+      },
+    ]);
+
+    // Slot 0 に 2件投入（両方保留）、Slot 1 に 1件投入（active=1 で処理中）
+    const pending0a = pool.decodePageSlice(new Uint8Array([1]), 0);
+    const pending1 = pool.decodePageSlice(new Uint8Array([2]), 0);
+    const pending0b = pool.decodePageSlice(new Uint8Array([3]), 0);
+
+    // Slot 0 がエラー終了 -> pending0a / pending0b は即座に DECODE_FAILED で reject され、購読解除される
+    const staleListener0 = fireError0;
+    staleListener0?.(new Event("error"));
+
+    await expect(pending0a).rejects.toMatchObject({
+      name: "ZipArchiveError",
+      code: "DECODE_FAILED",
+    });
+    await expect(pending0b).rejects.toMatchObject({
+      name: "ZipArchiveError",
+      code: "DECODE_FAILED",
+    });
+    expect(unsubscribe0).toHaveBeenCalledTimes(1);
+
+    // 同一スロットへの重複通知は無視されること
+    staleListener0?.(new Event("error"));
+    expect(unsubscribe0).toHaveBeenCalledTimes(1);
+
+    // Slot 0 の元プロミスが後から resolve / reject しても影響しないこと
+    resolveHanging0({
+      bitmap: createFakeBitmap(9),
+      width: 99,
+      height: 99,
+    });
+    rejectHanging0(new Error("late rejection on broken slot"));
+    await Promise.resolve();
+
+    // 健全な Slot 1 が処理中 (activeCount=1) でも、壊れた Slot 0 には絶対割り当てず Slot 1 へルーティングすること
+    const nextOnHealthy1 = pool.decodePageSlice(new Uint8Array([4]), 8);
+    expect(decode0).toHaveBeenCalledTimes(2);
+    expect(decode1).toHaveBeenCalledTimes(2);
+
+    resolveSlow1({
+      bitmap: createFakeBitmap(1),
+      width: 101,
+      height: 201,
+    });
+    await expect(pending1).resolves.toMatchObject({ width: 101 });
+    await expect(nextOnHealthy1).resolves.toMatchObject({ width: 101 });
+
+    // Slot 1 も壊れて全スロット broken になった場合、後続呼び出しを即座に DECODE_FAILED で reject すること
+    fireError1?.(new Event("messageerror"));
+    expect(unsubscribe1).toHaveBeenCalledTimes(1);
+
+    await expect(
+      pool.decodePageSlice(new Uint8Array([5]), 0),
+    ).rejects.toMatchObject({
+      name: "ZipArchiveError",
+      code: "DECODE_FAILED",
+    });
+    expect(decode0).toHaveBeenCalledTimes(2);
+    expect(decode1).toHaveBeenCalledTimes(2);
+
+    // broken 済みスロットを再度 dispose しても二重 unsubscribe しないこと
+    pool.dispose();
+    expect(unsubscribe0).toHaveBeenCalledTimes(1);
+    expect(unsubscribe1).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispose時にunsubscribeError呼び出し・保留中デコードのDECODE_FAILED解放・同期throw保護を安全に行うこと", async () => {
+    let retainedListener: ((event: unknown) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const terminate = vi.fn();
+    let resolveHanging!: (val: {
+      bitmap: ImageBitmap;
+      width: number;
+      height: number;
+    }) => void;
+    let rejectHanging2!: (err: unknown) => void;
+
+    const decode = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("sync decode failure");
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise<{
+            bitmap: ImageBitmap;
+            width: number;
+            height: number;
+          }>((resolve) => {
+            resolveHanging = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<{
+            bitmap: ImageBitmap;
+            width: number;
+            height: number;
+          }>((_, reject) => {
+            rejectHanging2 = reject;
+          }),
+      );
+
+    const pool = new DecodeWorkerPool([
+      {
+        api: { decodePageSlice: decode },
+        subscribeError: (listener) => {
+          retainedListener = listener;
+          return unsubscribe;
+        },
+        terminate,
+      },
+    ]);
+
+    // 同期 throw が安全に Promise reject され activeCount も復元されること
+    await expect(pool.decodePageSlice(new Uint8Array([1]), 0)).rejects.toThrow(
+      "sync decode failure",
+    );
+
+    const pendingResolveAfterDispose = pool.decodePageSlice(
+      new Uint8Array([2]),
+      0,
+    );
+    const pendingRejectAfterDispose = pool.decodePageSlice(
+      new Uint8Array([3]),
+      0,
+    );
+
+    pool.dispose();
+
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(terminate).toHaveBeenCalledTimes(1);
+
+    await expect(pendingResolveAfterDispose).rejects.toMatchObject({
+      name: "ZipArchiveError",
+      code: "DECODE_FAILED",
+    });
+    await expect(pendingRejectAfterDispose).rejects.toMatchObject({
+      name: "ZipArchiveError",
+      code: "DECODE_FAILED",
+    });
+
+    // dispose 後の遅延リスナー発火や遅延 resolve/reject が無害であること
+    retainedListener?.(new Event("error"));
+    resolveHanging({
+      bitmap: createFakeBitmap(0),
+      width: 100,
+      height: 200,
+    });
+    rejectHanging2(new Error("late failure after dispose"));
+    await Promise.resolve();
+  });
 });

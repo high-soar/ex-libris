@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ENGINE_BUDGETS } from "../constants";
 import type {
   ArchiveSourceDescriptor,
   DecodeWorkerApi,
@@ -1114,6 +1115,118 @@ describe("CoordinatorCore", () => {
       visiblePageIndices: [1],
     });
     await vi.waitFor(() => expect(baseReader.reads).toHaveLength(2));
+  });
+
+  it("L2未格納の80MB超ページがCoordinatorCore経由でも複製されずprepareDecodeTransferでZero-Copy転送されること (AC-ENG-12, AC-ENG-14)", async () => {
+    const oversizedSize = ENGINE_BUDGETS.L2_CACHE_MAX_BYTES + 1;
+    const entryName = "oversized.jpg";
+    const nameBytes = new TextEncoder().encode(entryName);
+    const lfh = new Uint8Array(30 + nameBytes.byteLength);
+    const lfhView = new DataView(lfh.buffer);
+    lfhView.setUint32(0, 0x04034b50, true);
+    lfhView.setUint16(26, nameBytes.byteLength, true);
+    lfhView.setUint16(28, 0, true);
+    lfh.set(nameBytes, 30);
+
+    const payloadStart = lfh.byteLength;
+    const reads: Array<{ readonly offset: number; readonly length: number }> =
+      [];
+    const virtualReader: RandomAccessReader = {
+      sourceId: "virtual-80mb-coordinator",
+      totalSize: payloadStart + oversizedSize + 64,
+      async readRange(offset, length) {
+        reads.push({ offset, length });
+        const end = Math.min(
+          offset + length,
+          payloadStart + oversizedSize + 64,
+        );
+        const out = new Uint8Array(Math.max(0, end - offset));
+        if (offset < lfh.byteLength) {
+          const copyEnd = Math.min(end, lfh.byteLength);
+          out.set(lfh.subarray(offset, copyEnd), 0);
+        }
+        if (payloadStart >= offset && payloadStart < end) {
+          out[payloadStart - offset] = 0xde;
+        }
+        const lastPos = payloadStart + oversizedSize - 1;
+        if (lastPos >= offset && lastPos < end) {
+          out[lastPos - offset] = 0xad;
+        }
+        return out;
+      },
+    };
+
+    const cachedEntries: ZipPageEntry[] = [
+      {
+        pageIndex: 0,
+        entryName,
+        entryNameByteLength: nameBytes.byteLength,
+        compressionMethod: 0,
+        compressedSize: oversizedSize,
+        uncompressedSize: oversizedSize,
+        localHeaderOffset: 0,
+        physicalEnd: payloadStart + oversizedSize,
+        crc32: 0,
+      },
+      {
+        pageIndex: 1,
+        entryName: "normal.jpg",
+        entryNameByteLength: 10,
+        compressionMethod: 0,
+        compressedSize: 4,
+        uncompressedSize: 4,
+        localHeaderOffset: payloadStart + oversizedSize,
+        physicalEnd: payloadStart + oversizedSize + 64,
+        crc32: 0,
+      },
+    ];
+
+    let wasZeroCopy = false;
+    let firstByte = -1;
+    let lastByte = -1;
+    let sliceByteLength = -1;
+    const decodePool: DecodeWorkerApi = {
+      decodePageSlice: vi.fn(async (compressedData) => {
+        const prepared = prepareDecodeTransfer(compressedData);
+        wasZeroCopy =
+          prepared.data === compressedData &&
+          prepared.transferables[0] === compressedData.buffer;
+        sliceByteLength = compressedData.byteLength;
+        firstByte = compressedData[0];
+        lastByte = compressedData[compressedData.byteLength - 1];
+        return {
+          bitmap: createFakeBitmap(800, 1200),
+          width: 800,
+          height: 1200,
+        };
+      }),
+    };
+
+    const coordinator = new CoordinatorCore({
+      decodePool,
+      createReader: () => virtualReader,
+    });
+    await coordinator.openArchive(
+      createLocalSource(new Uint8Array(10), "huge.cbz"),
+      cachedEntries,
+      1,
+    );
+
+    // visiblePageIndices: [1] により page 0 は allowOversized: false となり L2 へ格納されず独立バッファのまま Zero-Copy 転送される
+    const frames = await coordinator.requestVisiblePages([0], [], 1, {
+      visiblePageIndices: [1],
+    });
+    expect(frames).toHaveLength(1);
+    expect(frames[0].status).toBe("ready");
+    expect(reads).toHaveLength(2);
+    expect(reads[0]).toEqual({
+      offset: 0,
+      length: 30 + nameBytes.byteLength + ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES,
+    });
+    expect(wasZeroCopy).toBe(true);
+    expect(sliceByteLength).toBe(oversizedSize);
+    expect(firstByte).toBe(0xde);
+    expect(lastByte).toBe(0xad);
   });
 });
 

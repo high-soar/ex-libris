@@ -5,8 +5,8 @@ import { CoordinatorCore } from "./CoordinatorCore";
 import { DecodeWorkerPool, type DecodeWorkerHandle } from "./DecodeWorkerPool";
 import { registerZipArchiveErrorTransferHandler } from "./comlinkErrorHandler";
 import {
-  collectFrameTransferables,
   prepareDecodeTransfer,
+  transferDecodedFrames,
 } from "./coordinatorTransfer";
 
 registerZipArchiveErrorTransferHandler();
@@ -28,6 +28,14 @@ const workerHandles: DecodeWorkerHandle[] = Array.from(
           );
         },
       },
+      subscribeError: (listener) => {
+        worker.addEventListener("error", listener);
+        worker.addEventListener("messageerror", listener);
+        return () => {
+          worker.removeEventListener("error", listener);
+          worker.removeEventListener("messageerror", listener);
+        };
+      },
       terminate: () => worker.terminate(),
     };
   },
@@ -46,10 +54,7 @@ const api: CoordinatorWorkerApi = {
       epoch,
       options,
     );
-    const transferables = collectFrameTransferables(frames);
-    return transferables.length > 0
-      ? Comlink.transfer(frames, transferables)
-      : frames;
+    return transferDecodedFrames(frames);
   },
   updateAccessToken: (accessToken) => core.updateAccessToken(accessToken),
   cancelEpochBelow: (minActiveEpoch) => core.cancelEpochBelow(minActiveEpoch),

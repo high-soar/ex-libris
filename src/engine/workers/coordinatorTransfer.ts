@@ -1,3 +1,4 @@
+import * as Comlink from "comlink";
 import type { DecodedPageFrame } from "../types";
 
 /**
@@ -69,4 +70,21 @@ export function collectFrameTransferables(
         frame.status === "ready",
     )
     .map((frame) => frame.bitmap);
+}
+
+export type DecodedFramesTransferFn<T extends readonly DecodedPageFrame[]> = (
+  obj: T,
+  transfers: Transferable[],
+) => T;
+
+/**
+ * `DecodedPageFrame` 配列に `ready` ビットマップが含まれる場合のみ `transfer` を適用して返す。
+ * `coordinator.worker.ts` を条件分岐ゼロの薄い結線に保つための純関数ラッパー。
+ */
+export function transferDecodedFrames<T extends readonly DecodedPageFrame[]>(
+  frames: T,
+  transfer: DecodedFramesTransferFn<T> = Comlink.transfer,
+): T {
+  const transferables = collectFrameTransferables(frames);
+  return transferables.length > 0 ? transfer(frames, transferables) : frames;
 }
