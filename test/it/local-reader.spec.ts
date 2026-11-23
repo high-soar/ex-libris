@@ -12,6 +12,7 @@ import {
   buildSyntheticShaderTestArchive,
   buildSyntheticThreePageArchive,
   buildSyntheticZip64Archive,
+  deleteReadingProgressRecord,
   readPngCenterPixel,
   readPngHorizontalContrastRange,
   readPngPixelAtRatio,
@@ -176,6 +177,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     page,
   }) => {
     const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
     await waitForServicesReady(page);
     await resetTestDatabase(page);
@@ -217,6 +219,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     page,
   }) => {
     const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/read/local");
     await waitForServicesReady(page);
     await resetTestDatabase(page);
@@ -250,6 +253,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     page,
   }) => {
     const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
     await waitForServicesReady(page);
     await resetTestDatabase(page);
@@ -281,6 +285,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     page,
   }) => {
     const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
     await waitForServicesReady(page);
     await resetTestDatabase(page);
@@ -315,6 +320,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     page,
   }) => {
     const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
     await waitForServicesReady(page);
     await resetTestDatabase(page);
@@ -362,6 +368,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     page,
   }) => {
     const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
     await waitForServicesReady(page);
     await resetTestDatabase(page);
@@ -396,6 +403,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     page,
   }) => {
     const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
     await waitForServicesReady(page);
     await resetTestDatabase(page);
@@ -579,12 +587,13 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     expect(pageErrors).toEqual([]);
   });
 
-  test("同一ローカルアーカイブ再オープン時にIndexedDB zipIndexCache経由で0RTTオープンされリロード後も永続化されること (AC-ENG-11)", async ({
+  test("同一ローカルアーカイブ再オープン時にIndexedDB zipIndexCache経由で0RTTオープンされリロード後も永続化されること (AC-ENG-11, NFR-01)", async ({
     context,
     page,
   }) => {
     const pageErrors = trackPageErrors(page);
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
     await waitForServicesReady(page);
     await resetTestDatabase(page);
@@ -592,7 +601,8 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     const archiveBytes = buildSyntheticThreePageArchive();
     const cacheKey = `local:cache-0rtt.cbz:${archiveBytes.byteLength}`;
 
-    // 1回目: キャッシュミス -> Central Directory 解析 & IndexedDB 永続化
+    // 1回目: キャッシュミス -> Central Directory 解析 & IndexedDB 永続化 (TTFP計測)
+    const firstOpenStartMs = performance.now();
     await page.getByTestId("local-zip-file-input").setInputFiles({
       name: "cache-0rtt.cbz",
       mimeType: "application/x-cbz",
@@ -603,6 +613,9 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     const canvas = page.getByTestId("reader-canvas");
     await expect(canvas).toHaveAttribute("data-rendered-page", "0");
     await expect(page.getByTestId("reader-loading")).toBeHidden();
+    const firstTtfpMs = performance.now() - firstOpenStartMs;
+    expect(firstTtfpMs).toBeGreaterThanOrEqual(0);
+    expect(firstTtfpMs).toBeLessThan(5_000);
 
     let firstCachedAt = 0;
     await expect
@@ -616,7 +629,7 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
       .toBe(3);
     expect(firstCachedAt).toBeGreaterThan(0);
 
-    // ホームに戻り、初回オープンログ(fromIndexCache=false)を確認
+    // ホームに戻り、初回オープンログ(fromIndexCache=false + タイムスタンプ)を確認
     await page.keyboard.press("Escape");
     await expect(page).toHaveURL(/\/$/);
     await expect(page.getByTestId("bookshelf-empty")).toBeVisible();
@@ -625,6 +638,12 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     await expect
       .poll(async () => page.evaluate(() => navigator.clipboard.readText()))
       .toContain("fromIndexCache=false");
+    const firstReport = await page.evaluate(() =>
+      navigator.clipboard.readText(),
+    );
+    expect(firstReport).toMatch(
+      /\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] \[INFO\] \[reader\] Central Directory解析でアーカイブを開きました \| local:cache-0rtt\.cbz:\d+ \(pages=3, fromIndexCache=false\)/,
+    );
 
     // ブラウザリロード後も IndexedDB に zipIndexCache が永続化されていることを確認
     await page.reload();
@@ -638,7 +657,8 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
       .poll(() => Date.now(), { timeout: 2_000 })
       .toBeGreaterThan(firstCachedAt);
 
-    // 2回目: 同一アーカイブを再オープン -> 0RTT (fromIndexCache=true) & LRU cachedAt 更新
+    // 2回目: 同一アーカイブを再オープン -> 0RTT (fromIndexCache=true) & TTFP計測 & LRU cachedAt 更新
+    const secondOpenStartMs = performance.now();
     await page.getByTestId("local-zip-file-input").setInputFiles({
       name: "cache-0rtt.cbz",
       mimeType: "application/x-cbz",
@@ -648,6 +668,13 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     await expect(page).toHaveURL(/\/read\/local$/);
     await expect(canvas).toHaveAttribute("data-rendered-page", "0");
     await expect(page.getByTestId("reader-loading")).toBeHidden();
+    const secondTtfpMs = performance.now() - secondOpenStartMs;
+    expect(secondTtfpMs).toBeGreaterThanOrEqual(0);
+    expect(secondTtfpMs).toBeLessThan(5_000);
+    test.info().annotations.push({
+      type: "ttfp-ms",
+      description: `first=${firstTtfpMs.toFixed(1)}ms, second(0RTT)=${secondTtfpMs.toFixed(1)}ms`,
+    });
     const reopenedPixel = readPngCenterPixel(await canvas.screenshot());
     expect(reopenedPixel.r).toBeGreaterThan(200);
     expect(reopenedPixel.g).toBeLessThan(30);
@@ -671,6 +698,9 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     );
     expect(secondReport).toContain(
       `${cacheKey} (pages=3, fromIndexCache=true)`,
+    );
+    expect(secondReport).toMatch(
+      /\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] \[INFO\] \[reader\] 目次キャッシュからアーカイブを開きました \(0RTT\) \| local:cache-0rtt\.cbz:\d+ \(pages=3, fromIndexCache=true\)/,
     );
 
     expect(pageErrors).toEqual([]);
@@ -2275,6 +2305,182 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     await page.reload();
     await waitForServicesReady(page);
     await expect(historySection).toHaveCount(0);
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("WEBGL_lose_context発火時にcontext-lostへ遷移し警告ログ記録後、restoreContext()で自動再描画復帰すること (AC-GL-05)", async ({
+    context,
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.setViewportSize({ width: 375, height: 667 });
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "webgl-context-lost.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSyntheticThreePageArchive()),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const beforeLostPixel = readPngCenterPixel(await canvas.screenshot());
+    expect(beforeLostPixel.r).toBeGreaterThan(200);
+    expect(beforeLostPixel.g).toBeLessThan(30);
+    expect(beforeLostPixel.b).toBeLessThan(30);
+
+    const hasExtension = await page.evaluate(() => {
+      const canvasEl = document.querySelector<HTMLCanvasElement>(
+        '[data-testid="reader-canvas"]',
+      );
+      const gl = canvasEl?.getContext("webgl2");
+      const ext = gl?.getExtension("WEBGL_lose_context") ?? null;
+      if (!ext) {
+        return false;
+      }
+      (
+        window as unknown as {
+          __testWebglLoseContextExt?: WEBGL_lose_context;
+        }
+      ).__testWebglLoseContextExt = ext;
+      ext.loseContext();
+      return true;
+    });
+    expect(hasExtension).toBe(true);
+
+    await expect(canvas).toHaveAttribute("data-webgl-status", "context-lost");
+
+    await page.evaluate(() => {
+      const win = window as unknown as {
+        __testWebglLoseContextExt?: WEBGL_lose_context;
+      };
+      win.__testWebglLoseContextExt?.restoreContext();
+      delete win.__testWebglLoseContextExt;
+    });
+
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const restoredPixel = readPngCenterPixel(await canvas.screenshot());
+    expect(restoredPixel.r).toBeGreaterThan(200);
+    expect(restoredPixel.g).toBeLessThan(30);
+    expect(restoredPixel.b).toBeLessThan(30);
+
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/$/);
+    await page.getByTestId("copy-diagnostics-button").click();
+    await expect
+      .poll(async () => page.evaluate(() => navigator.clipboard.readText()))
+      .toContain("[WARN] [webgl2] WebGL2 コンテキストがロストしました");
+    const report = await page.evaluate(() => navigator.clipboard.readText());
+    expect(report).not.toContain("[ERROR]");
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("visibilitychange(hidden)およびpagehide発火時にIndexedDBのreadingProgressが即時フラッシュ保存されること (AC-RD-15)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    const archiveBytes = buildSyntheticThreePageArchive();
+    const fileName = "lifecycle-flush.cbz";
+    const targetKey = `local:${fileName}:${archiveBytes.byteLength}`;
+
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: fileName,
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(archiveBytes),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    await page.keyboard.press("ArrowLeft");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "1");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    await expect
+      .poll(async () => {
+        const rec = await readReadingProgressRecord(page, targetKey);
+        return rec?.currentPageIndex ?? -1;
+      })
+      .toBe(1);
+
+    // 1. IndexedDB レコード削除後、visibilityState="hidden" + visibilitychange 発火で即時再保存されること
+    await deleteReadingProgressRecord(page, targetKey);
+    expect(await readReadingProgressRecord(page, targetKey)).toBeNull();
+
+    await page.evaluate(() => {
+      const hadOwnDescriptor = Object.prototype.hasOwnProperty.call(
+        document,
+        "visibilityState",
+      );
+      const prevDescriptor = Object.getOwnPropertyDescriptor(
+        document,
+        "visibilityState",
+      );
+      try {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          get: () => "hidden",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      } finally {
+        if (hadOwnDescriptor && prevDescriptor) {
+          Object.defineProperty(document, "visibilityState", prevDescriptor);
+        } else {
+          delete (document as unknown as { visibilityState?: unknown })
+            .visibilityState;
+        }
+      }
+    });
+
+    await expect
+      .poll(async () => readReadingProgressRecord(page, targetKey))
+      .toMatchObject({
+        targetKey,
+        volumeId: null,
+        currentPageIndex: 1,
+        totalPageCount: 3,
+        readStatus: "reading",
+        spreadPageOffset: 0,
+      });
+
+    // 2. 再削除後に window "pagehide" 発火で即時再保存されること
+    await deleteReadingProgressRecord(page, targetKey);
+    expect(await readReadingProgressRecord(page, targetKey)).toBeNull();
+
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+
+    await expect
+      .poll(async () => readReadingProgressRecord(page, targetKey))
+      .toMatchObject({
+        targetKey,
+        volumeId: null,
+        currentPageIndex: 1,
+        totalPageCount: 3,
+        readStatus: "reading",
+        spreadPageOffset: 0,
+      });
 
     expect(pageErrors).toEqual([]);
   });

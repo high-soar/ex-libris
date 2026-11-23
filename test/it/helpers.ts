@@ -718,6 +718,41 @@ export async function readReadingProgressRecord(
   }, targetKey);
 }
 
+export async function deleteReadingProgressRecord(
+  page: Page,
+  targetKey: string,
+): Promise<void> {
+  await page.evaluate(async (key) => {
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open("ExLibrisDB");
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const idb = request.result;
+        if (!idb.objectStoreNames.contains("readingProgress")) {
+          idb.close();
+          resolve();
+          return;
+        }
+        const tx = idb.transaction("readingProgress", "readwrite");
+        tx.oncomplete = () => {
+          idb.close();
+          resolve();
+        };
+        tx.onerror = () => {
+          idb.close();
+          reject(tx.error);
+        };
+        tx.onabort = () => {
+          idb.close();
+          reject(tx.error ?? new Error("IndexedDB delete transaction aborted"));
+        };
+        const store = tx.objectStore("readingProgress");
+        store.delete(key);
+      };
+    });
+  }, targetKey);
+}
+
 interface DecodedPngRows {
   readonly width: number;
   readonly height: number;
