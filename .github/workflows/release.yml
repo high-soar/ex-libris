@@ -8,6 +8,8 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
+  checks: read
   contents: write
 
 concurrency:
@@ -52,10 +54,14 @@ jobs:
             const [, major, minor, patch] = match;
             const majorMinor = `${major}.${minor}`;
             const reportsDir = path.resolve("docs/quality/reports");
-            const reportPattern = new RegExp(`^v${major}\\.${minor}-.*\\.md$`);
-            const reportFile = fs.existsSync(reportsDir)
-              ? fs.readdirSync(reportsDir).sort().find((f) => reportPattern.test(f)) || ""
-              : "";
+            const reportPattern = new RegExp(`^v${major}\\.${minor}(?:-.*)?\\.md$`);
+            const exactReport = `v${major}.${minor}.md`;
+            const reportFiles = fs.existsSync(reportsDir)
+              ? fs.readdirSync(reportsDir).sort()
+              : [];
+            const reportFile = reportFiles.includes(exactReport)
+              ? exactReport
+              : reportFiles.find((f) => reportPattern.test(f)) || "";
             const reportPath = reportFile ? `docs/quality/reports/${reportFile}` : "";
             const out = [
               `version=${version}`,
@@ -83,6 +89,118 @@ jobs:
           else
             echo "Tag and Release ${TAG} do not exist yet."
             echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Verify SemVer progression against existing release tags
+        if: steps.check_existing.outputs.exists == 'false'
+        env:
+          TARGET_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          REMOTE_TAGS="$(git ls-remote --tags origin 'refs/tags/v*' | awk '{print $2}')"
+          TARGET_VERSION="${TARGET_VERSION}" REMOTE_TAGS="${REMOTE_TAGS}" node -e '
+            const parseSemVer = (raw) => {
+              const m = String(raw || "").trim().match(/^v?(\d+)\.(\d+)\.(\d+)$/);
+              return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+            };
+            const compareSemVer = (a, b) => {
+              for (let i = 0; i < 3; i += 1) {
+                if (a[i] !== b[i]) return a[i] - b[i];
+              }
+              return 0;
+            };
+            const target = parseSemVer(process.env.TARGET_VERSION);
+            if (!target) {
+              console.error(`::error::Invalid TARGET_VERSION: ${process.env.TARGET_VERSION}`);
+              process.exit(1);
+            }
+            const lines = String(process.env.REMOTE_TAGS || "").split(/\r?\n/).filter(Boolean);
+            let latest = null;
+            let latestRaw = "";
+            for (const ref of lines) {
+              if (ref.endsWith("^{}")) continue;
+              const tag = ref.replace(/^refs\/tags\//, "");
+              const parsed = parseSemVer(tag);
+              if (!parsed || tag === "v0.0.0") continue;
+              if (!latest || compareSemVer(parsed, latest) > 0) {
+                latest = parsed;
+                latestRaw = tag;
+              }
+            }
+            if (latest && compareSemVer(target, latest) <= 0) {
+              console.error(`::error::SemVer regression or non-monotonic release detected: target=v${process.env.TARGET_VERSION}, latest=${latestRaw}`);
+              process.exit(1);
+            }
+            console.log(`SemVer check passed: target=v${process.env.TARGET_VERSION}, latest=${latestRaw || "(none)"}`);
+          '
+
+      - name: Verify CI quality-gate passed for target commit
+        if: steps.check_existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          max_wait_runs=12
+          attempt=0
+          RUN_JSON=""
+          while [ "${attempt}" -lt "${max_wait_runs}" ]; do
+            RUNS_PAYLOAD="$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${TARGET_SHA}&per_page=20")"
+            RUN_INFO="$(RUNS_PAYLOAD="${RUNS_PAYLOAD}" node -e '
+              const data = JSON.parse(process.env.RUNS_PAYLOAD || "{}");
+              const runs = (data.workflow_runs || []).slice().sort((a, b) => (b.run_number || 0) - (a.run_number || 0));
+              if (runs.length === 0) process.exit(0);
+              const r = runs[0];
+              console.log(JSON.stringify({ id: r.id, status: r.status, conclusion: r.conclusion || "" }));
+            ')"
+            if [ -n "${RUN_INFO}" ]; then
+              RUN_JSON="${RUN_INFO}"
+              break
+            fi
+            attempt=$((attempt + 1))
+            echo "Waiting for ci.yml workflow run on ${TARGET_SHA} (${attempt}/${max_wait_runs})..."
+            sleep 10
+          done
+
+          if [ -z "${RUN_JSON}" ]; then
+            echo "::error::No CI (ci.yml) workflow run found for commit ${TARGET_SHA}."
+            exit 1
+          fi
+
+          RUN_ID="$(RUN_JSON="${RUN_JSON}" node -e 'console.log(JSON.parse(process.env.RUN_JSON).id);')"
+          max_poll_status=80
+          poll=0
+          VERIFIED="false"
+          while [ "${poll}" -lt "${max_poll_status}" ]; do
+            CUR_RUN="$(gh api "repos/${REPO}/actions/runs/${RUN_ID}")"
+            STATUS="$(CUR_RUN="${CUR_RUN}" node -e 'console.log(JSON.parse(process.env.CUR_RUN).status || "");')"
+            CONCLUSION="$(CUR_RUN="${CUR_RUN}" node -e 'console.log(JSON.parse(process.env.CUR_RUN).conclusion || "");')"
+            if [ "${STATUS}" = "completed" ]; then
+              if [ "${CONCLUSION}" != "success" ]; then
+                echo "::error::CI run ${RUN_ID} for ${TARGET_SHA} completed with conclusion=${CONCLUSION}."
+                exit 1
+              fi
+              JOBS_PAYLOAD="$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=50")"
+              JOBS_PAYLOAD="${JOBS_PAYLOAD}" RUN_ID="${RUN_ID}" node -e '
+                const data = JSON.parse(process.env.JOBS_PAYLOAD || "{}");
+                const jobs = data.jobs || [];
+                const gate = jobs.find((j) => j.name === "Lint, Test & Quality Gates");
+                if (!gate || gate.status !== "completed" || gate.conclusion !== "success") {
+                  console.error(`::error::Quality gate job did not succeed: ${JSON.stringify(gate || null)}`);
+                  process.exit(1);
+                }
+                console.log(`Verified CI run ${process.env.RUN_ID} job "${gate.name}" succeeded.`);
+              '
+              VERIFIED="true"
+              break
+            fi
+            poll=$((poll + 1))
+            echo "Waiting for CI run ${RUN_ID} completion (status=${STATUS}, ${poll}/${max_poll_status})..."
+            sleep 15
+          done
+
+          if [ "${VERIFIED}" != "true" ]; then
+            echo "::error::Timed out waiting for CI run ${RUN_ID} on ${TARGET_SHA}."
+            exit 1
           fi
 
       - name: Validate Android Signing Secrets
