@@ -1,6 +1,11 @@
 import * as Comlink from "comlink";
+import type { GoogleAuthBridge } from "../bridges/oauth/types";
 import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
-import type { CoordinatorWorkerApi } from "../engine/types";
+import type { DiagnosticLogger } from "../diagnostics/types";
+import type {
+  CoordinatorHostCallbacks,
+  CoordinatorWorkerApi,
+} from "../engine/types";
 import { registerZipArchiveErrorTransferHandler } from "../engine/workers/comlinkErrorHandler";
 import { ZipArchiveError } from "../engine/zip/errors";
 
@@ -31,6 +36,8 @@ export interface CreateCoordinatorSessionDeps {
     worker: CoordinatorWorkerHandle,
   ) => CoordinatorRemoteProxy;
   readonly registerErrorHandler?: () => void;
+  readonly authBridge?: GoogleAuthBridge;
+  readonly logger?: DiagnosticLogger;
 }
 
 const WORKER_CRASH_MESSAGE = "Coordinator Workerが異常終了しました";
@@ -94,6 +101,38 @@ function subscribeWorkerFailure(
     worker.removeEventListener?.("error", onFailure);
     worker.removeEventListener?.("messageerror", onFailure);
   };
+}
+
+function releaseAndTerminate(
+  rawApi: CoordinatorRemoteProxy,
+  worker: CoordinatorWorkerHandle,
+): void {
+  try {
+    rawApi[Comlink.releaseProxy]?.();
+  } finally {
+    worker.terminate();
+  }
+}
+
+function bindAuthCallbacks(
+  api: CoordinatorWorkerApi,
+  authBridge: GoogleAuthBridge,
+  logger: DiagnosticLogger,
+): () => void {
+  const hostCallbacks: CoordinatorHostCallbacks = {
+    refreshAccessToken: (options) => authBridge.getValidAccessToken(options),
+    reportDiagnostic: (level, scope, message, detail) => {
+      logger[level](scope, message, detail);
+    },
+  };
+  api.setHostCallbacks(Comlink.proxy(hostCallbacks));
+  const cachedSession = authBridge.getCachedSession();
+  if (cachedSession !== null) {
+    api.updateAccessToken(cachedSession.accessToken);
+  }
+  return authBridge.subscribeSession((session) => {
+    api.updateAccessToken(session?.accessToken ?? null);
+  });
 }
 
 function createGuardedCoordinatorApi(
@@ -162,6 +201,8 @@ function createGuardedCoordinatorApi(
       ),
     updateAccessToken: (accessToken) =>
       forwardSyncRpc(() => rawApi.updateAccessToken(accessToken)),
+    setHostCallbacks: (callbacks) =>
+      forwardSyncRpc(() => rawApi.setHostCallbacks(callbacks)),
     cancelEpochBelow: (minActiveEpoch) =>
       forwardSyncRpc(() => rawApi.cancelEpochBelow(minActiveEpoch)),
     closeArchive: () => trackAsyncRpc(() => rawApi.closeArchive()),
@@ -175,6 +216,7 @@ export function createCoordinatorSession(
     deps.registerErrorHandler ?? registerZipArchiveErrorTransferHandler;
   registerErrorHandler();
 
+  const logger = deps.logger ?? diagnosticLogger;
   const worker = (deps.createWorker ?? defaultCreateWorker)();
   let disposed = false;
   let fatalError: ZipArchiveError | null = null;
@@ -187,7 +229,7 @@ export function createCoordinatorSession(
     cleanupListeners();
     const error = new ZipArchiveError("READ_ERROR", WORKER_CRASH_MESSAGE);
     fatalError = error;
-    diagnosticLogger.error(
+    logger.error(
       "engine",
       WORKER_CRASH_MESSAGE,
       formatWorkerFailureDetail(event),
@@ -218,6 +260,17 @@ export function createCoordinatorSession(
         })
       : rawApi;
 
+  let unsubscribeAuthSession: (() => void) | undefined;
+  if (deps.authBridge !== undefined) {
+    try {
+      unsubscribeAuthSession = bindAuthCallbacks(api, deps.authBridge, logger);
+    } catch (error) {
+      cleanupListeners();
+      releaseAndTerminate(rawApi, worker);
+      throw error;
+    }
+  }
+
   return {
     api,
     dispose: () => {
@@ -226,12 +279,9 @@ export function createCoordinatorSession(
       }
       disposed = true;
       cleanupListeners();
+      unsubscribeAuthSession?.();
       pendingRejects.clear();
-      try {
-        rawApi[Comlink.releaseProxy]?.();
-      } finally {
-        worker.terminate();
-      }
+      releaseAndTerminate(rawApi, worker);
     },
   };
 }

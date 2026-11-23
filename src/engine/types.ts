@@ -96,6 +96,20 @@ export interface RequestVisiblePagesOptions {
   readonly visiblePageIndices?: readonly number[];
 }
 
+export interface CoordinatorHostCallbacks {
+  refreshAccessToken(options?: {
+    readonly forceRefresh?: boolean;
+    readonly failedToken?: string;
+  }): Promise<string>;
+
+  reportDiagnostic(
+    level: "warn" | "error",
+    scope: string,
+    message: string,
+    detail?: string,
+  ): void;
+}
+
 export interface CoordinatorWorkerApi {
   openArchive(
     source: ArchiveSourceDescriptor,
@@ -111,6 +125,7 @@ export interface CoordinatorWorkerApi {
   ): Promise<DecodedPageFrame[]>;
 
   updateAccessToken(accessToken: string | null): void;
+  setHostCallbacks(callbacks: CoordinatorHostCallbacks | null): void;
   cancelEpochBelow(minActiveEpoch: number): void;
   closeArchive(): Promise<void>;
 }

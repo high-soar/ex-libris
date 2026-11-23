@@ -57,6 +57,7 @@ const api: CoordinatorWorkerApi = {
     return transferDecodedFrames(frames);
   },
   updateAccessToken: (accessToken) => core.updateAccessToken(accessToken),
+  setHostCallbacks: (callbacks) => core.setHostCallbacks(callbacks),
   cancelEpochBelow: (minActiveEpoch) => core.cancelEpochBelow(minActiveEpoch),
   closeArchive: () => core.closeArchive(),
 };

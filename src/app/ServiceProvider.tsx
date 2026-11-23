@@ -1,9 +1,20 @@
 import { Capacitor } from "@capacitor/core";
-import { type ReactNode, useEffect, useMemo, useRef } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
 import { CapacitorAppBridge } from "../bridges/app/capacitorAppBridge";
 import { MockAppBridge } from "../bridges/app/mockAppBridge";
 import type { AppBridge } from "../bridges/app/types";
+import { CapacitorGoogleAuthAdapter } from "../bridges/oauth/capacitorGoogleAuthAdapter";
+import { GoogleAuthTokenManager } from "../bridges/oauth/googleAuthTokenManager";
+import { MockGoogleAuthAdapter } from "../bridges/oauth/mockGoogleAuthAdapter";
+import type { GoogleAuthBridge } from "../bridges/oauth/types";
+import { GoogleDriveFolderClient } from "../providers/gdrive/googleDriveFolderClient";
+import { MockDriveFolderClient } from "../providers/gdrive/mockDriveFolderClient";
+import type { DriveFolderClient } from "../providers/gdrive/types";
 import { db, resetTestDb } from "../storage/db";
+import {
+  DexieDriveSyncRootsRepository,
+  type DriveSyncRootsRepository,
+} from "../storage/repositories/driveSyncRootsRepository";
 import {
   DexieReaderSettingsRepository,
   type ReaderSettingsRepository,
@@ -30,6 +41,9 @@ export interface ServiceProviderProps {
   readonly zipIndexCacheRepo?: ZipIndexCacheRepository;
   readonly readingProgressRepo?: ReadingProgressRepository;
   readonly readerSettingsRepo?: ReaderSettingsRepository;
+  readonly googleAuthBridge?: GoogleAuthBridge;
+  readonly driveSyncRootsRepo?: DriveSyncRootsRepository;
+  readonly driveFolderClient?: DriveFolderClient;
 }
 
 export interface ResetTestDbExposureOptions {
@@ -37,6 +51,11 @@ export interface ResetTestDbExposureOptions {
   readonly isDev?: boolean;
   readonly mode?: string;
   readonly isWebDriver?: boolean;
+}
+
+interface DefaultGoogleAuthResources {
+  readonly bridge: GoogleAuthBridge;
+  readonly mockAdapter?: MockGoogleAuthAdapter;
 }
 
 function isWebDriverEnvironment(): boolean {
@@ -56,17 +75,25 @@ export function shouldExposeResetTestDb(
   return isDev || mode === "test" || isWebDriver;
 }
 
-function buildGlobalServicesState(appBridge: AppBridge): ExLibrisServicesState {
-  return shouldExposeResetTestDb()
-    ? {
-        isReady: true,
-        appBridge,
-        resetTestDb: () => resetTestDb(),
-      }
-    : {
-        isReady: true,
-        appBridge,
-      };
+function buildGlobalServicesState(
+  appBridge: AppBridge,
+  mockGoogleAuthAdapter?: MockGoogleAuthAdapter,
+  mockDriveFolderClient?: MockDriveFolderClient,
+): ExLibrisServicesState {
+  if (!shouldExposeResetTestDb()) {
+    return {
+      isReady: true,
+      appBridge,
+    };
+  }
+
+  return {
+    isReady: true,
+    appBridge,
+    resetTestDb: () => resetTestDb(),
+    ...(mockGoogleAuthAdapter !== undefined ? { mockGoogleAuthAdapter } : {}),
+    ...(mockDriveFolderClient !== undefined ? { mockDriveFolderClient } : {}),
+  };
 }
 
 function createDefaultAppBridge(): AppBridge {
@@ -85,6 +112,31 @@ function createDefaultReadingProgressRepo(): ReadingProgressRepository {
 
 function createDefaultReaderSettingsRepo(): ReaderSettingsRepository {
   return new DexieReaderSettingsRepository(db);
+}
+
+function createDefaultGoogleAuthResources(): DefaultGoogleAuthResources {
+  if (Capacitor.isNativePlatform()) {
+    return {
+      bridge: new GoogleAuthTokenManager(new CapacitorGoogleAuthAdapter()),
+    };
+  }
+  const mockAdapter = new MockGoogleAuthAdapter();
+  return {
+    bridge: new GoogleAuthTokenManager(mockAdapter),
+    mockAdapter,
+  };
+}
+
+function createDefaultDriveSyncRootsRepo(): DriveSyncRootsRepository {
+  return new DexieDriveSyncRootsRepository(db);
+}
+
+function createDefaultDriveFolderClient(
+  authBridge: GoogleAuthBridge,
+): DriveFolderClient {
+  return Capacitor.isNativePlatform()
+    ? new GoogleDriveFolderClient({ authBridge })
+    : new MockDriveFolderClient();
 }
 
 function useStableService<T>(
@@ -110,6 +162,9 @@ export function ServiceProvider({
   zipIndexCacheRepo,
   readingProgressRepo,
   readerSettingsRepo,
+  googleAuthBridge,
+  driveSyncRootsRepo,
+  driveFolderClient,
 }: ServiceProviderProps) {
   const resolvedAppBridge = useStableService(appBridge, createDefaultAppBridge);
   const resolvedZipIndexCacheRepo = useStableService(
@@ -125,12 +180,60 @@ export function ServiceProvider({
     createDefaultReaderSettingsRepo,
   );
 
-  const resolvedCreateCoordinatorSession =
-    createCoordinatorSession ?? defaultCreateCoordinatorSession;
+  const defaultAuthRef = useRef<DefaultGoogleAuthResources | null>(null);
+  const {
+    bridge: resolvedGoogleAuthBridge,
+    mockAdapter: resolvedMockGoogleAuthAdapter,
+  } = useMemo<DefaultGoogleAuthResources>(() => {
+    if (googleAuthBridge) {
+      return { bridge: googleAuthBridge };
+    }
+    if (!defaultAuthRef.current) {
+      defaultAuthRef.current = createDefaultGoogleAuthResources();
+    }
+    return defaultAuthRef.current;
+  }, [googleAuthBridge]);
+
+  const resolvedDriveSyncRootsRepo = useStableService(
+    driveSyncRootsRepo,
+    createDefaultDriveSyncRootsRepo,
+  );
+
+  const createDefaultFolderClient = useCallback(
+    () => createDefaultDriveFolderClient(resolvedGoogleAuthBridge),
+    [resolvedGoogleAuthBridge],
+  );
+  const resolvedDriveFolderClient = useStableService(
+    driveFolderClient,
+    createDefaultFolderClient,
+  );
+
+  const resolvedMockDriveFolderClient =
+    resolvedDriveFolderClient instanceof MockDriveFolderClient
+      ? resolvedDriveFolderClient
+      : undefined;
+
+  const resolvedCreateCoordinatorSession = useMemo(
+    () =>
+      createCoordinatorSession ??
+      (() =>
+        defaultCreateCoordinatorSession({
+          authBridge: resolvedGoogleAuthBridge,
+        })),
+    [createCoordinatorSession, resolvedGoogleAuthBridge],
+  );
 
   useEffect(() => {
-    window.__exLibrisServices = buildGlobalServicesState(resolvedAppBridge);
-  }, [resolvedAppBridge]);
+    window.__exLibrisServices = buildGlobalServicesState(
+      resolvedAppBridge,
+      resolvedMockGoogleAuthAdapter,
+      resolvedMockDriveFolderClient,
+    );
+  }, [
+    resolvedAppBridge,
+    resolvedMockGoogleAuthAdapter,
+    resolvedMockDriveFolderClient,
+  ]);
 
   const contextValue = useMemo<ServiceContextValue>(
     () => ({
@@ -139,6 +242,9 @@ export function ServiceProvider({
       zipIndexCacheRepo: resolvedZipIndexCacheRepo,
       readingProgressRepo: resolvedReadingProgressRepo,
       readerSettingsRepo: resolvedReaderSettingsRepo,
+      googleAuthBridge: resolvedGoogleAuthBridge,
+      driveSyncRootsRepo: resolvedDriveSyncRootsRepo,
+      driveFolderClient: resolvedDriveFolderClient,
     }),
     [
       resolvedAppBridge,
@@ -146,6 +252,9 @@ export function ServiceProvider({
       resolvedZipIndexCacheRepo,
       resolvedReadingProgressRepo,
       resolvedReaderSettingsRepo,
+      resolvedGoogleAuthBridge,
+      resolvedDriveSyncRootsRepo,
+      resolvedDriveFolderClient,
     ],
   );
 

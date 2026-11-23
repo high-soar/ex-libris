@@ -1,8 +1,17 @@
 import * as Comlink from "comlink";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
+import type {
+  AuthSessionListener,
+  GoogleAuthBridge,
+  GoogleAuthSession,
+} from "../bridges/oauth/types";
+import {
+  createDiagnosticLogger,
+  diagnosticLogger,
+} from "../diagnostics/diagnosticLogger";
 import type {
   ArchiveSourceDescriptor,
+  CoordinatorHostCallbacks,
   CoordinatorWorkerApi,
   DecodedPageFrame,
   OpenArchiveResult,
@@ -60,6 +69,7 @@ describe("coordinatorClient", () => {
             return [];
           },
           updateAccessToken() {},
+          setHostCallbacks() {},
           cancelEpochBelow() {},
           async closeArchive() {},
         };
@@ -130,6 +140,7 @@ describe("coordinatorClient", () => {
       openArchive: vi.fn(),
       requestVisiblePages: vi.fn(),
       updateAccessToken: vi.fn(),
+      setHostCallbacks: vi.fn(),
       cancelEpochBelow: vi.fn(),
       closeArchive: vi.fn(),
     };
@@ -221,6 +232,7 @@ describe("coordinatorClient", () => {
           }),
       ),
       updateAccessToken: vi.fn(),
+      setHostCallbacks: vi.fn(),
       cancelEpochBelow: vi.fn(),
       closeArchive: vi.fn(() => {
         if (disposedFlag) {
@@ -250,8 +262,10 @@ describe("coordinatorClient", () => {
 
     // 正常系の同期・非同期呼び出し確認
     session.api.updateAccessToken("token-1");
+    session.api.setHostCallbacks(null);
     session.api.cancelEpochBelow(1);
     expect(rawApi.updateAccessToken).toHaveBeenCalledWith("token-1");
+    expect(rawApi.setHostCallbacks).toHaveBeenCalledWith(null);
     expect(rawApi.cancelEpochBelow).toHaveBeenCalledWith(1);
 
     const pendingOpen = session.api.openArchive(
@@ -327,8 +341,10 @@ describe("coordinatorClient", () => {
     expect(rawApi.closeArchive).toHaveBeenCalledTimes(1);
 
     session.api.updateAccessToken("token-2");
+    session.api.setHostCallbacks(null);
     session.api.cancelEpochBelow(2);
     expect(rawApi.updateAccessToken).toHaveBeenCalledTimes(1);
+    expect(rawApi.setHostCallbacks).toHaveBeenCalledTimes(1);
     expect(rawApi.cancelEpochBelow).toHaveBeenCalledTimes(1);
 
     // 元の保留Promiseが後から解決・失敗しても未処理例外にならないこと
@@ -382,6 +398,7 @@ describe("coordinatorClient", () => {
       openArchive: vi.fn(() => new Promise<OpenArchiveResult>(() => {})),
       requestVisiblePages: vi.fn(async () => []),
       updateAccessToken: vi.fn(),
+      setHostCallbacks: vi.fn(),
       cancelEpochBelow: vi.fn(),
       closeArchive: vi.fn(async () => {}),
     };
@@ -422,6 +439,7 @@ describe("coordinatorClient", () => {
       }),
       requestVisiblePages: vi.fn(async () => []),
       updateAccessToken: vi.fn(),
+      setHostCallbacks: vi.fn(),
       cancelEpochBelow: vi.fn(),
       closeArchive: vi.fn(async () => {}),
     };
@@ -455,5 +473,285 @@ describe("coordinatorClient", () => {
     partialSession.dispose();
     listeners.get("error")?.(new Event("error"));
     expect(diagnosticLogger.getEntries()).toHaveLength(1);
+  });
+
+  it("authBridge指定時にComlink.proxyコールバック登録・getCachedSession初期同期・subscribeSession追従・dispose購読解除とlogger DIを実行すること (AC-ENG-16)", async () => {
+    const bus = new EventTarget();
+    const removeListenerSpy = vi.fn(
+      (type: "error" | "messageerror", listener: (event: Event) => void) => {
+        bus.removeEventListener(type, listener);
+      },
+    );
+    const terminateSpy = vi.fn();
+    const releaseProxySpy = vi.fn();
+
+    let registeredCallbacks: CoordinatorHostCallbacks | null = null;
+    const rawApi: CoordinatorWorkerApi & {
+      [Comlink.releaseProxy]?: () => void;
+    } = {
+      openArchive: vi.fn(),
+      requestVisiblePages: vi.fn(),
+      updateAccessToken: vi.fn(),
+      setHostCallbacks: vi.fn((callbacks) => {
+        registeredCallbacks = callbacks;
+      }),
+      cancelEpochBelow: vi.fn(),
+      closeArchive: vi.fn(),
+      [Comlink.releaseProxy]: releaseProxySpy,
+    };
+
+    let sessionListener: AuthSessionListener | null = null;
+    const unsubscribeSpy = vi.fn(() => {
+      sessionListener = null;
+    });
+    const customLogger = createDiagnosticLogger();
+    const cachedSession: GoogleAuthSession = {
+      email: "reader@example.com",
+      accessToken: "ya29.cached-initial",
+      expiresAt: Date.now() + 3_600_000,
+    };
+    const authBridge: GoogleAuthBridge = {
+      getCachedSession: vi.fn(() => cachedSession),
+      getSession: vi.fn(async () => cachedSession),
+      signIn: vi.fn(async () => cachedSession),
+      signOut: vi.fn(async () => {}),
+      getValidAccessToken: vi.fn(async () => "ya29.refreshed-by-host"),
+      subscribeSession: vi.fn((listener) => {
+        sessionListener = listener;
+        return unsubscribeSpy;
+      }),
+    };
+
+    const session = createCoordinatorSession({
+      registerErrorHandler: vi.fn(),
+      createWorker: () => ({
+        addEventListener: (type, listener) =>
+          bus.addEventListener(type, listener),
+        removeEventListener: removeListenerSpy,
+        terminate: terminateSpy,
+      }),
+      wrapWorker: () => rawApi,
+      authBridge,
+      logger: customLogger,
+    });
+
+    // 1. Comlink.proxy 経由で setHostCallbacks が登録され、初期セッションが即時同期されること
+    expect(rawApi.setHostCallbacks).toHaveBeenCalledTimes(1);
+    expect(registeredCallbacks).not.toBeNull();
+    expect(
+      (registeredCallbacks as unknown as Record<symbol, unknown>)[
+        Comlink.proxyMarker
+      ],
+    ).toBe(true);
+    expect(rawApi.updateAccessToken).toHaveBeenCalledWith(
+      "ya29.cached-initial",
+    );
+
+    // 2. ホストコールバックが refreshAccessToken と reportDiagnostic を中継すること
+    await expect(
+      registeredCallbacks!.refreshAccessToken({
+        forceRefresh: true,
+        failedToken: "ya29.cached-initial",
+      }),
+    ).resolves.toBe("ya29.refreshed-by-host");
+    expect(authBridge.getValidAccessToken).toHaveBeenCalledWith({
+      forceRefresh: true,
+      failedToken: "ya29.cached-initial",
+    });
+
+    registeredCallbacks!.reportDiagnostic(
+      "warn",
+      "gdrive-range",
+      "401検出",
+      "range=bytes=0-1",
+    );
+    registeredCallbacks!.reportDiagnostic("error", "gdrive-range", "500エラー");
+    expect(customLogger.getEntries()).toEqual([
+      expect.objectContaining({
+        level: "warn",
+        scope: "gdrive-range",
+        message: "401検出",
+        detail: "range=bytes=0-1",
+      }),
+      expect.objectContaining({
+        level: "error",
+        scope: "gdrive-range",
+        message: "500エラー",
+      }),
+    ]);
+
+    // 3. subscribeSession 経由のトークン更新・サインアウト(null) が同期されること
+    sessionListener!({
+      email: "reader@example.com",
+      accessToken: "ya29.rotated-token",
+      expiresAt: Date.now() + 3_600_000,
+    });
+    sessionListener!(null);
+    expect(rawApi.updateAccessToken).toHaveBeenNthCalledWith(
+      2,
+      "ya29.rotated-token",
+    );
+    expect(rawApi.updateAccessToken).toHaveBeenNthCalledWith(3, null);
+
+    // 4. Worker crash は注入 logger に記録され、グローバル diagnosticLogger を汚さないこと
+    bus.dispatchEvent(new Event("error"));
+    expect(customLogger.getEntries().at(-1)).toMatchObject({
+      level: "error",
+      scope: "engine",
+      message: "Coordinator Workerが異常終了しました",
+    });
+    expect(diagnosticLogger.getEntries()).toEqual([]);
+
+    // 5. dispose() で subscribeSession が解除されること
+    session.dispose();
+    expect(unsubscribeSpy).toHaveBeenCalledTimes(1);
+    expect(releaseProxySpy).toHaveBeenCalledTimes(1);
+    expect(terminateSpy).toHaveBeenCalledTimes(1);
+
+    // 6. getCachedSession() が null のときは初期 updateAccessToken を呼ばず、setup 失敗時は Worker 後始末すること
+    const nullAuthBridge: GoogleAuthBridge = {
+      ...authBridge,
+      getCachedSession: vi.fn(() => null),
+    };
+    const updateOnNullCache = vi.fn();
+    const sessionNullCache = createCoordinatorSession({
+      registerErrorHandler: vi.fn(),
+      createWorker: () => ({ terminate: vi.fn() }),
+      wrapWorker: () => ({
+        ...rawApi,
+        updateAccessToken: updateOnNullCache,
+        setHostCallbacks: vi.fn(),
+      }),
+      authBridge: nullAuthBridge,
+    });
+    expect(updateOnNullCache).not.toHaveBeenCalled();
+    sessionNullCache.dispose();
+
+    const failSetupRemove = vi.fn();
+    const failSetupTerminate = vi.fn();
+    const failSetupRelease = vi.fn();
+    expect(() =>
+      createCoordinatorSession({
+        registerErrorHandler: vi.fn(),
+        createWorker: () => ({
+          addEventListener: vi.fn(),
+          removeEventListener: failSetupRemove,
+          terminate: failSetupTerminate,
+        }),
+        wrapWorker: () => ({
+          ...rawApi,
+          setHostCallbacks: () => {
+            throw new Error("callback setup boom");
+          },
+          [Comlink.releaseProxy]: failSetupRelease,
+        }),
+        authBridge: nullAuthBridge,
+      }),
+    ).toThrow("callback setup boom");
+    expect(failSetupRemove).toHaveBeenCalledTimes(2);
+    expect(failSetupRelease).toHaveBeenCalledTimes(1);
+    expect(failSetupTerminate).toHaveBeenCalledTimes(1);
+
+    // 7. 実 MessageChannel 上で Comlink.proxy(hostCallbacks) が DataCloneError なく双方向 RPC 動作すること
+    let channelHostCallbacks: CoordinatorHostCallbacks | null = null;
+    const channelTokens: Array<string | null> = [];
+    class BidirectionalMockWorker {
+      private readonly port1: MessagePort;
+      private readonly port2: MessagePort;
+
+      constructor() {
+        const channel = new MessageChannel();
+        this.port1 = channel.port1;
+        this.port2 = channel.port2;
+        this.port2.start();
+
+        const remoteImpl: CoordinatorWorkerApi = {
+          async openArchive() {
+            const refreshed = await channelHostCallbacks!.refreshAccessToken({
+              forceRefresh: true,
+              failedToken: "ya29.old",
+            });
+            channelHostCallbacks!.reportDiagnostic(
+              "warn",
+              "gdrive-range",
+              "proxy-warn",
+              refreshed,
+            );
+            return { pageCount: 1, entries: [], fromIndexCache: false };
+          },
+          async requestVisiblePages() {
+            return [];
+          },
+          updateAccessToken(token) {
+            channelTokens.push(token);
+          },
+          setHostCallbacks(callbacks) {
+            channelHostCallbacks = callbacks;
+          },
+          cancelEpochBelow() {},
+          async closeArchive() {},
+        };
+        Comlink.expose(remoteImpl, this.port1);
+      }
+
+      postMessage(message: unknown, transfer: Transferable[] = []): void {
+        this.port2.postMessage(message, transfer);
+      }
+
+      addEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+      ): void {
+        this.port2.addEventListener(type, listener);
+      }
+
+      removeEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+      ): void {
+        this.port2.removeEventListener(type, listener);
+      }
+
+      terminate(): void {
+        this.port1.close();
+        this.port2.close();
+      }
+    }
+
+    vi.stubGlobal("Worker", BidirectionalMockWorker);
+    const channelLogger = createDiagnosticLogger();
+    const channelAuthBridge: GoogleAuthBridge = {
+      ...authBridge,
+      getCachedSession: vi.fn(() => ({
+        email: "reader@example.com",
+        accessToken: "ya29.channel-init",
+        expiresAt: Date.now() + 3_600_000,
+      })),
+      getValidAccessToken: vi.fn(async () => "ya29.channel-refreshed"),
+    };
+    const channelSession = createCoordinatorSession({
+      authBridge: channelAuthBridge,
+      logger: channelLogger,
+    });
+
+    await expect(
+      channelSession.api.openArchive(createDummyLocalSource(), null, 1),
+    ).resolves.toEqual({ pageCount: 1, entries: [], fromIndexCache: false });
+    expect(channelTokens).toEqual(["ya29.channel-init"]);
+    expect(channelAuthBridge.getValidAccessToken).toHaveBeenCalledWith({
+      forceRefresh: true,
+      failedToken: "ya29.old",
+    });
+    await vi.waitFor(() => {
+      expect(channelLogger.getEntries()).toEqual([
+        expect.objectContaining({
+          level: "warn",
+          scope: "gdrive-range",
+          message: "proxy-warn",
+          detail: "[REDACTED]",
+        }),
+      ]);
+    });
+    channelSession.dispose();
   });
 });

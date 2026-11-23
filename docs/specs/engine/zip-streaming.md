@@ -32,6 +32,7 @@ related_specs:
   - docs/guidelines/testing.md
 related_tests:
   - src/engine/constants.test.ts
+  - src/engine/io/GoogleDriveRangeReader.test.ts
   - src/engine/io/LocalFileReader.test.ts
   - src/engine/zip/errors.test.ts
   - src/engine/zip/zipIndexValidation.test.ts
