@@ -2,7 +2,7 @@
 type: spec-architecture
 title: "4層＋マルチスレッドアーキテクチャと共通インターフェース契約"
 description: "Streaming & Provider・Engine Worker・Storage・Viewer & Bridge の4層責務境界、Zero-Copy 転送、メモリ予算定数、および TypeScript コア契約の正本"
-status: "Approved"
+status: "Review (#23)"
 updated: "2026-11-23"
 tags:
   [
@@ -26,6 +26,8 @@ related_specs:
   - docs/specs/engine/webgl2-renderer.md
   - docs/specs/features/bookshelf.md
   - docs/specs/features/reader.md
+  - docs/specs/features/settings.md
+  - docs/specs/providers/google-drive.md
   - docs/guidelines/workflow.md
   - docs/guidelines/testing.md
 related_tests:
@@ -117,12 +119,12 @@ flowchart TB
 
 ### 1.1 標準ディレクトリ構成とレイヤー責務境界
 
-| レイヤー                                  | 配置ディレクトリ                                                                                                                                                                                                                           | 責務と依存ルール                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| :---------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1. Streaming & Provider Layer**         | `src/engine/io/`<br>`src/providers/{gdrive,filename,metadata,sync}/`                                                                                                                                                                       | ・`RandomAccessReader` 実装（`GoogleDriveRangeReader`, `LocalFileReader`, 将来拡張用 `HttpRangeReader`）<br>・指定ルートフォルダ配下の Drive `files.list` / `changes.list` 同期、自炊ファイル名スマートパーサー、公開書誌 API クライアント（NDL / AniList / Google Books）、`appDataFolder` LWW 同期エンジン<br>・React / DOM / WebGL2 への依存を一切持たない純粋 TypeScript モジュールとする                                                                                                                                                                                                                                                                                        |
-| **2. Engine Worker Layer**                | `src/engine/zip/`<br>`src/engine/cache/`<br>`src/engine/prefetch/`<br>`src/engine/workers/`<br>`src/engine/cover/`                                                                                                                         | ・ZIP / ZIP64 / Shift_JIS 解析、LFH 可変長 1 RTT ゼロコピー切り出し、Fast-Path ＋ 10MB バイト予算先読み、80MB L2 LRU キャッシュ、Decode Worker プール（2 Worker ラウンドロビン/空き優先制御）、2段優先度表紙 WebP 抽出スケジューラ<br>・**ロジック本体は Worker グローバル（`self`）非依存の `*Core.ts` に分離して Vitest で 100% 単体検証し、`*.worker.ts` は数行の `Comlink.expose(...)` ブートストラップのみとする**                                                                                                                                                                                                                                                              |
-| **3. Storage Layer**                      | `src/storage/`<br>`src/storage/repositories/`                                                                                                                                                                                              | ・Dexie.js インスタンス（`ExLibrisDatabase`：`version(1)` `syncMeta` ＋ `v0.1` `version(2)` `zipIndexCache` / `readingProgress`）とドメイン別 Repository インターフェース実装（`ZipIndexCacheRepository`：最大 500 件 LRU・不正キャッシュ自動削除、`ReadingProgressRepository`：操作 FIFO 直列化・`local:*` 最大 100 件 LRU・`vol:*` 非退避保護・不正レコード自動削除、`ReaderSettingsRepository`：`syncMeta['defaultReaderSettingsJson']` 共通画質補正デフォルト保存・破損時安全フォールバック）<br>・`resetTestDb()` により UT / Storybook / Playwright IT で 100% 決定論的に初期化可能とする                                                                                      |
-| **4. Viewer, Diagnostics & Bridge Layer** | `src/app/`（`ServiceProvider` / `serviceContext` / `coordinatorClient`）<br>`src/features/{bookshelf,series-detail,reader,settings}/`<br>`src/webgl/`<br>`src/bridges/{oauth,http,app,volume-key}/`<br>`src/diagnostics/`<br>`src/shared/` | ・アプリケーション DI コンテナ / Comlink Worker クライアント管理（`ServiceProvider` / `serviceContext` / `coordinatorClient`）<br>・画面別 Container / Presentational コンポーネント（1対1 Story/UT・親子 `vi.spyOn` 完全分離）<br>・History API ベースのカスタムルーター（`src/shared/router/`）およびオンメモリローカル ZIP セッションストア（`src/features/reader/`）<br>・生 WebGL2 レンダラ（`WebGLRendererCore` 1パス画質補正シェーダーと `<ReaderCanvas>` の分離）および L1 `ImageBitmap` 管理（`L1PageCache`）<br>・Capacitor ネイティブブリッジの薄いアダプタ層（`AppBridge` 優先度付き戻る制御等、Web/テスト時はモック実装へ自動フォールバック）およびオンメモリ診断ロガー |
+| レイヤー                                  | 配置ディレクトリ                                                                                                                                                                                                                           | 責務と依存ルール                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| :---------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1. Streaming & Provider Layer**         | `src/engine/io/`<br>`src/providers/{gdrive,filename,metadata,sync}/`                                                                                                                                                                       | ・`RandomAccessReader` 実装（`GoogleDriveRangeReader`, `LocalFileReader`, 将来拡張用 `HttpRangeReader`）<br>・Drive フォルダ階層・メタデータ参照（`DriveFolderClient` / `parseDriveFolderInput`）、指定ルートフォルダ配下の Drive `files.list` / `changes.list` 同期、自炊ファイル名スマートパーサー、公開書誌 API クライアント（NDL / AniList / Google Books）、`appDataFolder` LWW 同期エンジン<br>・React / DOM / WebGL2 への依存を一切持たない純粋 TypeScript モジュールとする                                                                                                                                                                                                                                                                                                                                             |
+| **2. Engine Worker Layer**                | `src/engine/zip/`<br>`src/engine/cache/`<br>`src/engine/prefetch/`<br>`src/engine/workers/`<br>`src/engine/cover/`                                                                                                                         | ・ZIP / ZIP64 / Shift_JIS 解析、LFH 可変長 1 RTT ゼロコピー切り出し、Fast-Path ＋ 10MB バイト予算先読み、80MB L2 LRU キャッシュ、Decode Worker プール（2 Worker ラウンドロビン/空き優先制御）、2段優先度表紙 WebP 抽出スケジューラ<br>・**ロジック本体は Worker グローバル（`self`）非依存の `*Core.ts` に分離して Vitest で 100% 単体検証し、`*.worker.ts` は数行の `Comlink.expose(...)` ブートストラップのみとする**                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **3. Storage Layer**                      | `src/storage/`<br>`src/storage/repositories/`                                                                                                                                                                                              | ・Dexie.js インスタンス（`ExLibrisDatabase`：`version(1)` `syncMeta` ＋ `v0.1` `version(2)` `zipIndexCache` / `readingProgress` ＋ `v0.2` `version(3)` `driveSyncRoots` / `series` / `volumes`）とドメイン別 Repository インターフェース実装（`ZipIndexCacheRepository`：最大 500 件 LRU・不正キャッシュ自動削除、`ReadingProgressRepository`：操作 FIFO 直列化・`local:*` 最大 100 件 LRU・`vol:*` 非退避保護・不正レコード自動削除、`ReaderSettingsRepository`：`syncMeta['defaultReaderSettingsJson']` 共通画質補正デフォルト保存・破損時安全フォールバック、`DriveSyncRootsRepository`：操作 FIFO 直列化・`deletedAt` Tombstone 論理削除・再登録復活）<br>・`resetTestDb()` により UT / Storybook / Playwright IT で 100% 決定論的に初期化可能とする                                                                       |
+| **4. Viewer, Diagnostics & Bridge Layer** | `src/app/`（`ServiceProvider` / `serviceContext` / `coordinatorClient`）<br>`src/features/{bookshelf,series-detail,reader,settings}/`<br>`src/webgl/`<br>`src/bridges/{oauth,http,app,volume-key}/`<br>`src/diagnostics/`<br>`src/shared/` | ・アプリケーション DI コンテナ / Comlink Worker クライアント管理（`ServiceProvider` / `serviceContext` / `coordinatorClient`）<br>・画面別 Container / Presentational コンポーネント（`SCR-01`〜`SCR-04`、1対1 Story/UT・親子 `vi.spyOn` 完全分離）<br>・History API ベースのカスタムルーター（`src/shared/router/`）、`SCR-01` スクロール位置保持ストア、およびオンメモリローカル ZIP セッションストア（`src/features/reader/`）<br>・生 WebGL2 レンダラ（`WebGLRendererCore` 1パス画質補正シェーダーと `<ReaderCanvas>` の分離）および L1 `ImageBitmap` 管理（`L1PageCache`）<br>・Capacitor ネイティブブリッジの薄いアダプタ層（`GoogleAuthBridge` Single-Flight トークン管理・`AppBridge` 優先度付き戻る制御等、Web/テスト時はモック実装へ自動フォールバック）およびオンメモリ診断ロガー（`Bearer` / `ya29.*` マスク付き） |
 
 ---
 
@@ -281,8 +283,29 @@ export interface CoordinatorWorkerApi {
   ): Promise<DecodedPageFrame[]>;
 
   updateAccessToken(accessToken: string | null): void;
+  setHostCallbacks(callbacks: CoordinatorHostCallbacks | null): void;
   cancelEpochBelow(minActiveEpoch: number): void;
   closeArchive(): Promise<void>;
+}
+
+export interface CoordinatorHostCallbacks {
+  /**
+   * Worker 内の GoogleDriveRangeReader が未保持または 401 応答を検知した際、
+   * Comlink.proxy 経由で Main Thread の Single-Flight トークン更新を呼び出す。
+   */
+  refreshAccessToken(options?: {
+    readonly forceRefresh?: boolean;
+  }): Promise<string>;
+
+  /**
+   * Worker 内で発生した Google Drive Range 通信異常ログを Main Thread の diagnosticLogger へ転送する。
+   */
+  reportDiagnostic(
+    level: "warn" | "error",
+    scope: string,
+    message: string,
+    detail?: string,
+  ): void;
 }
 
 export interface DecodeWorkerApi {
@@ -386,25 +409,33 @@ export interface PageDimensions {
 
 ### 4.2 Google OAuth スコープと Single-Flight トークン供給契約
 
-- **要求スコープ**:
-  1. `https://www.googleapis.com/auth/drive.readonly`（指定ルートフォルダ配下のスキャン・`changes.list` 差分検知・ZIP Range 読み取り専用）
-  2. `https://www.googleapis.com/auth/drive.appdata`（`v1.0` のアプリ専用隠し領域 `appDataFolder` バックアップ・端末間同期用）
-- **Single-Flight トークン透過リフレッシュ**:
+- **要求スコープ（段階的最小権限要求）**:
+  1. **`v0.2` 要求スコープ**: `https://www.googleapis.com/auth/drive.readonly` 単独（指定ルートフォルダ配下のスキャン・`changes.list` 差分検知・フォルダ階層参照・ZIP Range 読み取り専用）
+  2. **`v1.0` 追加予定スコープ**: `https://www.googleapis.com/auth/drive.appdata`（アプリ専用隠し領域 `appDataFolder` バックアップ・端末間 LWW 同期用）
+- **Single-Flight トークン透過リフレッシュ・セッション購読契約（詳細は [google-drive.md](providers/google-drive.md)）**:
   ```ts
   export interface GoogleAuthSession {
     readonly email: string;
     readonly accessToken: string;
-    /** UNIX ms */
+    /** UNIX ms（GMS 取得時は取得時刻 + 3_600_000） */
     readonly expiresAt: number;
   }
 
+  export type AuthSessionListener = (session: GoogleAuthSession | null) => void;
+
   export interface GoogleAuthBridge {
+    getSession(): Promise<GoogleAuthSession | null>;
     signIn(): Promise<GoogleAuthSession>;
     signOut(): Promise<void>;
-    getValidAccessToken(options?: { forceRefresh?: boolean }): Promise<string>;
+    getValidAccessToken(options?: {
+      readonly forceRefresh?: boolean;
+    }): Promise<string>;
+    subscribeSession(listener: AuthSessionListener): () => void;
   }
   ```
-  - アクセストークン有効期限の残り **5 分未満**、または Google Drive API から **`401 Unauthorized`** が返却された際、複数の並列 Range リクエストや同期処理が一斉にリフレッシュを走らせないよう、**Single-Flight Promise（進行中の更新 Promise を共有）** で 1 回だけネイティブ側 `clearToken` ＋ 再取得を実行し、新しいトークンを `CoordinatorWorkerApi.updateAccessToken()` へ配信して失敗リクエストを 1 回透過リトライする。
+  - Android ネイティブ環境では `GoogleAuthPlugin.java`（Play Services `Identity.getAuthorizationClient` ＋ `SharedPreferences` 連携フラグによる起動時サイレント復元）、Web / Vitest / Storybook / Playwright IT では `MockGoogleAuthAdapter` へ自動フォールバックし、`NFR-05` のゼロコンフィグ動作を保証する。
+  - アクセストークン有効期限の残り **5 分未満**（取得後 55 分経過時点）、または Google Drive API から **`401 Unauthorized`** が返却された際、複数の並列 Range リクエストやフォルダ参照が一斉にリフレッシュを走らせないよう、**Single-Flight Promise（進行中の更新 Promise を共有）** と世代カウンタ `authEpoch`（`signOut` / 新規 `signIn` 時の古い更新結果破棄）で 1 回だけネイティブ側 `clearToken` ＋ 再取得を実行する。
+  - 通常時の Worker 内 `GoogleDriveRangeReader` は `CoordinatorCore` 保持の `accessToken` で IPC ゼロで通信し、未保持または `401` 発生時のみ `Comlink.proxy` 経由の `CoordinatorHostCallbacks.refreshAccessToken({ forceRefresh: true })` を呼び出して新トークンを取得・`updateAccessToken()` 配信した上で 1 回だけ透過リトライする（通信異常ログも `reportDiagnostic` 経由で Main Thread `diagnosticLogger` へ `[REDACTED]` マスク付きで転送する）。
 
 ---
 

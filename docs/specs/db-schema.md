@@ -2,7 +2,7 @@
 type: spec-db-schema
 title: "Dexie.js（IndexedDB）ローカルDBスキーマ・インデックス定義"
 description: "仮想本棚、指定ルートフォルダ同期、ZIP目次キャッシュ、ローカル一時ZIP共用レジューム、および appDataFolder LWW 端末間同期を支える全9テーブル定義の正本"
-status: "Approved"
+status: "Review (#23)"
 updated: "2026-11-23"
 tags:
   [database, dexie, indexeddb, schema, bookshelf, lww-sync, reading-progress]
@@ -14,6 +14,8 @@ related_specs:
   - docs/specs/engine/zip-streaming.md
   - docs/specs/features/bookshelf.md
   - docs/specs/features/reader.md
+  - docs/specs/features/settings.md
+  - docs/specs/providers/google-drive.md
   - docs/guidelines/testing.md
 related_tests:
   - src/app/ServiceProvider.test.tsx
@@ -127,14 +129,20 @@ erDiagram
 
 ### 3.4 `driveSyncRoots`（Google Drive 同期対象ルートフォルダ / `v0.2`〜）
 
-| カラム名     | 型               | Indexed | 説明                                                                       |
-| :----------- | :--------------- | :-----: | :------------------------------------------------------------------------- |
-| `folderId`   | `string`         | **PK**  | Google Drive フォルダの不変 `fileId`                                       |
-| `folderName` | `string`         |    -    | 表示用フォルダ名（例: `"Comics"`, `"自炊マンガ"`）                         |
-| `enabled`    | `0 \| 1`         |   Yes   | 同期有効フラグ（IndexedDB 複合検索互換のため数値 `0 \| 1` または boolean） |
-| `addedAt`    | `number`         |    -    | 登録日時（UNIX ms）                                                        |
-| `updatedAt`  | `number`         |   Yes   | ユーザー設定更新日時（UNIX ms、LWW 同期用）                                |
-| `deletedAt`  | `number \| null` |   Yes   | 登録解除時の論理削除日時（UNIX ms、Tombstone）                             |
+| カラム名     | 型               | Indexed | 説明                                                                   |
+| :----------- | :--------------- | :-----: | :--------------------------------------------------------------------- |
+| `folderId`   | `string`         | **PK**  | Google Drive フォルダの不変 `fileId`                                   |
+| `folderName` | `string`         |    -    | 表示用フォルダ名（例: `"Comics"`, `"自炊マンガ"`）                     |
+| `enabled`    | `0 \| 1`         |   Yes   | 同期有効フラグ（IndexedDB 複合検索互換のため数値 `0 \| 1` に厳密統一） |
+| `addedAt`    | `number`         |    -    | 登録日時（UNIX ms）                                                    |
+| `updatedAt`  | `number`         |   Yes   | ユーザー設定更新日時（UNIX ms、LWW 同期用）                            |
+| `deletedAt`  | `number \| null` |   Yes   | 登録解除時の論理削除日時（UNIX ms、Tombstone）                         |
+
+- **`DriveSyncRootsRepository` 操作直列化・Tombstone ライフサイクル契約（`src/storage/repositories/driveSyncRootsRepository.ts` / `v0.2`〜）**:
+  - **非同期操作の FIFO 直列化**: 連続した有効/無効切替・削除・再登録・`SCR-01` マウント時の有効件数参照が競合しないよう、内部 Promise キューで全メソッド（`listActive`, `countEnabled`, `upsertRoot`, `setEnabled`, `removeRoot`）を FIFO 直列実行する。
+  - **レコード検証と正規化**: `folderId` および `folderName` は前後空白トリム後の非空文字列、`enabled` は `0 | 1`、`addedAt` / `updatedAt` は有限数（`Number.isFinite`）、`deletedAt` は `null` または有限数であることを検証する（破損レコードは読み取り対象から除外し自動削除する）。
+  - **登録・再登録（`upsertRoot`）**: 未登録の `folderId` は `{ folderId, folderName, enabled: 1, addedAt: now, updatedAt: now, deletedAt: null }` として保存する。既に同一 `folderId` が存在する場合（過去に論理削除され `deletedAt !== null` となっている Tombstone レコードを含む）は、元の `addedAt` を維持したまま `{ folderName, enabled: 1, updatedAt: now, deletedAt: null }` へ更新・復活させる。
+  - **論理削除（`removeRoot`）とログアウト時の保持**: `v1.0` の `appDataFolder` LWW 端末間同期で削除を伝播できるよう、登録解除時は物理削除ではなく `{ enabled: 0, deletedAt: now, updatedAt: now }` の Tombstone 更新を行う（`listActive()` および `countEnabled()` は `deletedAt === null` のアクティブ行のみを対象とし、`addedAt` 昇順・同値時 `folderId` 昇順で決定論的に返す）。また Google アカウントの一時ログアウト（`GoogleAuthBridge.signOut()`）では `driveSyncRoots` を削除せずそのまま保持する。
 
 ### 3.5 `series`（作品シリーズ / `v0.2`〜）
 
@@ -198,7 +206,8 @@ erDiagram
 
 1. **段階的テーブル有効化ルール**:
    - `Phase 1` 時点では `version(1)`（`syncMeta`）が稼働中。
-   - `v0.1` で `version(2)`（`zipIndexCache`, `readingProgress`）を先行定義し、`#19` で `ZipIndexCacheRepository` による `zipIndexCache` 読み書き・LRU 整理を有効化し、`#22` で `readingProgress` の Repository / UI 利用を有効化する。`v0.2` で `version(3)`（`driveSyncRoots`, `series`, `volumes`）、`v0.3` で `version(4)`（`collections`, `seriesCollections`）、`v0.4` で `version(5)`（`bookmarks`）を加算的に定義する。
+   - `v0.1` で `version(2)`（`zipIndexCache`, `readingProgress`）を先行定義し、`#19` で `ZipIndexCacheRepository` による `zipIndexCache` 読み書き・LRU 整理を有効化し、`#22` で `readingProgress` の Repository / UI 利用を有効化する。
+   - `v0.2` では第 1 弾の `#23` で `version(3)`（`driveSyncRoots`, `series`, `volumes`）の 3 テーブル定義を先行確定させて `DriveSyncRootsRepository`（および `SCR-04` ルートフォルダ管理 UI）を有効化し、続く `#24` で `series` / `volumes` の Repository および Drive スキャン・差分同期を有効化する。以降、`v0.3` で `version(4)`（`collections`, `seriesCollections`）、`v0.4` で `version(5)`（`bookmarks`）を加算的に定義する。
 2. **`resetTestDb()` の不変契約**:
    - `resetTestDb(targetDb = db)` は、その時点で `ExLibrisDatabase` に定義されている **`targetDb.tables` 全件に対して `table.clear()` をトランザクションまたは並列で実行** し、テスト間の状態汚染を完全にゼロにする。
    - `ServiceProvider` による `window.__exLibrisServices.resetTestDb` への公開は `!Capacitor.isNativePlatform() && (import.meta.env.DEV || import.meta.env.MODE === "test" || navigator.webdriver === true)`（`shouldExposeResetTestDb`）を満たす開発・テスト・E2E（WebDriver）環境のみに限定し、Android ネイティブ実機および通常の本番ブラウザ環境ではプロパティを省略（`undefined`）して誤削除経路を公開しない。
