@@ -4378,6 +4378,9 @@ describe("ReaderPage", () => {
           : { pageCount: 2, entries: fresh2, fromIndexCache: false };
       }),
       requestVisiblePages: vi.fn(async (pageIndices, _prefetch, epoch) => {
+        if (epoch < 3 && pageIndices.includes(3)) {
+          return [];
+        }
         if (epoch === 3 && pageIndices.includes(3)) {
           return [
             createErrorFrame(3, epoch, "CORRUPT_ZIP", "stale page 3"),
@@ -4443,6 +4446,9 @@ describe("ReaderPage", () => {
           : { pageCount: 1, entries: fresh1, fromIndexCache: false };
       }),
       requestVisiblePages: vi.fn(async (pageIndices, _prefetch, epoch) => {
+        if (epoch < 3 && pageIndices.includes(2)) {
+          return [];
+        }
         if (epoch === 3 && pageIndices.includes(2)) {
           return [createErrorFrame(2, epoch, "DECODE_FAILED", "stale")];
         }
