@@ -1,12 +1,27 @@
 import { Capacitor } from "@capacitor/core";
 import { composeStories } from "@storybook/react";
 import { render, screen } from "@testing-library/react";
+import * as Comlink from "comlink";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CapacitorAppBridge } from "../bridges/app/capacitorAppBridge";
 import { MockAppBridge } from "../bridges/app/mockAppBridge";
 import type { AppBridge } from "../bridges/app/types";
-import type { CoordinatorWorkerApi } from "../engine/types";
+import { CapacitorGoogleAuthAdapter } from "../bridges/oauth/capacitorGoogleAuthAdapter";
+import { GoogleAuthTokenManager } from "../bridges/oauth/googleAuthTokenManager";
+import { MockGoogleAuthAdapter } from "../bridges/oauth/mockGoogleAuthAdapter";
+import type { GoogleAuthBridge } from "../bridges/oauth/types";
+import type {
+  CoordinatorHostCallbacks,
+  CoordinatorWorkerApi,
+} from "../engine/types";
+import { GoogleDriveFolderClient } from "../providers/gdrive/googleDriveFolderClient";
+import { MockDriveFolderClient } from "../providers/gdrive/mockDriveFolderClient";
+import type { DriveFolderClient } from "../providers/gdrive/types";
 import { db, resetTestDb } from "../storage/db";
+import {
+  DexieDriveSyncRootsRepository,
+  type DriveSyncRootsRepository,
+} from "../storage/repositories/driveSyncRootsRepository";
 import {
   DexieReaderSettingsRepository,
   type ReaderSettingsRepository,
@@ -22,10 +37,7 @@ import {
 import { DEFAULT_SHADER_CORRECTION_PARAMS } from "../webgl/shaderParams";
 import { ServiceProvider, shouldExposeResetTestDb } from "./ServiceProvider";
 import * as stories from "./ServiceProvider.stories";
-import {
-  createCoordinatorSession,
-  type CoordinatorSessionHandle,
-} from "./coordinatorClient";
+import type { CoordinatorSessionHandle } from "./coordinatorClient";
 import { type ServiceContextValue, useServices } from "./serviceContext";
 
 const { Default, InjectedServices } = composeStories(stories);
@@ -88,7 +100,7 @@ describe("ServiceProvider", () => {
     );
   });
 
-  it("Capacitor.isNativePlatform()がfalseのときはMockAppBridgeとDexie各Repositoryを自動構築し参照を安定維持すること", () => {
+  it("Capacitor.isNativePlatform()がfalseのときはMockアダプタとDexie各Repositoryを自動構築し参照維持・CoordinatorへauthBridge結線すること", async () => {
     vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(false);
     const captured: ServiceContextValue[] = [];
 
@@ -101,9 +113,7 @@ describe("ServiceProvider", () => {
     expect(screen.getByTestId("services-probe-ready")).toBeVisible();
     expect(captured).toHaveLength(1);
     expect(captured[0]?.appBridge).toBeInstanceOf(MockAppBridge);
-    expect(captured[0]?.createCoordinatorSession).toBe(
-      createCoordinatorSession,
-    );
+    expect(captured[0]?.createCoordinatorSession).toEqual(expect.any(Function));
     expect(captured[0]?.zipIndexCacheRepo).toBeInstanceOf(
       DexieZipIndexCacheRepository,
     );
@@ -113,13 +123,24 @@ describe("ServiceProvider", () => {
     expect(captured[0]?.readerSettingsRepo).toBeInstanceOf(
       DexieReaderSettingsRepository,
     );
+    expect(captured[0]?.googleAuthBridge).toBeInstanceOf(
+      GoogleAuthTokenManager,
+    );
+    expect(captured[0]?.driveSyncRootsRepo).toBeInstanceOf(
+      DexieDriveSyncRootsRepository,
+    );
+    expect(captured[0]?.driveFolderClient).toBeInstanceOf(
+      MockDriveFolderClient,
+    );
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: captured[0]?.appBridge,
       resetTestDb: expect.any(Function),
+      mockGoogleAuthAdapter: expect.any(MockGoogleAuthAdapter),
+      mockDriveFolderClient: captured[0]?.driveFolderClient,
     });
 
-    // 再レンダー時も同一の MockAppBridge と Dexie Repository インスタンスを維持すること
+    // 再レンダー時も同一のサービスインスタンスを維持すること
     rerender(
       <ServiceProvider>
         <ServicesProbe onCapture={(s) => captured.push(s)} />
@@ -127,6 +148,9 @@ describe("ServiceProvider", () => {
     );
     expect(captured).toHaveLength(2);
     expect(captured[1]?.appBridge).toBe(captured[0]?.appBridge);
+    expect(captured[1]?.createCoordinatorSession).toBe(
+      captured[0]?.createCoordinatorSession,
+    );
     expect(captured[1]?.zipIndexCacheRepo).toBe(captured[0]?.zipIndexCacheRepo);
     expect(captured[1]?.readingProgressRepo).toBe(
       captured[0]?.readingProgressRepo,
@@ -134,32 +158,127 @@ describe("ServiceProvider", () => {
     expect(captured[1]?.readerSettingsRepo).toBe(
       captured[0]?.readerSettingsRepo,
     );
+    expect(captured[1]?.googleAuthBridge).toBe(captured[0]?.googleAuthBridge);
+    expect(captured[1]?.driveSyncRootsRepo).toBe(
+      captured[0]?.driveSyncRootsRepo,
+    );
+    expect(captured[1]?.driveFolderClient).toBe(captured[0]?.driveFolderClient);
+
+    // 公開モック経由のシード後に createCoordinatorSession() を呼ぶと authBridge 経由でトークンが Worker へ同期されること
+    window.__exLibrisServices!.mockGoogleAuthAdapter!.seedLinkedSession({
+      email: "it@example.com",
+      accessToken: "ya29.seeded-provider",
+    });
+    await expect(
+      captured[0]!.googleAuthBridge.getSession(),
+    ).resolves.toMatchObject({
+      email: "it@example.com",
+      accessToken: "ya29.seeded-provider",
+    });
+
+    const receivedTokens: Array<string | null> = [];
+    let receivedCallbacks: CoordinatorHostCallbacks | null = null;
+    class ProviderMockWorker {
+      private readonly port1: MessagePort;
+      private readonly port2: MessagePort;
+
+      constructor() {
+        const channel = new MessageChannel();
+        this.port1 = channel.port1;
+        this.port2 = channel.port2;
+        this.port2.start();
+        const remoteImpl: CoordinatorWorkerApi = {
+          async openArchive() {
+            return { pageCount: 0, entries: [], fromIndexCache: false };
+          },
+          async requestVisiblePages() {
+            return [];
+          },
+          updateAccessToken(token) {
+            receivedTokens.push(token);
+          },
+          setHostCallbacks(callbacks) {
+            receivedCallbacks = callbacks;
+          },
+          cancelEpochBelow() {},
+          async closeArchive() {},
+        };
+        Comlink.expose(remoteImpl, this.port1);
+      }
+
+      postMessage(message: unknown, transfer: Transferable[] = []): void {
+        this.port2.postMessage(message, transfer);
+      }
+
+      addEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+      ): void {
+        this.port2.addEventListener(type, listener);
+      }
+
+      removeEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+      ): void {
+        this.port2.removeEventListener(type, listener);
+      }
+
+      terminate(): void {
+        this.port1.close();
+        this.port2.close();
+      }
+    }
+
+    vi.stubGlobal("Worker", ProviderMockWorker);
+    const session = captured[0]!.createCoordinatorSession();
+    await vi.waitFor(() => {
+      expect(receivedCallbacks).not.toBeNull();
+      expect(receivedTokens).toEqual(["ya29.seeded-provider"]);
+    });
+    session.dispose();
   });
 
-  it("Capacitor.isNativePlatform()がtrueのときはCapacitorAppBridgeを自動構築しresetTestDbを公開しないこと (R1-12)", () => {
+  it("Capacitor.isNativePlatform()がtrueのときはネイティブアダプタを構築しテスト用フックを公開しないこと (R1-12)", async () => {
     vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(true);
-    let capturedBridge: AppBridge | null = null;
+    const restoreSpy = vi
+      .spyOn(CapacitorGoogleAuthAdapter.prototype, "restoreSession")
+      .mockResolvedValueOnce({ status: "unlinked" });
+    const captured: ServiceContextValue[] = [];
 
     render(
       <ServiceProvider>
-        <ServicesProbe
-          onCapture={(s) => {
-            capturedBridge = s.appBridge;
-          }}
-        />
+        <ServicesProbe onCapture={(s) => captured.push(s)} />
       </ServiceProvider>,
     );
 
-    expect(capturedBridge).toBeInstanceOf(CapacitorAppBridge);
+    const capturedServices = captured[0];
+    expect(capturedServices?.appBridge).toBeInstanceOf(CapacitorAppBridge);
+    expect(capturedServices?.googleAuthBridge).toBeInstanceOf(
+      GoogleAuthTokenManager,
+    );
+    expect(capturedServices?.driveFolderClient).toBeInstanceOf(
+      GoogleDriveFolderClient,
+    );
+    expect(capturedServices?.driveSyncRootsRepo).toBeInstanceOf(
+      DexieDriveSyncRootsRepository,
+    );
+    await expect(
+      capturedServices!.googleAuthBridge.getSession(),
+    ).resolves.toBeNull();
+    expect(restoreSpy).toHaveBeenCalledTimes(1);
+
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
-      appBridge: capturedBridge,
+      appBridge: capturedServices?.appBridge,
     });
     expect(window.__exLibrisServices?.resetTestDb).toBeUndefined();
     expect("resetTestDb" in window.__exLibrisServices!).toBe(false);
+    expect("mockGoogleAuthAdapter" in window.__exLibrisServices!).toBe(false);
+    expect("mockDriveFolderClient" in window.__exLibrisServices!).toBe(false);
   });
 
-  it("DI props指定時は注入されたappBridge・createCoordinatorSession・各Repositoryを使用・更新すること", () => {
+  it("DI props指定時は注入された各種Bridge・Repository・Clientを使用・更新しモック非該当時はグローバル公開しないこと", () => {
     const customBridge1: AppBridge = {
       addBackButtonListener: vi.fn(() => () => {}),
       minimizeApp: vi.fn(async () => {}),
@@ -208,6 +327,40 @@ describe("ServiceProvider", () => {
       })),
       saveShaderDefaults: vi.fn(async (params) => ({ ...params })),
     };
+    const customAuthBridge1: GoogleAuthBridge = {
+      getCachedSession: vi.fn(() => null),
+      getSession: vi.fn(async () => null),
+      signIn: vi.fn(),
+      signOut: vi.fn(async () => {}),
+      getValidAccessToken: vi.fn(async () => "ya29.custom-1"),
+      subscribeSession: vi.fn(() => () => {}),
+    };
+    const customAuthBridge2: GoogleAuthBridge = {
+      ...customAuthBridge1,
+      getValidAccessToken: vi.fn(async () => "ya29.custom-2"),
+    };
+    const customSyncRootsRepo1: DriveSyncRootsRepository = {
+      listActive: vi.fn(async () => []),
+      countEnabled: vi.fn(async () => 0),
+      upsertRoot: vi.fn(),
+      setEnabled: vi.fn(async () => null),
+      removeRoot: vi.fn(async () => {}),
+    };
+    const customSyncRootsRepo2: DriveSyncRootsRepository = {
+      listActive: vi.fn(async () => []),
+      countEnabled: vi.fn(async () => 1),
+      upsertRoot: vi.fn(),
+      setEnabled: vi.fn(async () => null),
+      removeRoot: vi.fn(async () => {}),
+    };
+    const customFolderClient1: DriveFolderClient = {
+      resolveFolderById: vi.fn(),
+      listChildFolders: vi.fn(async () => ({
+        folders: [],
+        nextPageToken: null,
+      })),
+    };
+    const customFolderClient2 = new MockDriveFolderClient();
 
     const captured: ServiceContextValue[] = [];
 
@@ -218,6 +371,9 @@ describe("ServiceProvider", () => {
         zipIndexCacheRepo={customRepo1}
         readingProgressRepo={customProgressRepo1}
         readerSettingsRepo={customSettingsRepo1}
+        googleAuthBridge={customAuthBridge1}
+        driveSyncRootsRepo={customSyncRootsRepo1}
+        driveFolderClient={customFolderClient1}
       >
         <ServicesProbe onCapture={(s) => captured.push(s)} />
       </ServiceProvider>,
@@ -228,11 +384,16 @@ describe("ServiceProvider", () => {
     expect(captured[0]?.zipIndexCacheRepo).toBe(customRepo1);
     expect(captured[0]?.readingProgressRepo).toBe(customProgressRepo1);
     expect(captured[0]?.readerSettingsRepo).toBe(customSettingsRepo1);
+    expect(captured[0]?.googleAuthBridge).toBe(customAuthBridge1);
+    expect(captured[0]?.driveSyncRootsRepo).toBe(customSyncRootsRepo1);
+    expect(captured[0]?.driveFolderClient).toBe(customFolderClient1);
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: customBridge1,
       resetTestDb: expect.any(Function),
     });
+    expect("mockGoogleAuthAdapter" in window.__exLibrisServices!).toBe(false);
+    expect("mockDriveFolderClient" in window.__exLibrisServices!).toBe(false);
 
     rerender(
       <ServiceProvider
@@ -241,6 +402,9 @@ describe("ServiceProvider", () => {
         zipIndexCacheRepo={customRepo2}
         readingProgressRepo={customProgressRepo2}
         readerSettingsRepo={customSettingsRepo2}
+        googleAuthBridge={customAuthBridge2}
+        driveSyncRootsRepo={customSyncRootsRepo2}
+        driveFolderClient={customFolderClient2}
       >
         <ServicesProbe onCapture={(s) => captured.push(s)} />
       </ServiceProvider>,
@@ -250,11 +414,16 @@ describe("ServiceProvider", () => {
     expect(captured[1]?.zipIndexCacheRepo).toBe(customRepo2);
     expect(captured[1]?.readingProgressRepo).toBe(customProgressRepo2);
     expect(captured[1]?.readerSettingsRepo).toBe(customSettingsRepo2);
+    expect(captured[1]?.googleAuthBridge).toBe(customAuthBridge2);
+    expect(captured[1]?.driveSyncRootsRepo).toBe(customSyncRootsRepo2);
+    expect(captured[1]?.driveFolderClient).toBe(customFolderClient2);
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: customBridge2,
       resetTestDb: expect.any(Function),
+      mockDriveFolderClient: customFolderClient2,
     });
+    expect("mockGoogleAuthAdapter" in window.__exLibrisServices!).toBe(false);
   });
 
   it("window.__exLibrisServices.resetTestDbが公開され呼び出しによりsyncMeta等のDBテーブルを初期化できること (R1-17)", async () => {

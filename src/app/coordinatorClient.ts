@@ -1,5 +1,7 @@
 import * as Comlink from "comlink";
+import type { GoogleAuthBridge } from "../bridges/oauth/types";
 import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
+import type { DiagnosticLogger } from "../diagnostics/types";
 import type { CoordinatorWorkerApi } from "../engine/types";
 import { registerZipArchiveErrorTransferHandler } from "../engine/workers/comlinkErrorHandler";
 import { ZipArchiveError } from "../engine/zip/errors";
@@ -31,6 +33,8 @@ export interface CreateCoordinatorSessionDeps {
     worker: CoordinatorWorkerHandle,
   ) => CoordinatorRemoteProxy;
   readonly registerErrorHandler?: () => void;
+  readonly authBridge?: GoogleAuthBridge;
+  readonly logger?: DiagnosticLogger;
 }
 
 const WORKER_CRASH_MESSAGE = "Coordinator Workerが異常終了しました";

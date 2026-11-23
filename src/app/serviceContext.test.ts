@@ -2,7 +2,10 @@ import { renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { MockAppBridge } from "../bridges/app/mockAppBridge";
+import type { GoogleAuthBridge } from "../bridges/oauth/types";
 import type { CoordinatorWorkerApi } from "../engine/types";
+import type { DriveFolderClient } from "../providers/gdrive/types";
+import type { DriveSyncRootsRepository } from "../storage/repositories/driveSyncRootsRepository";
 import { DEFAULT_SHADER_CORRECTION_PARAMS } from "../webgl/shaderParams";
 import {
   ServiceContext,
@@ -18,6 +21,29 @@ describe("serviceContext", () => {
   });
 
   it("ServiceContext.Provider配下ではサービスコンテキスト値を返却すること", () => {
+    const googleAuthBridge: GoogleAuthBridge = {
+      getCachedSession: vi.fn(() => null),
+      getSession: vi.fn(async () => null),
+      signIn: vi.fn(),
+      signOut: vi.fn(async () => {}),
+      getValidAccessToken: vi.fn(async () => "ya29.test"),
+      subscribeSession: vi.fn(() => () => {}),
+    };
+    const driveSyncRootsRepo: DriveSyncRootsRepository = {
+      listActive: vi.fn(async () => []),
+      countEnabled: vi.fn(async () => 0),
+      upsertRoot: vi.fn(),
+      setEnabled: vi.fn(async () => null),
+      removeRoot: vi.fn(async () => {}),
+    };
+    const driveFolderClient: DriveFolderClient = {
+      resolveFolderById: vi.fn(),
+      listChildFolders: vi.fn(async () => ({
+        folders: [],
+        nextPageToken: null,
+      })),
+    };
+
     const value: ServiceContextValue = {
       appBridge: new MockAppBridge(),
       createCoordinatorSession: () => ({
@@ -42,6 +68,9 @@ describe("serviceContext", () => {
         })),
         saveShaderDefaults: vi.fn(async (params) => ({ ...params })),
       },
+      googleAuthBridge,
+      driveSyncRootsRepo,
+      driveFolderClient,
     };
 
     const wrapper = ({ children }: { children: ReactNode }) =>

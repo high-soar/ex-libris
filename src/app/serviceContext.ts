@@ -1,5 +1,8 @@
 import { createContext, useContext } from "react";
 import type { AppBridge } from "../bridges/app/types";
+import type { GoogleAuthBridge } from "../bridges/oauth/types";
+import type { DriveFolderClient } from "../providers/gdrive/types";
+import type { DriveSyncRootsRepository } from "../storage/repositories/driveSyncRootsRepository";
 import type { ReaderSettingsRepository } from "../storage/repositories/readerSettingsRepository";
 import type { ReadingProgressRepository } from "../storage/repositories/readingProgressRepository";
 import type { ZipIndexCacheRepository } from "../storage/repositories/zipIndexCacheRepository";
@@ -11,6 +14,9 @@ export interface ServiceContextValue {
   readonly zipIndexCacheRepo: ZipIndexCacheRepository;
   readonly readingProgressRepo: ReadingProgressRepository;
   readonly readerSettingsRepo: ReaderSettingsRepository;
+  readonly googleAuthBridge: GoogleAuthBridge;
+  readonly driveSyncRootsRepo: DriveSyncRootsRepository;
+  readonly driveFolderClient: DriveFolderClient;
 }
 
 export const ServiceContext = createContext<ServiceContextValue | null>(null);

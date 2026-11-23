@@ -3,7 +3,10 @@ import { type ReactNode, useEffect, useMemo, useRef } from "react";
 import { CapacitorAppBridge } from "../bridges/app/capacitorAppBridge";
 import { MockAppBridge } from "../bridges/app/mockAppBridge";
 import type { AppBridge } from "../bridges/app/types";
+import type { GoogleAuthBridge } from "../bridges/oauth/types";
+import type { DriveFolderClient } from "../providers/gdrive/types";
 import { db, resetTestDb } from "../storage/db";
+import type { DriveSyncRootsRepository } from "../storage/repositories/driveSyncRootsRepository";
 import {
   DexieReaderSettingsRepository,
   type ReaderSettingsRepository,
@@ -30,6 +33,9 @@ export interface ServiceProviderProps {
   readonly zipIndexCacheRepo?: ZipIndexCacheRepository;
   readonly readingProgressRepo?: ReadingProgressRepository;
   readonly readerSettingsRepo?: ReaderSettingsRepository;
+  readonly googleAuthBridge?: GoogleAuthBridge;
+  readonly driveSyncRootsRepo?: DriveSyncRootsRepository;
+  readonly driveFolderClient?: DriveFolderClient;
 }
 
 export interface ResetTestDbExposureOptions {
@@ -110,6 +116,9 @@ export function ServiceProvider({
   zipIndexCacheRepo,
   readingProgressRepo,
   readerSettingsRepo,
+  googleAuthBridge,
+  driveSyncRootsRepo,
+  driveFolderClient,
 }: ServiceProviderProps) {
   const resolvedAppBridge = useStableService(appBridge, createDefaultAppBridge);
   const resolvedZipIndexCacheRepo = useStableService(
@@ -139,6 +148,12 @@ export function ServiceProvider({
       zipIndexCacheRepo: resolvedZipIndexCacheRepo,
       readingProgressRepo: resolvedReadingProgressRepo,
       readerSettingsRepo: resolvedReaderSettingsRepo,
+      googleAuthBridge:
+        googleAuthBridge ?? (null as unknown as GoogleAuthBridge),
+      driveSyncRootsRepo:
+        driveSyncRootsRepo ?? (null as unknown as DriveSyncRootsRepository),
+      driveFolderClient:
+        driveFolderClient ?? (null as unknown as DriveFolderClient),
     }),
     [
       resolvedAppBridge,
@@ -146,6 +161,9 @@ export function ServiceProvider({
       resolvedZipIndexCacheRepo,
       resolvedReadingProgressRepo,
       resolvedReaderSettingsRepo,
+      googleAuthBridge,
+      driveSyncRootsRepo,
+      driveFolderClient,
     ],
   );
 
