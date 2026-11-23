@@ -87,23 +87,27 @@ test.describe("SCN-03: Google OAuth連携・Driveフォルダ設定・診断ロ�
       "Comics",
     );
 
-    // ログアウト後も登録済み driveSyncRoots が保持されること
+    // ログアウト後も登録済み driveSyncRoots が保持され、追加操作は非活性になること
     await page.getByTestId("google-signout-button").click();
     await expect(page.getByTestId("google-auth-status-badge")).toHaveText(
       "未連携",
     );
     await expect(page.getByTestId("sync-roots-unlinked-notice")).toBeVisible();
+    await expect(page.getByTestId("open-folder-picker-button")).toBeDisabled();
+    await expect(page.getByTestId("folder-input")).toBeDisabled();
     await expect(page.getByTestId("sync-root-item")).toHaveCount(1);
     await expect(page.getByTestId("sync-root-item").first()).toContainText(
       "Comics",
     );
 
-    // ログアウト後のリロードでも未連携のまま同期ルートを保持
+    // ログアウト後のリロードでも未連携のまま同期ルートを保持し操作非活性
     await page.reload();
     await waitForServicesReady(page);
     await expect(page.getByTestId("google-auth-status-badge")).toHaveText(
       "未連携",
     );
+    await expect(page.getByTestId("open-folder-picker-button")).toBeDisabled();
+    await expect(page.getByTestId("folder-input")).toBeDisabled();
     await expect(page.getByTestId("sync-root-item")).toHaveCount(1);
 
     expect(pageErrors).toEqual([]);
@@ -204,15 +208,14 @@ test.describe("SCN-03: Google OAuth連携・Driveフォルダ設定・診断ロ�
 
     await page.getByTestId("folder-input").fill("root");
     await page.getByTestId("add-folder-by-input-button").click();
-    await expect(page.getByTestId("sync-roots-error")).toContainText(
-      "マイドライブ直下（root）",
-    );
+    const syncRootsError = page.getByTestId("sync-roots-error");
+    await expect(syncRootsError).toHaveAttribute("role", "alert");
+    await expect(syncRootsError).toContainText("マイドライブ直下（root）");
 
     await page.getByTestId("folder-input").fill("mock-file-not-folder");
     await page.getByTestId("add-folder-by-input-button").click();
-    await expect(page.getByTestId("sync-roots-error")).toContainText(
-      "フォルダではありません",
-    );
+    await expect(syncRootsError).toHaveAttribute("role", "alert");
+    await expect(syncRootsError).toContainText("フォルダではありません");
 
     await page
       .getByTestId("folder-input")
@@ -406,6 +409,40 @@ test.describe("SCN-03: Google OAuth連携・Driveフォルダ設定・診断ロ�
     await expect
       .poll(() => page.evaluate(() => Math.round(window.scrollY)))
       .toBe(100);
+
+    // 登録済み全ルートフォルダを無効化して '/' へ戻ると no-roots バナーが再表示されること
+    await page.getByTestId("header-settings-button").click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await page
+      .getByRole("button", { name: "Comics の同期を無効にする" })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Comics の同期を有効にする" }),
+    ).toHaveAttribute("aria-pressed", "false");
+
+    await page.getByTestId("settings-back-button").click();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId("drive-setup-banner")).toHaveAttribute(
+      "data-banner-kind",
+      "no-roots",
+    );
+    await expect(page.getByTestId("drive-setup-banner-email")).toHaveText(
+      "reader@example.com",
+    );
+
+    // 再度 1 件以上有効化して '/' へ戻るとバナーが非表示になること
+    await page.getByTestId("drive-setup-banner-cta").click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await page
+      .getByRole("button", { name: "Comics の同期を有効にする" })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Comics の同期を無効にする" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    await page.getByTestId("settings-back-button").click();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId("drive-setup-banner")).toHaveCount(0);
 
     expect(pageErrors).toEqual([]);
   });
