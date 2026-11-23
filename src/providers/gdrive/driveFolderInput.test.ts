@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseDriveFolderInput } from "./driveFolderInput";
 
 describe("parseDriveFolderInput", () => {
-  it("各種Google DriveフォルダURL形式および直接フォルダIDを正規化して抽出すること (AC-GD-01)", () => {
+  it("各種Google DriveフォルダURL形式および直接フォルダIDを正規化して抽出すること (AC-GD-06)", () => {
     expect(parseDriveFolderInput("1AbCd_EfG-123")).toBe("1AbCd_EfG-123");
     expect(parseDriveFolderInput("  abc  ")).toBe("abc");
     const maxLenId = "A".repeat(128);
@@ -38,7 +38,7 @@ describe("parseDriveFolderInput", () => {
     ).toBe("1OpenFolder_Id");
   });
 
-  it("予約語root（大文字小文字非区別）・ファイルURL・不正ホスト・不正文字をnullで拒否すること (AC-GD-01, AC-GD-02)", () => {
+  it("予約語root（大文字小文字非区別）・ファイルURL・不正ホスト・不正文字をnullで拒否すること (AC-GD-06)", () => {
     const invalidInputs = [
       "",
       "   ",

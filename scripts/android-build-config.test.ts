@@ -512,9 +512,41 @@ describe("Android build, Capacitor & Remote Agent governance invariants", () => 
     expect(pluginSource).toContain("StandardCharsets.UTF_8");
     expect(pluginSource).not.toMatch(/oauth2\.googleapis\.com\/revoke\?token=/);
 
-    // handleOnDestroy での ExecutorService shutdownNow()
+    // handleOnDestroy での ExecutorService shutdownNow() と揮発状態リセット
     expect(pluginSource).toContain("handleOnDestroy()");
     expect(pluginSource).toContain("shutdownNow()");
+
+    // authEpoch 世代競合時の PluginCall 確定解放・pendingSignInEpoch 契約（リーク・ハング・同意画面後発起動防止）
+    expect(pluginSource).toContain("pendingSignInEpoch");
+    expect(pluginSource).toMatch(
+      /authorize\(buildAuthorizationRequest\(\)\)\s*\.addOnSuccessListener\(authResult\s*->\s*\{[\s\S]*?authEpoch\.get\(\)\s*!=\s*epochAtStart[\s\S]*?authorizationLauncher\.launch/,
+    );
+    expect(pluginSource).toMatch(
+      /handleAuthorizationActivityResult[\s\S]*?epochAtStart\s*=\s*pendingSignInEpoch[\s\S]*?authEpoch\.get\(\)\s*!=\s*epochAtStart/,
+    );
+    expect(pluginSource).not.toContain("epochAtResult");
+
+    // restoreSession の世代不一致時は bare return せず unlinked で call を確定解決すること
+    const restoreMethodMatch = pluginSource.match(
+      /public void restoreSession\(PluginCall call\)\s*\{([\s\S]*?)\n\s{4}\}/,
+    );
+    expect(restoreMethodMatch).not.toBeNull();
+    const restoreBody = restoreMethodMatch![1]!;
+    expect(restoreBody).not.toMatch(
+      /if\s*\(\s*isDestroyed\s*\|\|\s*authEpoch\.get\(\)\s*!=\s*epochAtStart\s*\)\s*\{\s*return;\s*\}/,
+    );
+    expect(
+      restoreBody.match(
+        /authEpoch\.get\(\)\s*!=\s*epochAtStart[\s\S]*?call\.resolve\(buildStatusResult\("unlinked"\)\)/g,
+      )?.length ?? 0,
+    ).toBeGreaterThanOrEqual(3);
+
+    // refreshAccessToken / executeAuthorizeForRefresh の失敗リスナーでも世代不一致時は ERROR_AUTH_REQUIRED で reject すること
+    const refreshFailureMatches =
+      pluginSource.match(
+        /\.addOnFailureListener\(ex\s*->\s*\{[\s\S]*?authEpoch\.get\(\)\s*!=\s*epochAtStart[\s\S]*?ERROR_AUTH_REQUIRED[\s\S]*?\}\)/g,
+      ) ?? [];
+    expect(refreshFailureMatches.length).toBeGreaterThanOrEqual(3);
 
     // AndroidManifest は INTERNET のみを維持
     const manifest = fs.readFileSync(

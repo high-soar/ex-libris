@@ -27,7 +27,7 @@ function createJsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("GoogleDriveFolderClient", () => {
-  it("resolveFolderByIdでroot/空IDをfetch前に拒否し、正常フォルダ・非フォルダ・ゴミ箱・不正応答を判別すること (AC-GD-02, AC-GD-03)", async () => {
+  it("resolveFolderByIdでroot/空IDをfetch前に拒否し、正常フォルダ・非フォルダ・ゴミ箱・不正応答を判別すること (AC-GD-07)", async () => {
     const authBridge = createMockAuthBridge();
     const fetchFn = vi.fn<typeof fetch>();
     const logger = createDiagnosticLogger();
@@ -109,7 +109,7 @@ describe("GoogleDriveFolderClient", () => {
     });
   });
 
-  it("401発生時にfailedToken付きforceRefreshで1回のみ透過リトライし、各種HTTP・認証エラーをDriveApiErrorへ変換して秘匿ログを残すこと (AC-GD-03, AC-GD-06)", async () => {
+  it("401発生時にfailedToken付きforceRefreshで1回のみ透過リトライし、各種HTTP・認証エラーをDriveApiErrorへ変換して秘匿ログを残すこと (AC-GD-07, AC-GD-05)", async () => {
     const getValidAccessToken = vi
       .fn<GoogleAuthBridge["getValidAccessToken"]>()
       .mockResolvedValueOnce("ya29.expired-secret-token")
@@ -123,22 +123,23 @@ describe("GoogleDriveFolderClient", () => {
       logger,
     });
 
-    // 1回目 401 -> リフレッシュ後に再実行して 200 成功
-    fetchFn
-      .mockResolvedValueOnce(createJsonResponse({ error: { code: 401 } }, 401))
-      .mockResolvedValueOnce(
-        createJsonResponse({
-          id: "f-ok",
-          name: "MyManga",
-          mimeType: "application/vnd.google-apps.folder",
-          trashed: false,
-        }),
-      );
+    // 1回目 401 -> 未読ボディ解放後にリフレッシュして再実行し 200 成功
+    const first401 = createJsonResponse({ error: { code: 401 } }, 401);
+    const cancelSpy = vi.spyOn(first401.body!, "cancel");
+    fetchFn.mockResolvedValueOnce(first401).mockResolvedValueOnce(
+      createJsonResponse({
+        id: "f-ok",
+        name: "MyManga",
+        mimeType: "application/vnd.google-apps.folder",
+        trashed: false,
+      }),
+    );
 
     await expect(client.resolveFolderById("f-ok")).resolves.toEqual({
       id: "f-ok",
       name: "MyManga",
     });
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
     expect(getValidAccessToken).toHaveBeenNthCalledWith(1);
     expect(getValidAccessToken).toHaveBeenNthCalledWith(2, {
       forceRefresh: true,
@@ -149,7 +150,51 @@ describe("GoogleDriveFolderClient", () => {
       new Headers(fetchFn.mock.calls[1]![1]?.headers).get("Authorization"),
     ).toBe("Bearer ya29.refreshed-secret-token");
 
+    // body が null の 401 および body.cancel() 失敗時もリトライを継続できること
+    getValidAccessToken
+      .mockResolvedValueOnce("ya29.null-body-expired")
+      .mockResolvedValueOnce("ya29.null-body-refreshed")
+      .mockResolvedValueOnce("ya29.cancel-err-expired")
+      .mockResolvedValueOnce("ya29.cancel-err-refreshed");
+    fetchFn
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(
+        createJsonResponse({
+          id: "f-null-body",
+          name: "NullBody",
+          mimeType: "application/vnd.google-apps.folder",
+          trashed: false,
+        }),
+      );
+    await expect(client.resolveFolderById("f-null-body")).resolves.toEqual({
+      id: "f-null-body",
+      name: "NullBody",
+    });
+
+    const failingCancelResponse = {
+      status: 401,
+      ok: false,
+      body: {
+        cancel: vi.fn().mockRejectedValueOnce(new Error("stream locked")),
+      },
+      json: vi.fn().mockResolvedValue({}),
+    } as unknown as Response;
+    fetchFn.mockResolvedValueOnce(failingCancelResponse).mockResolvedValueOnce(
+      createJsonResponse({
+        id: "f-cancel-err",
+        name: "CancelErr",
+        mimeType: "application/vnd.google-apps.folder",
+        trashed: false,
+      }),
+    );
+    await expect(client.resolveFolderById("f-cancel-err")).resolves.toEqual({
+      id: "f-cancel-err",
+      name: "CancelErr",
+    });
+    expect(failingCancelResponse.body!.cancel).toHaveBeenCalledTimes(1);
+
     // 2回目も 401 の場合は無限リトライせず UNAUTHORIZED
+    const callsBeforeDouble401 = fetchFn.mock.calls.length;
     getValidAccessToken.mockResolvedValue("ya29.bad-token");
     fetchFn
       .mockResolvedValueOnce(
@@ -162,7 +207,7 @@ describe("GoogleDriveFolderClient", () => {
       code: "UNAUTHORIZED",
       status: 401,
     });
-    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(fetchFn).toHaveBeenCalledTimes(callsBeforeDouble401 + 2);
 
     // 403 rateLimitExceeded / userRateLimitExceeded -> RATE_LIMITED
     fetchFn.mockResolvedValueOnce(
@@ -357,7 +402,7 @@ describe("GoogleDriveFolderClient", () => {
     });
   });
 
-  it("既定のglobalThis.fetchとdiagnosticLoggerを使用でき、resolveFolderByIdでもAbortSignalを受け付けること", async () => {
+  it("既定のglobalThis.fetchとdiagnosticLoggerを使用でき、resolveFolderByIdでもAbortSignalを受け付けること (AC-GD-07)", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       createJsonResponse({
         id: "default-folder",
@@ -388,5 +433,62 @@ describe("GoogleDriveFolderClient", () => {
       }),
     ).rejects.toMatchObject({ name: "AbortError" });
     fetchSpy.mockRestore();
+  });
+
+  it("200正常応答およびエラー応答のresponse.json()読込中にAbortErrorが発生した場合、ログ記録せずAbortErrorをそのまま再送出すること (AC-GD-07)", async () => {
+    const authBridge = createMockAuthBridge();
+    const fetchFn = vi.fn<typeof fetch>();
+    const logger = createDiagnosticLogger();
+    const client = new GoogleDriveFolderClient({
+      authBridge,
+      fetchFn,
+      logger,
+    });
+
+    // 1) 200応答の response.json() が AbortError で拒否
+    const okAbortRes = new Response("{}", { status: 200 });
+    vi.spyOn(okAbortRes, "json").mockRejectedValueOnce(
+      new DOMException("Body read aborted", "AbortError"),
+    );
+    fetchFn.mockResolvedValueOnce(okAbortRes);
+    await expect(client.listChildFolders("root")).rejects.toMatchObject({
+      name: "AbortError",
+    });
+
+    // 2) 200応答の response.json() 読込中に signal が abort（TypeError 送出）
+    const okSignalController = new AbortController();
+    const okSignalRes = new Response("{}", { status: 200 });
+    vi.spyOn(okSignalRes, "json").mockImplementationOnce(async () => {
+      okSignalController.abort();
+      throw new TypeError("stream terminated");
+    });
+    fetchFn.mockResolvedValueOnce(okSignalRes);
+    await expect(
+      client.listChildFolders("root", { signal: okSignalController.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    // 3) エラー応答 (500) の response.json() が AbortError で拒否
+    const errAbortRes = new Response("{}", { status: 500 });
+    vi.spyOn(errAbortRes, "json").mockRejectedValueOnce(
+      new DOMException("Error body aborted", "AbortError"),
+    );
+    fetchFn.mockResolvedValueOnce(errAbortRes);
+    await expect(client.listChildFolders("root")).rejects.toMatchObject({
+      name: "AbortError",
+    });
+
+    // 4) エラー応答 (500) の response.json() 読込中に signal が abort
+    const errSignalController = new AbortController();
+    const errSignalRes = new Response("{}", { status: 500 });
+    vi.spyOn(errSignalRes, "json").mockImplementationOnce(async () => {
+      errSignalController.abort();
+      throw new TypeError("stream terminated");
+    });
+    fetchFn.mockResolvedValueOnce(errSignalRes);
+    await expect(
+      client.listChildFolders("root", { signal: errSignalController.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(logger.getEntries()).toEqual([]);
   });
 });
