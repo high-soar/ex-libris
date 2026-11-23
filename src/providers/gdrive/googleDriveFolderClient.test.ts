@@ -332,10 +332,16 @@ describe("GoogleDriveFolderClient", () => {
     expect(requestedUrl.searchParams.get("supportsAllDrives")).toBe("true");
     expect(requestedUrl.searchParams.get("pageToken")).toBe("token-1");
 
-    // pageToken 未指定時は nextPageToken: null を返す
-    fetchFn.mockResolvedValueOnce(createJsonResponse({ files: [] }));
-    const emptyPage = await client.listChildFolders("root");
+    // pageToken 未指定 / 空白時は nextPageToken: null を返し pageToken クエリを付与しない
+    fetchFn.mockResolvedValueOnce(
+      createJsonResponse({ nextPageToken: "", files: [] }),
+    );
+    const emptyPage = await client.listChildFolders("root", {
+      pageToken: "   ",
+    });
     expect(emptyPage).toEqual({ folders: [], nextPageToken: null });
+    const emptyPageUrl = new URL(String(fetchFn.mock.calls[2]![0]));
+    expect(emptyPageUrl.searchParams.has("pageToken")).toBe(false);
 
     // 不正な files 配列 / 要素構造は NETWORK_ERROR
     fetchFn.mockResolvedValueOnce(createJsonResponse({ files: "not-array" }));
@@ -351,7 +357,7 @@ describe("GoogleDriveFolderClient", () => {
     });
   });
 
-  it("既定のglobalThis.fetchとdiagnosticLoggerを使用でき、コンストラクタ未指定でも動作すること", async () => {
+  it("既定のglobalThis.fetchとdiagnosticLoggerを使用でき、resolveFolderByIdでもAbortSignalを受け付けること", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       createJsonResponse({
         id: "default-folder",
@@ -363,11 +369,24 @@ describe("GoogleDriveFolderClient", () => {
     const authBridge = createMockAuthBridge();
     const client = new GoogleDriveFolderClient({ authBridge });
 
-    await expect(client.resolveFolderById("default-folder")).resolves.toEqual({
+    const activeController = new AbortController();
+    await expect(
+      client.resolveFolderById("default-folder", {
+        signal: activeController.signal,
+      }),
+    ).resolves.toEqual({
       id: "default-folder",
       name: "Default",
     });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    const abortedController = new AbortController();
+    abortedController.abort();
+    await expect(
+      client.resolveFolderById("default-folder", {
+        signal: abortedController.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
     fetchSpy.mockRestore();
   });
 });

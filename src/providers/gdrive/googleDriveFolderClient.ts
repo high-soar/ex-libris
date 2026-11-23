@@ -73,6 +73,132 @@ function mapHttpStatusToErrorCode(
   return "NETWORK_ERROR";
 }
 
+function buildListChildFoldersUrl(
+  normalizedParentId: string,
+  pageToken?: string,
+): string {
+  const escapedParentId = escapeDriveQueryValue(normalizedParentId);
+  const params = new URLSearchParams({
+    q: `'${escapedParentId}' in parents and mimeType = '${GOOGLE_DRIVE_FOLDER_MIME_TYPE}' and trashed = false`,
+    orderBy: "name_natural",
+    pageSize: String(DRIVE_FOLDERS_PAGE_SIZE),
+    fields: "nextPageToken,files(id,name,mimeType,trashed)",
+    includeItemsFromAllDrives: "true",
+    supportsAllDrives: "true",
+  });
+  const trimmedPageToken = pageToken?.trim() ?? "";
+  if (trimmedPageToken.length > 0) {
+    params.set("pageToken", trimmedPageToken);
+  }
+  return `${GOOGLE_DRIVE_FILES_API_BASE}?${params.toString()}`;
+}
+
+async function extractDriveErrorMetadata(response: Response): Promise<{
+  readonly reasons: string[];
+  readonly apiMessage: string;
+}> {
+  let reasons: string[] = [];
+  let apiMessage = "";
+  try {
+    const payload = (await response.json()) as DriveApiErrorPayload;
+    if (isRecord(payload) && isRecord(payload.error)) {
+      if (typeof payload.error.message === "string") {
+        apiMessage = payload.error.message;
+      }
+      if (Array.isArray(payload.error.errors)) {
+        reasons = payload.error.errors
+          .map((entry) => entry.reason)
+          .filter((reason): reason is string => typeof reason === "string");
+      }
+    }
+  } catch {
+    // 非 JSON 応答時はステータスコードのみで分類する
+  }
+  return { reasons, apiMessage };
+}
+
+function parseResolveFolderResponse(
+  payload: unknown,
+  logger: DiagnosticLogger,
+): DriveFolderMetadata {
+  if (
+    !isRecord(payload) ||
+    typeof payload.id !== "string" ||
+    payload.id.length === 0 ||
+    typeof payload.name !== "string" ||
+    typeof payload.mimeType !== "string"
+  ) {
+    logger.error(DIAGNOSTIC_SCOPE, "Google Drive フォルダ応答の形式が不正です");
+    throw new DriveApiError(
+      "NETWORK_ERROR",
+      "Google Drive フォルダ応答の形式が不正です",
+    );
+  }
+
+  if (payload.mimeType !== GOOGLE_DRIVE_FOLDER_MIME_TYPE) {
+    throw new DriveApiError(
+      "NOT_A_FOLDER",
+      "指定された項目はフォルダではありません",
+    );
+  }
+
+  if (payload.trashed === true) {
+    throw new DriveApiError(
+      "FOLDER_TRASHED",
+      "ゴミ箱内のフォルダは同期対象に指定できません",
+    );
+  }
+
+  return {
+    id: payload.id,
+    name: payload.name,
+  };
+}
+
+function parseChildFoldersPageResponse(
+  payload: unknown,
+  logger: DiagnosticLogger,
+): DriveFolderPage {
+  if (!isRecord(payload) || !Array.isArray(payload.files)) {
+    logger.error(
+      DIAGNOSTIC_SCOPE,
+      "Google Drive フォルダ一覧応答の形式が不正です",
+    );
+    throw new DriveApiError(
+      "NETWORK_ERROR",
+      "Google Drive フォルダ一覧応答の形式が不正です",
+    );
+  }
+
+  const folders: DriveFolderMetadata[] = [];
+  for (const entry of payload.files) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.id !== "string" ||
+      entry.id.length === 0 ||
+      typeof entry.name !== "string"
+    ) {
+      logger.error(
+        DIAGNOSTIC_SCOPE,
+        "Google Drive フォルダ一覧要素の形式が不正です",
+      );
+      throw new DriveApiError(
+        "NETWORK_ERROR",
+        "Google Drive フォルダ一覧応答の要素が不正です",
+      );
+    }
+    folders.push({ id: entry.id, name: entry.name });
+  }
+
+  const nextPageToken =
+    typeof payload.nextPageToken === "string" &&
+    payload.nextPageToken.length > 0
+      ? payload.nextPageToken
+      : null;
+
+  return { folders, nextPageToken };
+}
+
 function defaultFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -159,24 +285,7 @@ export class GoogleDriveFolderClient implements DriveFolderClient {
   private async createHttpDriveApiError(
     response: Response,
   ): Promise<DriveApiError> {
-    let reasons: string[] = [];
-    let apiMessage = "";
-    try {
-      const payload = (await response.json()) as DriveApiErrorPayload;
-      if (isRecord(payload) && isRecord(payload.error)) {
-        if (typeof payload.error.message === "string") {
-          apiMessage = payload.error.message;
-        }
-        if (Array.isArray(payload.error.errors)) {
-          reasons = payload.error.errors
-            .map((entry) => entry.reason)
-            .filter((reason): reason is string => typeof reason === "string");
-        }
-      }
-    } catch {
-      // 非 JSON 応答時はステータスコードのみで分類する
-    }
-
+    const { reasons, apiMessage } = await extractDriveErrorMetadata(response);
     const code = mapHttpStatusToErrorCode(response.status, reasons);
     const detail = apiMessage
       ? `status=${response.status} ${apiMessage}`
@@ -238,42 +347,7 @@ export class GoogleDriveFolderClient implements DriveFolderClient {
 
     const url = `${GOOGLE_DRIVE_FILES_API_BASE}/${encodeURIComponent(normalizedId)}?fields=id,name,mimeType,trashed&supportsAllDrives=true`;
     const payload = await this.fetchDriveJson(url, options?.signal);
-
-    if (
-      !isRecord(payload) ||
-      typeof payload.id !== "string" ||
-      payload.id.length === 0 ||
-      typeof payload.name !== "string" ||
-      typeof payload.mimeType !== "string"
-    ) {
-      this.logger.error(
-        DIAGNOSTIC_SCOPE,
-        "Google Drive フォルダ応答の形式が不正です",
-      );
-      throw new DriveApiError(
-        "NETWORK_ERROR",
-        "Google Drive フォルダ応答の形式が不正です",
-      );
-    }
-
-    if (payload.mimeType !== GOOGLE_DRIVE_FOLDER_MIME_TYPE) {
-      throw new DriveApiError(
-        "NOT_A_FOLDER",
-        "指定された項目はフォルダではありません",
-      );
-    }
-
-    if (payload.trashed === true) {
-      throw new DriveApiError(
-        "FOLDER_TRASHED",
-        "ゴミ箱内のフォルダは同期対象に指定できません",
-      );
-    }
-
-    return {
-      id: payload.id,
-      name: payload.name,
-    };
+    return parseResolveFolderResponse(payload, this.logger);
   }
 
   async listChildFolders(
@@ -285,60 +359,11 @@ export class GoogleDriveFolderClient implements DriveFolderClient {
       throw new DriveApiError("FORBIDDEN", "親フォルダIDが指定されていません");
     }
 
-    const escapedParentId = escapeDriveQueryValue(normalizedParentId);
-    const params = new URLSearchParams({
-      q: `'${escapedParentId}' in parents and mimeType = '${GOOGLE_DRIVE_FOLDER_MIME_TYPE}' and trashed = false`,
-      orderBy: "name_natural",
-      pageSize: String(DRIVE_FOLDERS_PAGE_SIZE),
-      fields: "nextPageToken,files(id,name,mimeType,trashed)",
-      includeItemsFromAllDrives: "true",
-      supportsAllDrives: "true",
-    });
-    const trimmedPageToken = options?.pageToken?.trim() ?? "";
-    if (trimmedPageToken.length > 0) {
-      params.set("pageToken", trimmedPageToken);
-    }
-
-    const url = `${GOOGLE_DRIVE_FILES_API_BASE}?${params.toString()}`;
+    const url = buildListChildFoldersUrl(
+      normalizedParentId,
+      options?.pageToken,
+    );
     const payload = await this.fetchDriveJson(url, options?.signal);
-
-    if (!isRecord(payload) || !Array.isArray(payload.files)) {
-      this.logger.error(
-        DIAGNOSTIC_SCOPE,
-        "Google Drive フォルダ一覧応答の形式が不正です",
-      );
-      throw new DriveApiError(
-        "NETWORK_ERROR",
-        "Google Drive フォルダ一覧応答の形式が不正です",
-      );
-    }
-
-    const folders: DriveFolderMetadata[] = [];
-    for (const entry of payload.files) {
-      if (
-        !isRecord(entry) ||
-        typeof entry.id !== "string" ||
-        entry.id.length === 0 ||
-        typeof entry.name !== "string"
-      ) {
-        this.logger.error(
-          DIAGNOSTIC_SCOPE,
-          "Google Drive フォルダ一覧要素の形式が不正です",
-        );
-        throw new DriveApiError(
-          "NETWORK_ERROR",
-          "Google Drive フォルダ一覧応答の要素が不正です",
-        );
-      }
-      folders.push({ id: entry.id, name: entry.name });
-    }
-
-    const nextPageToken =
-      typeof payload.nextPageToken === "string" &&
-      payload.nextPageToken.length > 0
-        ? payload.nextPageToken
-        : null;
-
-    return { folders, nextPageToken };
+    return parseChildFoldersPageResponse(payload, this.logger);
   }
 }
