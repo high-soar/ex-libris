@@ -282,9 +282,12 @@ describe("App", () => {
     });
     await act(async () => {
       await bridge.triggerBackButton();
-      await flushMicrotasks();
     });
-    expect(currentRoutePath).toBe("/");
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(currentRoutePath).toBe("/");
+      });
+    });
     expect(bridge.getMinimizeAppCallCount()).toBe(1);
 
     // 優先度 3: /read/local 遷移後、登録された exit コールバックを実行（未登録時は安全にノーオペ）

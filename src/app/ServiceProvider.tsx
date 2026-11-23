@@ -58,6 +58,13 @@ interface DefaultGoogleAuthResources {
   readonly mockAdapter?: MockGoogleAuthAdapter;
 }
 
+const TEST_MOCK_AUTH_STORAGE_KEY = "exLibris:test:mockGoogleAuthSession";
+
+interface PersistedMockGoogleAuthSession {
+  readonly email: string;
+  readonly accessToken: string;
+}
+
 function isWebDriverEnvironment(): boolean {
   return typeof navigator !== "undefined" && navigator.webdriver === true;
 }
@@ -75,6 +82,50 @@ export function shouldExposeResetTestDb(
   return isDev || mode === "test" || isWebDriver;
 }
 
+function shouldPersistTestMockAuth(): boolean {
+  return shouldExposeResetTestDb() && isWebDriverEnvironment();
+}
+
+function readPersistedMockAuthSession(): PersistedMockGoogleAuthSession | null {
+  try {
+    const raw = window.sessionStorage.getItem(TEST_MOCK_AUTH_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(
+      raw,
+    ) as Partial<PersistedMockGoogleAuthSession> | null;
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      typeof parsed.email === "string" &&
+      typeof parsed.accessToken === "string"
+    ) {
+      return { email: parsed.email, accessToken: parsed.accessToken };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedMockAuthSession(
+  session: PersistedMockGoogleAuthSession | null,
+): void {
+  try {
+    if (session === null) {
+      window.sessionStorage.removeItem(TEST_MOCK_AUTH_STORAGE_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(
+      TEST_MOCK_AUTH_STORAGE_KEY,
+      JSON.stringify(session),
+    );
+  } catch {
+    // ストレージアクセスが制限された環境では永続化をスキップする
+  }
+}
+
 function buildGlobalServicesState(
   appBridge: AppBridge,
   mockGoogleAuthAdapter?: MockGoogleAuthAdapter,
@@ -90,7 +141,12 @@ function buildGlobalServicesState(
   return {
     isReady: true,
     appBridge,
-    resetTestDb: () => resetTestDb(),
+    resetTestDb: async () => {
+      writePersistedMockAuthSession(null);
+      mockGoogleAuthAdapter?.reset();
+      mockDriveFolderClient?.reset();
+      await resetTestDb();
+    },
     ...(mockGoogleAuthAdapter !== undefined ? { mockGoogleAuthAdapter } : {}),
     ...(mockDriveFolderClient !== undefined ? { mockDriveFolderClient } : {}),
   };
@@ -120,7 +176,18 @@ function createDefaultGoogleAuthResources(): DefaultGoogleAuthResources {
       bridge: new GoogleAuthTokenManager(new CapacitorGoogleAuthAdapter()),
     };
   }
-  const mockAdapter = new MockGoogleAuthAdapter();
+  const persisted = shouldPersistTestMockAuth()
+    ? readPersistedMockAuthSession()
+    : null;
+  const mockAdapter = new MockGoogleAuthAdapter(
+    persisted !== null
+      ? {
+          initialLinked: true,
+          email: persisted.email,
+          initialAccessToken: persisted.accessToken,
+        }
+      : {},
+  );
   return {
     bridge: new GoogleAuthTokenManager(mockAdapter),
     mockAdapter,
@@ -234,6 +301,22 @@ export function ServiceProvider({
     resolvedMockGoogleAuthAdapter,
     resolvedMockDriveFolderClient,
   ]);
+
+  useEffect(() => {
+    if (
+      resolvedMockGoogleAuthAdapter === undefined ||
+      !shouldPersistTestMockAuth()
+    ) {
+      return undefined;
+    }
+    return resolvedGoogleAuthBridge.subscribeSession((session) => {
+      writePersistedMockAuthSession(
+        session !== null
+          ? { email: session.email, accessToken: session.accessToken }
+          : null,
+      );
+    });
+  }, [resolvedGoogleAuthBridge, resolvedMockGoogleAuthAdapter]);
 
   const contextValue = useMemo<ServiceContextValue>(
     () => ({

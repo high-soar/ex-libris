@@ -588,32 +588,29 @@ describe("ServiceProvider", () => {
     expect(await captured4[0]!.googleAuthBridge.getSession()).toBeNull();
     unmount4();
 
-    // 4. 不正 JSON や必須フィールド欠損値、sessionStorage 例外時は安全に未連携開始となること
-    window.sessionStorage.setItem(
-      "exLibris:test:mockGoogleAuthSession",
+    // 4. 不正 JSON や null / 非オブジェクト / 必須フィールド欠損値、sessionStorage 例外時は安全に未連携開始となること
+    for (const invalidPayload of [
       "{bad",
-    );
-    const capturedBadJson: ServiceContextValue[] = [];
-    const { unmount: unmountBadJson } = render(
-      <ServiceProvider>
-        <ServicesProbe onCapture={(s) => capturedBadJson.push(s)} />
-      </ServiceProvider>,
-    );
-    expect(await capturedBadJson[0]!.googleAuthBridge.getSession()).toBeNull();
-    unmountBadJson();
-
-    window.sessionStorage.setItem(
-      "exLibris:test:mockGoogleAuthSession",
+      "null",
+      "123",
+      JSON.stringify({ email: 123, accessToken: "tok" }),
       JSON.stringify({ email: "only@example.com" }),
-    );
-    const capturedBadShape: ServiceContextValue[] = [];
-    const { unmount: unmountBadShape } = render(
-      <ServiceProvider>
-        <ServicesProbe onCapture={(s) => capturedBadShape.push(s)} />
-      </ServiceProvider>,
-    );
-    expect(await capturedBadShape[0]!.googleAuthBridge.getSession()).toBeNull();
-    unmountBadShape();
+    ]) {
+      window.sessionStorage.setItem(
+        "exLibris:test:mockGoogleAuthSession",
+        invalidPayload,
+      );
+      const capturedInvalid: ServiceContextValue[] = [];
+      const { unmount: unmountInvalid } = render(
+        <ServiceProvider>
+          <ServicesProbe onCapture={(s) => capturedInvalid.push(s)} />
+        </ServiceProvider>,
+      );
+      expect(
+        await capturedInvalid[0]!.googleAuthBridge.getSession(),
+      ).toBeNull();
+      unmountInvalid();
+    }
 
     const getItemSpy = vi
       .spyOn(Storage.prototype, "getItem")
