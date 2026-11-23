@@ -4057,4 +4057,680 @@ describe("ReaderPage", () => {
       await flushMicrotasks();
     });
   });
+
+  it("zipIndexCache由来(fromIndexCache=true)でCORRUPT_ZIPまたはDECODE_FAILED検知時に1回限り自己修復を実行し、Ready混在解放・テクスチャ消去・キャッシュ削除再解析・再エラー時ループ抑止を行うこと (R1-06)", async () => {
+    // 1. CORRUPT_ZIP エラーフレーム検知時の自己修復成功 (単ページ)
+    setWindowSize(375, 667);
+    const staleEntries1 = createSampleZipEntries(3);
+    const freshEntries1 = createSampleZipEntries(3);
+    const file1 = new File(["repair-corrupt"], "repair-corrupt.cbz");
+    const cacheKey1 = `local:${file1.name}:${file1.size}`;
+    const deleteDeferred1 = createDeferred<void>();
+    const repairOpenDeferred1 = createDeferred<OpenArchiveResult>();
+    const repo1 = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => staleEntries1),
+      delete: vi.fn(() => deleteDeferred1.promise),
+    });
+
+    let openCount1 = 0;
+    const session1 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => {
+        openCount1 += 1;
+        if (openCount1 === 1) {
+          return {
+            pageCount: staleEntries1.length,
+            entries: staleEntries1,
+            fromIndexCache: true,
+          };
+        }
+        return repairOpenDeferred1.promise;
+      }),
+      requestVisiblePages: vi.fn(async (pageIndices, _prefetch, epoch) => {
+        if (epoch === 1) {
+          return pageIndices.map((idx: number) =>
+            createErrorFrame(idx, epoch, "CORRUPT_ZIP", "stale lfh offset"),
+          );
+        }
+        return pageIndices.map((idx: number) => createReadyFrame(idx, epoch));
+      }),
+    });
+
+    const { unmount: unmount1 } = renderWithSession(
+      {},
+      () => session1.handle,
+      file1,
+      repo1,
+    );
+
+    await waitFor(() => {
+      expect(repo1.delete).toHaveBeenCalledWith(cacheKey1);
+    });
+    // 同期リセット・ローディング復帰・warn 記録・旧 epoch 破棄を確認
+    expect(session1.api.cancelEpochBelow).toHaveBeenCalledWith(2);
+    expect(screen.getByTestId("reader-loading")).toBeVisible();
+    expect(errorViewSpy).not.toHaveBeenCalled();
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "warn",
+          scope: "reader",
+          detail: expect.stringContaining("CORRUPT_ZIP"),
+        }),
+      ]),
+    );
+
+    await act(async () => {
+      deleteDeferred1.resolve();
+      await flushMicrotasks();
+    });
+    expect(session1.api.openArchive).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ indexCacheKey: cacheKey1 }),
+      null,
+      2,
+    );
+
+    await act(async () => {
+      repairOpenDeferred1.resolve({
+        pageCount: freshEntries1.length,
+        entries: freshEntries1,
+        fromIndexCache: false,
+      });
+      await flushMicrotasks();
+    });
+
+    await waitFor(() => {
+      expect(getLatestCanvasProps().slots).toEqual([
+        {
+          slot: { pageIndex: 0, position: "center" },
+          frame: expect.objectContaining({ status: "ready", pageIndex: 0 }),
+        },
+      ]);
+    });
+    expect(repo1.put).toHaveBeenCalledWith(cacheKey1, freshEntries1);
+    expect(errorViewSpy).not.toHaveBeenCalled();
+    unmount1();
+
+    // 2. DECODE_FAILED エラーフレーム(見開き Ready 混在)で L1・同バッチReady・テクスチャ全解放、および修復後再エラー時ループ抑止
+    setWindowSize(1280, 800);
+    diagnosticLogger.clear();
+    errorViewSpy.mockClear();
+    const clearAllTextures = vi.fn();
+    const deletePageTexture = vi.fn();
+    const page0Bitmap = createFakeBitmap(800, 1200);
+    const mixedReadyBitmap = createFakeBitmap(800, 1200);
+    const staleEntries2 = createSampleZipEntries(4);
+    const freshEntries2 = createSampleZipEntries(4);
+    const file2 = new File(["repair-decode"], "repair-decode.cbz");
+    const cacheKey2 = `local:${file2.name}:${file2.size}`;
+    const repo2 = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => staleEntries2),
+    });
+    const progressPutCalls2: number[] = [];
+    const progressRepo2 = createMockReadingProgressRepo({
+      put: vi.fn(async (input) => {
+        progressPutCalls2.push(input.currentPageIndex);
+      }),
+    });
+
+    let openCount2 = 0;
+    const session2 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => {
+        openCount2 += 1;
+        return openCount2 === 1
+          ? {
+              pageCount: staleEntries2.length,
+              entries: staleEntries2,
+              fromIndexCache: true,
+            }
+          : {
+              pageCount: freshEntries2.length,
+              entries: freshEntries2,
+              fromIndexCache: false,
+            };
+      }),
+      requestVisiblePages: vi.fn(async (pageIndices, _prefetch, epoch) => {
+        if (epoch === 1 && pageIndices.includes(0)) {
+          return [createReadyFrame(0, epoch, page0Bitmap)];
+        }
+        if (epoch === 1 && pageIndices.length === 2 && pageIndices[0] === 1) {
+          return [];
+        }
+        if (epoch === 2) {
+          // 1ページ目は Ready、2ページ目は DECODE_FAILED の混在バッチ
+          return [
+            createReadyFrame(1, epoch, mixedReadyBitmap),
+            createErrorFrame(2, epoch, "DECODE_FAILED", "bad compressed slice"),
+          ];
+        }
+        // 修復後 (fromIndexCache=false, epoch=3): 依然として DECODE_FAILED が返っても2回目修復へ入らない
+        return pageIndices.map((idx: number) =>
+          idx === 2
+            ? createErrorFrame(idx, epoch, "DECODE_FAILED", "still corrupt")
+            : createReadyFrame(idx, epoch),
+        );
+      }),
+    });
+
+    const { unmount: unmount2 } = renderWithSession(
+      {},
+      () => session2.handle,
+      file2,
+      repo2,
+      progressRepo2,
+    );
+    act(() => {
+      getLatestCanvasProps().onRendererReady?.({
+        deletePageTexture,
+        clearAllTextures,
+      });
+    });
+
+    await waitFor(() => {
+      expect(getLatestCanvasProps().slots).toEqual([
+        {
+          slot: { pageIndex: 0, position: "center" },
+          frame: expect.objectContaining({ status: "ready", pageIndex: 0 }),
+        },
+      ]);
+    });
+
+    const putCallsBeforeMove = progressPutCalls2.length;
+    await act(async () => {
+      getLatestHudProps().onNextPage(); // 0 -> [1, 2]
+      await flushMicrotasks();
+    });
+
+    // 同バッチの Ready と L1 内 page0 の両方が close() され、clearAllTextures() も実行済み
+    expect(mixedReadyBitmap.close).toHaveBeenCalledTimes(1);
+    expect(page0Bitmap.close).toHaveBeenCalledTimes(1);
+    expect(clearAllTextures).toHaveBeenCalledTimes(1);
+    expect(repo2.delete).toHaveBeenCalledTimes(1);
+    expect(repo2.delete).toHaveBeenCalledWith(cacheKey2);
+    expect(session2.api.openArchive).toHaveBeenCalledTimes(2);
+    expect(session2.api.openArchive).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ indexCacheKey: cacheKey2 }),
+      null,
+      3,
+    );
+    expect(repo2.put).toHaveBeenCalledWith(cacheKey2, freshEntries2);
+
+    // 修復後の fromIndexCache=false 実行で再エラー時は2回目の自己修復へ入らず通常の片側エラー表示
+    expect(getLatestErrorViewProps()).toEqual({
+      mode: "page",
+      slotPosition: "left",
+      pageNumber: 3,
+      message: "ページの画像デコードに失敗しました",
+      errorCode: "DECODE_FAILED",
+    });
+    // 外側の旧 epoch loadPageWindow が完了時保存を実行せず、修復後の再ロード確定時のみ進捗更新される
+    expect(progressPutCalls2.slice(putCallsBeforeMove)).toEqual([1, 1]);
+    unmount2();
+
+    // 3. requestVisiblePages 例外(ZipArchiveError CORRUPT_ZIP)検知での自己修復、修復後例外のループ抑止、および READ_ERROR 非トリガー検証
+    setWindowSize(375, 667);
+    errorViewSpy.mockClear();
+    const staleEntries3 = createSampleZipEntries(3);
+    const freshEntries3 = createSampleZipEntries(3);
+    const repo3 = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => staleEntries3),
+    });
+    let openCount3 = 0;
+    const session3 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => {
+        openCount3 += 1;
+        return openCount3 === 1
+          ? {
+              pageCount: staleEntries3.length,
+              entries: staleEntries3,
+              fromIndexCache: true,
+            }
+          : {
+              pageCount: freshEntries3.length,
+              entries: freshEntries3,
+              fromIndexCache: false,
+            };
+      }),
+      requestVisiblePages: vi.fn(async (pageIndices, _prefetch, epoch) => {
+        if (epoch === 1) {
+          throw new ZipArchiveError("CORRUPT_ZIP", "throw trigger");
+        }
+        if (pageIndices[0] === 0) {
+          throw new ZipArchiveError("DECODE_FAILED", "re-throw after repair");
+        }
+        return pageIndices.map((idx: number) => createReadyFrame(idx, epoch));
+      }),
+    });
+
+    const { unmount: unmount3 } = renderWithSession(
+      {},
+      () => session3.handle,
+      new File(["throw-repair"], "throw-repair.cbz"),
+      repo3,
+    );
+    await waitFor(() => {
+      expect(errorViewSpy).toHaveBeenCalled();
+    });
+    expect(repo3.delete).toHaveBeenCalledTimes(1);
+    expect(session3.api.openArchive).toHaveBeenCalledTimes(2);
+    expect(getLatestErrorViewProps()).toEqual({
+      mode: "page",
+      slotPosition: "center",
+      message: "ページの画像デコードに失敗しました",
+      errorCode: "DECODE_FAILED",
+    });
+    unmount3();
+
+    // fromIndexCache=true でも READ_ERROR フレーム / 例外では自己修復に入らない
+    errorViewSpy.mockClear();
+    const repo4 = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => staleEntries3),
+    });
+    const session4 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 2,
+        entries: staleEntries3.slice(0, 2),
+        fromIndexCache: true,
+      })),
+      requestVisiblePages: vi.fn(async (pageIndices, _prefetch, epoch) => {
+        if (pageIndices[0] === 0) {
+          return [createErrorFrame(0, epoch, "READ_ERROR", "io error")];
+        }
+        throw new ZipArchiveError("READ_ERROR", "io throw");
+      }),
+    });
+    const { unmount: unmount4 } = renderWithSession(
+      {},
+      () => session4.handle,
+      new File(["non-repair"], "non-repair.cbz"),
+      repo4,
+    );
+    await waitFor(() => {
+      expect(errorViewSpy).toHaveBeenCalled();
+    });
+    await act(async () => {
+      getLatestHudProps().onNextPage();
+      await flushMicrotasks();
+    });
+    expect(repo4.delete).not.toHaveBeenCalled();
+    expect(session4.api.openArchive).toHaveBeenCalledTimes(1);
+    unmount4();
+  });
+
+  it("zipIndexCache自己修復時のdelete失敗続行・ページ数減少クランプ(spreadPageOffset正規化含む)・openArchive失敗/0頁/Abort処理を検証すること (R1-06)", async () => {
+    // 1. delete 失敗時は warn のみ記録して再オープン続行、spreadHistory リセット＆ページ数減少クランプ (pageCount=6 -> 2, current=3 -> 1, pageCount > 1 で offset=0維持)
+    setWindowSize(1280, 800);
+    const stale6 = createSampleZipEntries(6);
+    const fresh2 = createSampleZipEntries(2);
+    const repoClamp1 = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => stale6),
+      delete: vi.fn(async () => {
+        throw new Error("delete failed");
+      }),
+    });
+    let openCount1 = 0;
+    const sessionClamp1 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => {
+        openCount1 += 1;
+        return openCount1 === 1
+          ? { pageCount: 6, entries: stale6, fromIndexCache: true }
+          : { pageCount: 2, entries: fresh2, fromIndexCache: false };
+      }),
+      requestVisiblePages: vi.fn(async (pageIndices, _prefetch, epoch) => {
+        if (epoch === 3 && pageIndices.includes(3)) {
+          return [
+            createErrorFrame(3, epoch, "CORRUPT_ZIP", "stale page 3"),
+            createReadyFrame(4, epoch),
+          ];
+        }
+        return pageIndices.map((idx: number) => createReadyFrame(idx, epoch));
+      }),
+    });
+
+    const { unmount: unmountClamp1 } = renderWithSession(
+      {},
+      () => sessionClamp1.handle,
+      new File(["clamp1"], "clamp1.cbz"),
+      repoClamp1,
+    );
+    await waitFor(() => {
+      expect(getLatestCanvasProps().slots).toHaveLength(1);
+    });
+
+    // 0 -> 1 -> 3 (spreadHistory に [0, 1] を積む) -> epoch=3 で修復発火
+    await act(async () => {
+      getLatestHudProps().onNextPage(); // 0 -> 1 (epoch=2)
+      await flushMicrotasks();
+    });
+    await act(async () => {
+      getLatestHudProps().onNextPage(); // 1 -> 3 (epoch=3 -> CORRUPT_ZIP 修復 -> epoch=4)
+      await flushMicrotasks();
+    });
+
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "warn",
+          scope: "reader",
+          detail: expect.stringContaining("delete failed"),
+        }),
+      ]),
+    );
+    expect(getLatestHudProps().totalPages).toBe(2);
+    expect(getLatestHudProps().currentPageIndex).toBe(1);
+
+    // spreadHistory がリセットされているため onPrevPage() は computePreviousAnchorIndex(1) -> 0 へ戻る (旧履歴 1 に留まらない)
+    await act(async () => {
+      getLatestHudProps().onPrevPage();
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().currentPageIndex).toBe(0);
+    unmountClamp1();
+
+    // 2. 修復後 pageCount === 1 のときは currentPageIndex=0 かつ spreadPageOffset=0 へ正規化されること
+    const stale4 = createSampleZipEntries(4);
+    const fresh1 = createSampleZipEntries(1);
+    const repoClampOnePage = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => stale4),
+    });
+    let openCount2 = 0;
+    const sessionClampOnePage = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => {
+        openCount2 += 1;
+        return openCount2 === 1
+          ? { pageCount: 4, entries: stale4, fromIndexCache: true }
+          : { pageCount: 1, entries: fresh1, fromIndexCache: false };
+      }),
+      requestVisiblePages: vi.fn(async (pageIndices, _prefetch, epoch) => {
+        if (epoch === 3 && pageIndices.includes(2)) {
+          return [createErrorFrame(2, epoch, "DECODE_FAILED", "stale")];
+        }
+        return pageIndices.map((idx: number) => createReadyFrame(idx, epoch));
+      }),
+    });
+
+    const { unmount: unmountClampOne } = renderWithSession(
+      {},
+      () => sessionClampOnePage.handle,
+      new File(["clamp-one"], "clamp-one.cbz"),
+      repoClampOnePage,
+    );
+    await waitFor(() => {
+      expect(getLatestCanvasProps().slots).toHaveLength(1);
+    });
+    await act(async () => {
+      getLatestHudProps().onToggleSpreadPageOffset?.(); // offset=1, page=0 (epoch=2)
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().spreadPageOffset).toBe(1);
+    await act(async () => {
+      getLatestHudProps().onNextPage(); // 0 -> 2 (epoch=3 -> DECODE_FAILED 修復 -> pageCount=1)
+      await flushMicrotasks();
+    });
+    expect(getLatestHudProps().totalPages).toBe(1);
+    expect(getLatestHudProps().currentPageIndex).toBe(0);
+    expect(getLatestHudProps().spreadPageOffset).toBe(0);
+    unmountClampOne();
+
+    // 3. 修復時 openArchive が pageCount=0 のとき EMPTY_ARCHIVE エラー画面を表示する
+    errorViewSpy.mockClear();
+    const repoEmpty = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => stale4),
+    });
+    let openEmptyCount = 0;
+    const sessionEmpty = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => {
+        openEmptyCount += 1;
+        return openEmptyCount === 1
+          ? { pageCount: 4, entries: stale4, fromIndexCache: true }
+          : { pageCount: 0, entries: [], fromIndexCache: false };
+      }),
+      requestVisiblePages: vi.fn(async (_pages, _pre, epoch) => [
+        createErrorFrame(0, epoch, "CORRUPT_ZIP"),
+      ]),
+    });
+    const { unmount: unmountEmpty } = renderWithSession(
+      {},
+      () => sessionEmpty.handle,
+      new File(["empty-repair"], "empty-repair.cbz"),
+      repoEmpty,
+    );
+    await waitFor(() => {
+      expect(errorViewSpy).toHaveBeenCalled();
+    });
+    expect(getLatestErrorViewProps()).toMatchObject({
+      mode: "archive",
+      errorCode: "EMPTY_ARCHIVE",
+    });
+    unmountEmpty();
+
+    // 4. 修復時 openArchive が失敗 (CORRUPT_ZIP) したときは reportArchiveError でアーカイブエラー画面を表示する
+    errorViewSpy.mockClear();
+    const repoFail = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => stale4),
+    });
+    let openFailCount = 0;
+    const sessionFail = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => {
+        openFailCount += 1;
+        if (openFailCount === 1) {
+          return { pageCount: 4, entries: stale4, fromIndexCache: true };
+        }
+        throw new ZipArchiveError("CORRUPT_ZIP", "really corrupt");
+      }),
+      requestVisiblePages: vi.fn(async (_pages, _pre, epoch) => [
+        createErrorFrame(0, epoch, "DECODE_FAILED"),
+      ]),
+    });
+    const { unmount: unmountFail } = renderWithSession(
+      {},
+      () => sessionFail.handle,
+      new File(["fail-repair"], "fail-repair.cbz"),
+      repoFail,
+    );
+    await waitFor(() => {
+      expect(errorViewSpy).toHaveBeenCalled();
+    });
+    expect(getLatestErrorViewProps()).toMatchObject({
+      mode: "archive",
+      errorCode: "CORRUPT_ZIP",
+    });
+    unmountFail();
+
+    // 5. 修復時 openArchive が AbortError で中断された場合はアーカイブエラー表示を行わない
+    errorViewSpy.mockClear();
+    const repoAbort = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => stale4),
+    });
+    let openAbortCount = 0;
+    const sessionAbort = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => {
+        openAbortCount += 1;
+        if (openAbortCount === 1) {
+          return { pageCount: 4, entries: stale4, fromIndexCache: true };
+        }
+        throw new DOMException("Aborted", "AbortError");
+      }),
+      requestVisiblePages: vi.fn(async (_pages, _pre, epoch) => [
+        createErrorFrame(0, epoch, "CORRUPT_ZIP"),
+      ]),
+    });
+    const { unmount: unmountAbort } = renderWithSession(
+      {},
+      () => sessionAbort.handle,
+      new File(["abort-repair"], "abort-repair.cbz"),
+      repoAbort,
+    );
+    await waitFor(() => {
+      expect(sessionAbort.api.openArchive).toHaveBeenCalledTimes(2);
+    });
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    expect(errorViewSpy).not.toHaveBeenCalled();
+    unmountAbort();
+  });
+
+  it("zipIndexCache自己修復のdelete待機中または再openArchive待機中にTR-08終了・アンマウントされた場合は後続処理を安全に中断すること (R1-06)", async () => {
+    const staleEntries = createSampleZipEntries(3);
+
+    // 1. delete 解決前に TR-08 (onClose) 終了 -> 再 openArchive を呼ばない
+    const deleteDeferred1 = createDeferred<void>();
+    const repo1 = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => staleEntries),
+      delete: vi.fn(() => deleteDeferred1.promise),
+    });
+    const session1 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 3,
+        entries: staleEntries,
+        fromIndexCache: true,
+      })),
+      requestVisiblePages: vi.fn(async (_pages, _pre, epoch) => [
+        createErrorFrame(0, epoch, "CORRUPT_ZIP"),
+      ]),
+    });
+    const { unmount: unmount1 } = renderWithSession(
+      {},
+      () => session1.handle,
+      new File(["race1"], "race1.cbz"),
+      repo1,
+    );
+    await waitFor(() => {
+      expect(repo1.delete).toHaveBeenCalledTimes(1);
+    });
+    act(() => {
+      getLatestHudProps().onClose();
+    });
+    await act(async () => {
+      deleteDeferred1.resolve();
+      await flushMicrotasks();
+    });
+    expect(session1.api.openArchive).toHaveBeenCalledTimes(1);
+    unmount1();
+
+    // 2. delete 拒否前にアンマウント -> warn ログ追加・再 openArchive 呼び出しを行わない
+    window.history.replaceState(null, "", "/read/local");
+    const deleteDeferred2 = createDeferred<void>();
+    const repo2 = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => staleEntries),
+      delete: vi.fn(() => deleteDeferred2.promise),
+    });
+    const session2 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 3,
+        entries: staleEntries,
+        fromIndexCache: true,
+      })),
+      requestVisiblePages: vi.fn(async (_pages, _pre, epoch) => [
+        createErrorFrame(0, epoch, "DECODE_FAILED"),
+      ]),
+    });
+    const { unmount: unmount2 } = renderWithSession(
+      {},
+      () => session2.handle,
+      new File(["race2"], "race2.cbz"),
+      repo2,
+    );
+    await waitFor(() => {
+      expect(repo2.delete).toHaveBeenCalledTimes(1);
+    });
+    diagnosticLogger.clear();
+    unmount2();
+    await act(async () => {
+      deleteDeferred2.reject(new Error("late delete fail"));
+      await flushMicrotasks();
+    });
+    expect(diagnosticLogger.getEntries()).toEqual([]);
+    expect(session2.api.openArchive).toHaveBeenCalledTimes(1);
+
+    // 3. 再 openArchive 解決前に TR-08 終了 -> loadPageWindow (2回目 requestVisiblePages) を呼ばない
+    window.history.replaceState(null, "", "/read/local");
+    const repairOpenDeferred3 = createDeferred<OpenArchiveResult>();
+    const repo3 = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => staleEntries),
+    });
+    let openCount3 = 0;
+    const session3 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => {
+        openCount3 += 1;
+        if (openCount3 === 1) {
+          return {
+            pageCount: 3,
+            entries: staleEntries,
+            fromIndexCache: true,
+          };
+        }
+        return repairOpenDeferred3.promise;
+      }),
+      requestVisiblePages: vi.fn(async (_pages, _pre, epoch) => [
+        createErrorFrame(0, epoch, "CORRUPT_ZIP"),
+      ]),
+    });
+    const { unmount: unmount3 } = renderWithSession(
+      {},
+      () => session3.handle,
+      new File(["race3"], "race3.cbz"),
+      repo3,
+    );
+    await waitFor(() => {
+      expect(session3.api.openArchive).toHaveBeenCalledTimes(2);
+    });
+    act(() => {
+      getLatestHudProps().onClose();
+    });
+    await act(async () => {
+      repairOpenDeferred3.resolve({
+        pageCount: 3,
+        entries: staleEntries,
+        fromIndexCache: false,
+      });
+      await flushMicrotasks();
+    });
+    expect(session3.api.requestVisiblePages).toHaveBeenCalledTimes(1);
+    unmount3();
+
+    // 4. 再 openArchive 拒否前にアンマウント -> reportArchiveError を呼ばない
+    window.history.replaceState(null, "", "/read/local");
+    errorViewSpy.mockClear();
+    const repairOpenDeferred4 = createDeferred<OpenArchiveResult>();
+    const repo4 = createMockZipIndexCacheRepo({
+      get: vi.fn(async () => staleEntries),
+    });
+    let openCount4 = 0;
+    const session4 = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => {
+        openCount4 += 1;
+        if (openCount4 === 1) {
+          return {
+            pageCount: 3,
+            entries: staleEntries,
+            fromIndexCache: true,
+          };
+        }
+        return repairOpenDeferred4.promise;
+      }),
+      requestVisiblePages: vi.fn(async (_pages, _pre, epoch) => [
+        createErrorFrame(0, epoch, "DECODE_FAILED"),
+      ]),
+    });
+    const { unmount: unmount4 } = renderWithSession(
+      {},
+      () => session4.handle,
+      new File(["race4"], "race4.cbz"),
+      repo4,
+    );
+    await waitFor(() => {
+      expect(session4.api.openArchive).toHaveBeenCalledTimes(2);
+    });
+    unmount4();
+    await act(async () => {
+      repairOpenDeferred4.reject(
+        new ZipArchiveError("CORRUPT_ZIP", "late repair error"),
+      );
+      await flushMicrotasks();
+    });
+    expect(errorViewSpy).not.toHaveBeenCalled();
+  });
 });
