@@ -58,7 +58,7 @@ describe("GoogleAuthTokenManager", () => {
     expect(TOKEN_DEFAULT_TTL_MS).toBe(3_600_000);
     expect(TOKEN_EARLY_REFRESH_MARGIN_MS).toBe(300_000);
 
-    const now = 1_000_000;
+    let now = 1_000_000;
     const adapter = createMockAdapter();
     const manager = new GoogleAuthTokenManager(adapter, { now: () => now });
 
@@ -84,15 +84,27 @@ describe("GoogleAuthTokenManager", () => {
     expect(listener).toHaveBeenCalledTimes(1);
     expect(listener).toHaveBeenLastCalledWith(session);
 
+    // 同一内容での再サインインは状態不変のため購読通知しない（expiresAt 変化時のみ通知）
+    await manager.signIn();
+    expect(listener).toHaveBeenCalledTimes(1);
+    now += 1000;
+    await manager.signIn();
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(listener).toHaveBeenLastCalledWith({
+      email: "reader@example.com",
+      accessToken: "ya29.sign-in-token",
+      expiresAt: now + TOKEN_DEFAULT_TTL_MS,
+    });
+
     // 同一状態での getSession() は restoreSession を追加呼び出ししない
-    expect(await manager.getSession()).toEqual(session);
+    expect(await manager.getSession()).toEqual(manager.getCachedSession());
     expect(adapter.restoreSession).toHaveBeenCalledTimes(1);
 
     // 購読解除（2回呼び出し冪等）後は通知されないこと
     unsubscribe();
     unsubscribe();
     await manager.signOut();
-    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(2);
     expect(manager.getCachedSession()).toBeNull();
   });
 
@@ -299,6 +311,27 @@ describe("GoogleAuthTokenManager", () => {
         failedToken: "T-restored",
       }),
     ).toBe("T-after-restored-401");
+
+    const managerColdForceNoFailed = new GoogleAuthTokenManager(
+      restoreThenRefreshAdapter,
+      { now: () => now },
+    );
+    expect(
+      await managerColdForceNoFailed.getValidAccessToken({
+        forceRefresh: true,
+      }),
+    ).toBe("T-after-restored-401");
+
+    const managerColdDifferentFailed = new GoogleAuthTokenManager(
+      restoreThenRefreshAdapter,
+      { now: () => now },
+    );
+    expect(
+      await managerColdDifferentFailed.getValidAccessToken({
+        forceRefresh: true,
+        failedToken: "T-older-different",
+      }),
+    ).toBe("T-restored");
 
     // 4. refreshAccessToken で AUTH_REQUIRED ならキャッシュセッション破棄＆購読通知、AUTH_NETWORK_ERROR ならセッション維持
     const listener = vi.fn();

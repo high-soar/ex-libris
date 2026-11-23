@@ -31,6 +31,19 @@ function normalizeEmail(rawEmail: string): string {
   return trimmed.length > 0 ? trimmed : FALLBACK_EMAIL_LABEL;
 }
 
+function toConnectedResult(result: {
+  readonly accessToken: string;
+  readonly email: string;
+  readonly expiresAt?: number;
+}) {
+  return {
+    status: "connected" as const,
+    accessToken: requireAccessToken(result.accessToken),
+    email: normalizeEmail(result.email),
+    ...(result.expiresAt !== undefined ? { expiresAt: result.expiresAt } : {}),
+  };
+}
+
 export class CapacitorGoogleAuthAdapter implements GoogleAuthAdapter {
   private readonly plugin: GoogleAuthCapacitorPlugin;
 
@@ -44,14 +57,7 @@ export class CapacitorGoogleAuthAdapter implements GoogleAuthAdapter {
       if (result.status === "unlinked") {
         return { status: "unlinked" };
       }
-      return {
-        status: "connected",
-        accessToken: requireAccessToken(result.accessToken),
-        email: normalizeEmail(result.email),
-        ...(result.expiresAt !== undefined
-          ? { expiresAt: result.expiresAt }
-          : {}),
-      };
+      return toConnectedResult(result);
     } catch (error) {
       throw toGoogleAuthError(error, "Googleセッションの復元に失敗しました");
     }
@@ -63,14 +69,7 @@ export class CapacitorGoogleAuthAdapter implements GoogleAuthAdapter {
       if (result.status === "cancelled") {
         return { status: "cancelled" };
       }
-      return {
-        status: "connected",
-        accessToken: requireAccessToken(result.accessToken),
-        email: normalizeEmail(result.email),
-        ...(result.expiresAt !== undefined
-          ? { expiresAt: result.expiresAt }
-          : {}),
-      };
+      return toConnectedResult(result);
     } catch (error) {
       throw toGoogleAuthError(error, "Googleアカウント連携に失敗しました");
     }

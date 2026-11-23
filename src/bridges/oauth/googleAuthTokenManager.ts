@@ -227,7 +227,9 @@ export class GoogleAuthTokenManager implements GoogleAuthBridge {
           );
         }
         if (
-          (!forceRefresh || restored.accessToken !== failedToken) &&
+          (!forceRefresh ||
+            (failedToken !== undefined &&
+              restored.accessToken !== failedToken)) &&
           isSessionFresh(restored, this.now())
         ) {
           return restored.accessToken;

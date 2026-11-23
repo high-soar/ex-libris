@@ -37,19 +37,43 @@ describe("CapacitorGoogleAuthAdapter", () => {
 
     vi.mocked(mockPlugin.restoreSession).mockResolvedValueOnce({
       status: "connected",
+      accessToken: "ya29.restoredNoExp",
+      email: "noexp-restore@example.com",
+    });
+    expect(await adapter.restoreSession()).toEqual({
+      status: "connected",
+      accessToken: "ya29.restoredNoExp",
+      email: "noexp-restore@example.com",
+    });
+
+    vi.mocked(mockPlugin.restoreSession).mockResolvedValueOnce({
+      status: "connected",
       accessToken: "ya29.restored",
       email: "  user@example.com  ",
+      expiresAt: 555666777,
     });
     expect(await adapter.restoreSession()).toEqual({
       status: "connected",
       accessToken: "ya29.restored",
       email: "user@example.com",
+      expiresAt: 555666777,
     });
 
     vi.mocked(mockPlugin.signIn).mockResolvedValueOnce({
       status: "cancelled",
     });
     expect(await adapter.signIn()).toEqual({ status: "cancelled" });
+
+    vi.mocked(mockPlugin.signIn).mockResolvedValueOnce({
+      status: "connected",
+      accessToken: "ya29.signedInNoExp",
+      email: "noexp@example.com",
+    });
+    expect(await adapter.signIn()).toEqual({
+      status: "connected",
+      accessToken: "ya29.signedInNoExp",
+      email: "noexp@example.com",
+    });
 
     vi.mocked(mockPlugin.signIn).mockResolvedValueOnce({
       status: "connected",
