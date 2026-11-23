@@ -84,6 +84,90 @@ function formatWorkerFailureDetail(event: Event): string {
   return parts.join(", ");
 }
 
+function subscribeWorkerFailure(
+  worker: CoordinatorWorkerHandle,
+  onFailure: (event: Event) => void,
+): () => void {
+  worker.addEventListener?.("error", onFailure);
+  worker.addEventListener?.("messageerror", onFailure);
+  return () => {
+    worker.removeEventListener?.("error", onFailure);
+    worker.removeEventListener?.("messageerror", onFailure);
+  };
+}
+
+function createGuardedCoordinatorApi(
+  rawApi: CoordinatorRemoteProxy,
+  state: {
+    readonly isDisposed: () => boolean;
+    readonly getFatalError: () => ZipArchiveError | null;
+    readonly pendingRejects: Set<(error: ZipArchiveError) => void>;
+  },
+): CoordinatorWorkerApi {
+  const trackAsyncRpc = <T>(invoke: () => Promise<T>): Promise<T> => {
+    if (state.isDisposed()) {
+      return invoke();
+    }
+    const fatalError = state.getFatalError();
+    if (fatalError !== null) {
+      return Promise.reject(fatalError);
+    }
+    return new Promise<T>((resolve, reject) => {
+      const rejectWithFatal = (error: ZipArchiveError) => {
+        state.pendingRejects.delete(rejectWithFatal);
+        reject(error);
+      };
+      state.pendingRejects.add(rejectWithFatal);
+
+      let rpcPromise: Promise<T>;
+      try {
+        rpcPromise = invoke();
+      } catch (syncError) {
+        state.pendingRejects.delete(rejectWithFatal);
+        reject(syncError);
+        return;
+      }
+
+      rpcPromise.then(
+        (value) => {
+          state.pendingRejects.delete(rejectWithFatal);
+          resolve(value);
+        },
+        (error) => {
+          state.pendingRejects.delete(rejectWithFatal);
+          reject(error);
+        },
+      );
+    });
+  };
+
+  const forwardSyncRpc = (invoke: () => void): void => {
+    if (state.getFatalError() !== null && !state.isDisposed()) {
+      return;
+    }
+    invoke();
+  };
+
+  return {
+    openArchive: (source, cachedEntries, epoch) =>
+      trackAsyncRpc(() => rawApi.openArchive(source, cachedEntries, epoch)),
+    requestVisiblePages: (pageIndices, prefetchIndices, epoch, options) =>
+      trackAsyncRpc(() =>
+        rawApi.requestVisiblePages(
+          pageIndices,
+          prefetchIndices,
+          epoch,
+          options,
+        ),
+      ),
+    updateAccessToken: (accessToken) =>
+      forwardSyncRpc(() => rawApi.updateAccessToken(accessToken)),
+    cancelEpochBelow: (minActiveEpoch) =>
+      forwardSyncRpc(() => rawApi.cancelEpochBelow(minActiveEpoch)),
+    closeArchive: () => trackAsyncRpc(() => rawApi.closeArchive()),
+  };
+}
+
 export function createCoordinatorSession(
   deps: CreateCoordinatorSessionDeps = {},
 ): CoordinatorSessionHandle {
@@ -96,12 +180,7 @@ export function createCoordinatorSession(
   let fatalError: ZipArchiveError | null = null;
   const pendingRejects = new Set<(error: ZipArchiveError) => void>();
 
-  const cleanupListeners = () => {
-    worker.removeEventListener?.("error", handleWorkerFailure);
-    worker.removeEventListener?.("messageerror", handleWorkerFailure);
-  };
-
-  const handleWorkerFailure = (event: Event) => {
+  const cleanupListeners = subscribeWorkerFailure(worker, (event) => {
     if (disposed || fatalError !== null) {
       return;
     }
@@ -117,10 +196,7 @@ export function createCoordinatorSession(
       rejectPending(error);
     }
     pendingRejects.clear();
-  };
-
-  worker.addEventListener?.("error", handleWorkerFailure);
-  worker.addEventListener?.("messageerror", handleWorkerFailure);
+  });
 
   let rawApi: CoordinatorRemoteProxy;
   try {
@@ -133,72 +209,13 @@ export function createCoordinatorSession(
     throw error;
   }
 
-  const trackAsyncRpc = <T>(invoke: () => Promise<T>): Promise<T> => {
-    if (disposed) {
-      return invoke();
-    }
-    if (fatalError !== null) {
-      return Promise.reject(fatalError);
-    }
-    return new Promise<T>((resolve, reject) => {
-      const rejectWithFatal = (error: ZipArchiveError) => {
-        pendingRejects.delete(rejectWithFatal);
-        reject(error);
-      };
-      pendingRejects.add(rejectWithFatal);
-
-      let rpcPromise: Promise<T>;
-      try {
-        rpcPromise = invoke();
-      } catch (syncError) {
-        pendingRejects.delete(rejectWithFatal);
-        reject(syncError);
-        return;
-      }
-
-      rpcPromise.then(
-        (value) => {
-          pendingRejects.delete(rejectWithFatal);
-          resolve(value);
-        },
-        (error) => {
-          pendingRejects.delete(rejectWithFatal);
-          reject(error);
-        },
-      );
-    });
-  };
-
   const api: CoordinatorWorkerApi =
     typeof worker.addEventListener === "function"
-      ? {
-          openArchive: (source, cachedEntries, epoch) =>
-            trackAsyncRpc(() =>
-              rawApi.openArchive(source, cachedEntries, epoch),
-            ),
-          requestVisiblePages: (pageIndices, prefetchIndices, epoch, options) =>
-            trackAsyncRpc(() =>
-              rawApi.requestVisiblePages(
-                pageIndices,
-                prefetchIndices,
-                epoch,
-                options,
-              ),
-            ),
-          updateAccessToken: (accessToken) => {
-            if (fatalError !== null && !disposed) {
-              return;
-            }
-            rawApi.updateAccessToken(accessToken);
-          },
-          cancelEpochBelow: (minActiveEpoch) => {
-            if (fatalError !== null && !disposed) {
-              return;
-            }
-            rawApi.cancelEpochBelow(minActiveEpoch);
-          },
-          closeArchive: () => trackAsyncRpc(() => rawApi.closeArchive()),
-        }
+      ? createGuardedCoordinatorApi(rawApi, {
+          isDisposed: () => disposed,
+          getFatalError: () => fatalError,
+          pendingRejects,
+        })
       : rawApi;
 
   return {
