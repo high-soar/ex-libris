@@ -96,8 +96,9 @@ jobs:
         env:
           TARGET_VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          REMOTE_TAGS="$(git ls-remote --tags origin 'refs/tags/v*' | awk '{print $2}')"
-          TARGET_VERSION="${TARGET_VERSION}" REMOTE_TAGS="${REMOTE_TAGS}" node -e '
+          set -euo pipefail
+          RAW_REMOTE_TAGS="$(git ls-remote --tags origin 'refs/tags/v*')"
+          TARGET_VERSION="${TARGET_VERSION}" RAW_REMOTE_TAGS="${RAW_REMOTE_TAGS}" node -e '
             const parseSemVer = (raw) => {
               const m = String(raw || "").trim().match(/^v?(\d+)\.(\d+)\.(\d+)$/);
               return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
@@ -113,11 +114,13 @@ jobs:
               console.error(`::error::Invalid TARGET_VERSION: ${process.env.TARGET_VERSION}`);
               process.exit(1);
             }
-            const lines = String(process.env.REMOTE_TAGS || "").split(/\r?\n/).filter(Boolean);
+            const lines = String(process.env.RAW_REMOTE_TAGS || "").split(/\r?\n/).filter(Boolean);
             let latest = null;
             let latestRaw = "";
-            for (const ref of lines) {
-              if (ref.endsWith("^{}")) continue;
+            for (const line of lines) {
+              const parts = line.trim().split(/\s+/);
+              const ref = parts[1] || "";
+              if (!ref || ref.endsWith("^{}")) continue;
               const tag = ref.replace(/^refs\/tags\//, "");
               const parsed = parseSemVer(tag);
               if (!parsed || tag === "v0.0.0") continue;

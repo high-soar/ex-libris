@@ -400,6 +400,10 @@ describe("Android build, Capacitor & Remote Agent governance invariants", () => 
     expect(semverIdx).toBeGreaterThan(checkExistingIdx);
     expect(ciVerifyIdx).toBeGreaterThan(semverIdx);
     expect(buildApkIdx).toBeGreaterThan(ciVerifyIdx);
+
+    const semverSection = release.slice(semverIdx, ciVerifyIdx);
+    expect(semverSection).toContain("set -euo pipefail");
+    expect(semverSection).not.toMatch(/git ls-remote[^\n]*\|/);
   });
 
   it("ci.yml の android-compile ジョブが Secret 非依存で ./gradlew assembleDebug を維持しつつゼロコンフィグ異常系 Gradle ガード検証ステップを含むこと (AC-APK-03)", () => {
