@@ -303,12 +303,12 @@ async function readReadingProgressSafely(
 
 async function readShaderDefaultsSafely(
   repo: ReaderSettingsRepository,
-  isCurrentAttempt: () => boolean,
+  isCurrentRuntime: () => boolean,
 ): Promise<ShaderCorrectionParams | null> {
   try {
     return await repo.getShaderDefaults();
   } catch (settingsError) {
-    if (isCurrentAttempt()) {
+    if (isCurrentRuntime()) {
       diagnosticLogger.warn(
         "reader",
         "画質補正デフォルト設定の取得に失敗しました",
@@ -608,24 +608,26 @@ export function ReaderPage({
     setIsShaderSheetOpen(true);
   }, []);
 
+  const applyShaderParams = useCallback((next: ShaderCorrectionParams) => {
+    const normalized = normalizeShaderCorrectionParams(next);
+    shaderParamsRef.current = normalized;
+    setShaderParams(normalized);
+  }, []);
+
   const handleChangeShaderParams = useCallback(
     (next: ShaderCorrectionParams) => {
       hasUserModifiedShaderRef.current = true;
       setShaderSaveStatus("idle");
-      const normalized = normalizeShaderCorrectionParams(next);
-      shaderParamsRef.current = normalized;
-      setShaderParams(normalized);
+      applyShaderParams(next);
     },
-    [],
+    [applyShaderParams],
   );
 
   const handleResetShaderParams = useCallback(() => {
     hasUserModifiedShaderRef.current = true;
     setShaderSaveStatus("idle");
-    const resetParams = { ...DEFAULT_SHADER_CORRECTION_PARAMS };
-    shaderParamsRef.current = resetParams;
-    setShaderParams(resetParams);
-  }, []);
+    applyShaderParams(DEFAULT_SHADER_CORRECTION_PARAMS);
+  }, [applyShaderParams]);
 
   const handleSaveDefaultShaderParams = useCallback(async () => {
     hasUserModifiedShaderRef.current = true;
@@ -636,9 +638,7 @@ export function ReaderPage({
       if (!isMountedRef.current) {
         return;
       }
-      const normalized = normalizeShaderCorrectionParams(saved);
-      shaderParamsRef.current = normalized;
-      setShaderParams(normalized);
+      applyShaderParams(saved);
       setShaderSaveStatus("saved");
     } catch (error) {
       if (!isMountedRef.current) {
@@ -651,7 +651,7 @@ export function ReaderPage({
       );
       setShaderSaveStatus("error");
     }
-  }, [readerSettingsRepo]);
+  }, [applyShaderParams, readerSettingsRepo]);
 
   useEffect(() => {
     onRegisterExit?.(handleExitRequest);
@@ -995,9 +995,7 @@ export function ReaderPage({
     setIsShaderSheetOpen(false);
     setShaderSaveStatus("idle");
     hasUserModifiedShaderRef.current = false;
-    const initialShader = { ...DEFAULT_SHADER_CORRECTION_PARAMS };
-    shaderParamsRef.current = initialShader;
-    setShaderParams(initialShader);
+    applyShaderParams(DEFAULT_SHADER_CORRECTION_PARAMS);
     spreadHistoryRef.current = [];
     knownDimensionsRef.current = new Map();
     setKnownDimensions(new Map());
@@ -1024,9 +1022,7 @@ export function ReaderPage({
         isCurrentRuntime() &&
         !hasUserModifiedShaderRef.current
       ) {
-        const normalized = normalizeShaderCorrectionParams(defaults);
-        shaderParamsRef.current = normalized;
-        setShaderParams(normalized);
+        applyShaderParams(defaults);
       }
     })();
 
@@ -1122,6 +1118,7 @@ export function ReaderPage({
   }, [
     session,
     initialSnapshot,
+    applyShaderParams,
     createCoordinatorSession,
     zipIndexCacheRepo,
     readingProgressRepo,
