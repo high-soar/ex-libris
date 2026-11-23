@@ -1,7 +1,10 @@
 import Dexie, { type EntityTable, type Table } from "dexie";
 import type {
+  DriveSyncRootRecord,
   ReadingProgressRecord,
+  SeriesRecord,
   SyncMetaRecord,
+  VolumeRecord,
   ZipIndexCacheRecord,
 } from "./types";
 
@@ -9,6 +12,9 @@ export class ExLibrisDatabase extends Dexie {
   syncMeta!: EntityTable<SyncMetaRecord, "key">;
   zipIndexCache!: Table<ZipIndexCacheRecord, string>;
   readingProgress!: Table<ReadingProgressRecord, string>;
+  driveSyncRoots!: Table<DriveSyncRootRecord, string>;
+  series!: Table<SeriesRecord, string>;
+  volumes!: Table<VolumeRecord, string>;
 
   constructor(databaseName = "ExLibrisDB") {
     super(databaseName);
