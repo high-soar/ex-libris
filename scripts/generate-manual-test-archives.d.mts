@@ -18,7 +18,11 @@ export function buildDeterministicStoreZip(
   entries: readonly { name: string; data: Uint8Array }[],
 ): Buffer;
 
+export function createShaderLabPng(width?: number, height?: number): Buffer;
+
 export function buildHo07MaxTextureTestArchive(): Buffer;
+
+export function buildHo08ShaderSeekTestArchive(): Buffer;
 
 export const MANUAL_TEST_ARCHIVES: readonly ManualArchiveSpec[];
 

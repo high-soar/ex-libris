@@ -2,7 +2,7 @@
 type: spec-engine
 title: "生 WebGL2 レンダラー＆L1キャッシュ仕様書"
 description: "WebGLRendererCore のハードウェア Mipmap 2スロット見開き描画、1パス画質補正シェーダー（画面微分5タップUSM＋白黒レベル＋標準ガンマ）、MAX_TEXTURE_SIZE タイル分割・安全リサイズガード、DPR 追従、webglcontextlost 復帰、および L1PageCache の ImageBitmap.close() 厳格解放規約の正本"
-status: "Review (#22)"
+status: "Approved (#22)"
 updated: "2026-11-22"
 tags:
   [

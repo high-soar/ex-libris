@@ -2,7 +2,7 @@
 type: spec-feature
 title: "WebGL2 ストリーミングリーダー画面仕様書（SCR-03: Reader）"
 description: "SCR-03（/read/local）のインテリジェント見開き、1ページずらし、右開き/左開き、シークバー、1パス画質補正シート（優先度2戻る制御・syncMetaデフォルト保存）、readingProgress自動レジューム、Fast-Path＋L1 5頁窓連携、およびTR-08/TR-10仕様の正本"
-status: "Review (#22)"
+status: "Approved (#22)"
 updated: "2026-11-22"
 tags:
   [
@@ -42,10 +42,13 @@ related_tests:
   - src/features/reader/ReaderErrorView.test.tsx
   - src/features/reader/localReaderSessionStore.test.ts
   - src/features/reader/readerErrors.test.ts
+  - src/webgl/shaderParams.test.ts
   - src/webgl/ReaderCanvas.test.tsx
   - src/bridges/app/capacitorAppBridge.test.ts
   - src/bridges/app/mockAppBridge.test.ts
   - src/storage/repositories/zipIndexCacheRepository.test.ts
+  - src/storage/repositories/readingProgressRepository.test.ts
+  - src/storage/repositories/readerSettingsRepository.test.ts
   - test/vrt/vrt.spec.ts
   - test/it/local-reader.spec.ts
 ---

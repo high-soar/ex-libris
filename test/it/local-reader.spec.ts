@@ -9,10 +9,14 @@ import {
   buildSyntheticOversizedTextureArchive,
   buildSyntheticPortraitSpreadArchive,
   buildSyntheticSevenPageArchive,
+  buildSyntheticShaderTestArchive,
   buildSyntheticThreePageArchive,
   buildSyntheticZip64Archive,
   readPngCenterPixel,
+  readPngHorizontalContrastRange,
   readPngPixelAtRatio,
+  readReadingProgressRecord,
+  readSyncMetaValue,
   readZipIndexCacheRecord,
   resetTestDatabase,
   trackPageErrors,
@@ -1499,6 +1503,778 @@ test.describe("SCN-02: ローカルZIP/CBZストリーミングリーダー結�
     await page.keyboard.press("ArrowRight");
     await expect(canvas).toHaveAttribute("data-rendered-slots", "center:0");
     await expect(pageError).toHaveCount(0);
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("生WebGL2 1パス画質補正シェーダーの実ピクセルRGB変化・リセット・syncMetaデフォルト保存永続化が動作すること (AC-GL-09, AC-RD-13)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "shader-lab.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSyntheticShaderTestArchive()),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(canvas).toHaveAttribute(
+      "data-shader-params",
+      "0.00,1.00,0.00,1.00",
+    );
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    // 初期状態 4 象限ピクセル検証 (1280x800 中 800x800 中央配置: xRatio 0.1875..0.8125)
+    const initialShot = await canvas.screenshot();
+    const initYellow = readPngPixelAtRatio(initialShot, 0.34, 0.25);
+    expect(initYellow.r).toBeGreaterThanOrEqual(230);
+    expect(initYellow.r).toBeLessThanOrEqual(240);
+    expect(initYellow.g).toBeGreaterThanOrEqual(223);
+    expect(initYellow.g).toBeLessThanOrEqual(233);
+    expect(initYellow.b).toBeGreaterThanOrEqual(207);
+    expect(initYellow.b).toBeLessThanOrEqual(217);
+
+    const initDark = readPngPixelAtRatio(initialShot, 0.66, 0.25);
+    expect(initDark.r).toBeGreaterThanOrEqual(37);
+    expect(initDark.r).toBeLessThanOrEqual(47);
+    expect(initDark.g).toBeGreaterThanOrEqual(37);
+    expect(initDark.g).toBeLessThanOrEqual(47);
+    expect(initDark.b).toBeGreaterThanOrEqual(37);
+    expect(initDark.b).toBeLessThanOrEqual(47);
+
+    const initThin = readPngPixelAtRatio(initialShot, 0.34, 0.75);
+    expect(initThin.g).toBeGreaterThanOrEqual(123);
+    expect(initThin.g).toBeLessThanOrEqual(133);
+
+    const baseEdge = readPngHorizontalContrastRange(
+      initialShot,
+      0.75,
+      0.56,
+      0.76,
+    );
+    expect(baseEdge.min).toBeGreaterThanOrEqual(75);
+    expect(baseEdge.max).toBeLessThanOrEqual(185);
+
+    const surface = page.getByTestId("reader-interaction-surface");
+    const box = await surface.boundingBox();
+    expect(box).not.toBeNull();
+    const surfaceBox = box!;
+    const tapCenter = async () => {
+      await page.mouse.click(
+        surfaceBox.x + surfaceBox.width * 0.5,
+        surfaceBox.y + surfaceBox.height * 0.5,
+      );
+    };
+
+    // HUD「画質補正」ボタンでシートを開き、HUD が閉じ透明バックドロップ上で上半分が露出していることを確認
+    await tapCenter();
+    const shaderButton = page.getByTestId("reader-shader-button");
+    await expect(shaderButton).toHaveAttribute("data-shader-modified", "false");
+    await shaderButton.click();
+
+    await expect(page.getByTestId("reader-hud-top")).toBeHidden();
+    await expect(page.getByTestId("reader-hud-bottom")).toBeHidden();
+    await expect(page.getByTestId("reader-shader-backdrop")).toBeVisible();
+    await expect(page.getByTestId("reader-shader-backdrop")).toHaveClass(
+      /bg-transparent/,
+    );
+    const sheet = page.getByTestId("reader-shader-sheet");
+    await expect(sheet).toBeVisible();
+    const sheetBox = await sheet.boundingBox();
+    expect(sheetBox).not.toBeNull();
+    expect(sheetBox!.y).toBeGreaterThan(
+      surfaceBox.y + surfaceBox.height * 0.45,
+    );
+
+    // 1. whitePoint -> 0.80 (シート開いたまま透明バックドロップ越しに左上黄ばみ紙色が完全白飛ばしへ変化)
+    await page.getByTestId("shader-white-point-slider").fill("0.80");
+    await expect(canvas).toHaveAttribute(
+      "data-shader-params",
+      "0.00,0.80,0.00,1.00",
+    );
+    const whiteShot = await canvas.screenshot();
+    const blownWhite = readPngPixelAtRatio(whiteShot, 0.34, 0.25);
+    expect(blownWhite.r).toBeGreaterThanOrEqual(245);
+    expect(blownWhite.g).toBeGreaterThanOrEqual(245);
+    expect(blownWhite.b).toBeGreaterThanOrEqual(245);
+
+    // 2. blackPoint -> 0.20 (右上裏写り暗灰が完全黒引き締めへ変化)
+    await page.getByTestId("shader-black-point-slider").fill("0.20");
+    await expect(canvas).toHaveAttribute(
+      "data-shader-params",
+      "0.00,0.80,0.20,1.00",
+    );
+    const blackShot = await canvas.screenshot();
+    const crushedBlack = readPngPixelAtRatio(blackShot, 0.66, 0.25);
+    expect(crushedBlack.r).toBeLessThanOrEqual(10);
+    expect(crushedBlack.g).toBeLessThanOrEqual(10);
+    expect(crushedBlack.b).toBeLessThanOrEqual(10);
+
+    // 3. gamma -> 0.65 (薄墨濃化) / gamma -> 1.50 (薄墨明化)
+    await page.getByTestId("shader-gamma-slider").fill("0.65");
+    await expect(canvas).toHaveAttribute(
+      "data-shader-params",
+      "0.00,0.80,0.20,0.65",
+    );
+    await page.getByTestId("shader-sheet-close-button").click();
+    await expect(sheet).toHaveCount(0);
+    const gammaDarkShot = await canvas.screenshot();
+    const darkenedThin = readPngPixelAtRatio(gammaDarkShot, 0.34, 0.75);
+    expect(darkenedThin.g).toBeLessThan(105);
+
+    await tapCenter();
+    await shaderButton.click();
+    await expect(sheet).toBeVisible();
+    await page.getByTestId("shader-gamma-slider").fill("1.50");
+    await expect(canvas).toHaveAttribute(
+      "data-shader-params",
+      "0.00,0.80,0.20,1.50",
+    );
+    await page.getByTestId("shader-sheet-close-button").click();
+    await expect(sheet).toHaveCount(0);
+    const gammaLightShot = await canvas.screenshot();
+    const lightenedThin = readPngPixelAtRatio(gammaLightShot, 0.34, 0.75);
+    expect(lightenedThin.g).toBeGreaterThan(150);
+    const preSharpEdge = readPngHorizontalContrastRange(
+      gammaLightShot,
+      0.75,
+      0.56,
+      0.76,
+    );
+    expect(preSharpEdge.contrast).toBeGreaterThan(baseEdge.contrast);
+
+    // 4. sharpness -> 1.00 (右下階段エッジ周辺の最大・最小コントラスト差がオーバーシュートにより拡大)
+    await tapCenter();
+    await shaderButton.click();
+    await expect(sheet).toBeVisible();
+    await page.getByTestId("shader-sharpness-slider").fill("1.00");
+    await expect(canvas).toHaveAttribute(
+      "data-shader-params",
+      "1.00,0.80,0.20,1.50",
+    );
+    await page.getByTestId("shader-sheet-close-button").click();
+    await expect(sheet).toHaveCount(0);
+    const sharpShot = await canvas.screenshot();
+    const sharpEdge = readPngHorizontalContrastRange(
+      sharpShot,
+      0.75,
+      0.56,
+      0.76,
+    );
+    expect(sharpEdge.contrast).toBeGreaterThan(preSharpEdge.contrast + 50);
+
+    // 5. 「リセット」で初期ニュートラル値と元 RGB へ復帰
+    await tapCenter();
+    await shaderButton.click();
+    await expect(sheet).toBeVisible();
+    await page.getByTestId("shader-reset-button").click();
+    await expect(canvas).toHaveAttribute(
+      "data-shader-params",
+      "0.00,1.00,0.00,1.00",
+    );
+    await page.getByTestId("shader-sheet-close-button").click();
+    await expect(sheet).toHaveCount(0);
+
+    const resetShot = await canvas.screenshot();
+    const resetYellow = readPngPixelAtRatio(resetShot, 0.34, 0.25);
+    expect(resetYellow.r).toBeGreaterThanOrEqual(230);
+    expect(resetYellow.b).toBeLessThanOrEqual(217);
+    const resetDark = readPngPixelAtRatio(resetShot, 0.66, 0.25);
+    expect(resetDark.r).toBeGreaterThanOrEqual(37);
+    expect(resetDark.r).toBeLessThanOrEqual(47);
+    const resetThin = readPngPixelAtRatio(resetShot, 0.34, 0.75);
+    expect(resetThin.g).toBeGreaterThanOrEqual(123);
+    expect(resetThin.g).toBeLessThanOrEqual(133);
+    const resetEdge = readPngHorizontalContrastRange(
+      resetShot,
+      0.75,
+      0.56,
+      0.76,
+    );
+    expect(resetEdge.contrast).toBeLessThanOrEqual(baseEdge.contrast + 5);
+
+    // 6. 再調整 + 「デフォルト保存」-> IndexedDB 永続化 & リロード後別ファイルへ自動適用
+    await tapCenter();
+    await shaderButton.click();
+    await expect(sheet).toBeVisible();
+    await page.getByTestId("shader-sharpness-slider").fill("0.50");
+    await page.getByTestId("shader-white-point-slider").fill("0.85");
+    await page.getByTestId("shader-black-point-slider").fill("0.15");
+    await page.getByTestId("shader-gamma-slider").fill("0.80");
+    await expect(canvas).toHaveAttribute(
+      "data-shader-params",
+      "0.50,0.85,0.15,0.80",
+    );
+
+    await page.getByTestId("shader-save-default-button").click();
+    await expect(page.getByTestId("shader-save-status")).toHaveText(
+      "デフォルト設定を保存しました",
+    );
+    await expect
+      .poll(async () => readSyncMetaValue(page, "defaultReaderSettingsJson"))
+      .toBe(
+        JSON.stringify({
+          version: 1,
+          shader: {
+            sharpness: 0.5,
+            whitePoint: 0.85,
+            blackPoint: 0.15,
+            gamma: 0.8,
+          },
+        }),
+      );
+
+    await page.reload();
+    await waitForServicesReady(page);
+    await expect(page).toHaveURL(/\/$/);
+
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "other-book-shader-default.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSyntheticThreePageArchive()),
+    });
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(canvas).toHaveAttribute(
+      "data-shader-params",
+      "0.50,0.85,0.15,0.80",
+    );
+
+    await tapCenter();
+    await expect(page.getByTestId("reader-shader-button")).toHaveAttribute(
+      "data-shader-modified",
+      "true",
+    );
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("画質補正ボトムシート表示中はAppBridge戻るボタン・Escape・バックドロップでシートのみ閉鎖(優先度2)し、閉鎖後の戻る操作でTR-08終了→'/'でminimizeApp(優先度5)が実行されること", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "priority2-back-control.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSyntheticThreePageArchive()),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const surface = page.getByTestId("reader-interaction-surface");
+    const box = await surface.boundingBox();
+    expect(box).not.toBeNull();
+    const surfaceBox = box!;
+    const openSheetFromHud = async () => {
+      await page.mouse.click(
+        surfaceBox.x + surfaceBox.width * 0.5,
+        surfaceBox.y + surfaceBox.height * 0.5,
+      );
+      await expect(page.getByTestId("reader-hud-top")).toBeVisible();
+      await page.getByTestId("reader-shader-button").click();
+      await expect(page.getByTestId("reader-shader-sheet")).toBeVisible();
+    };
+
+    const triggerBridgeBack = async (): Promise<number> =>
+      page.evaluate(async () => {
+        const bridge = window.__exLibrisServices?.appBridge as
+          MockAppBridge | undefined;
+        if (!bridge) {
+          throw new Error("MockAppBridge is not available on window");
+        }
+        await bridge.triggerBackButton();
+        return bridge.getMinimizeAppCallCount();
+      });
+
+    // 1. ボトムシート表示中の AppBridge backButton -> 優先度2でシートのみ閉鎖
+    await openSheetFromHud();
+    const minimizeAfterSheetBack = await triggerBridgeBack();
+    expect(minimizeAfterSheetBack).toBe(0);
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(page.getByTestId("reader-shader-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("reader-hud-top")).toBeHidden();
+
+    // 2. 再度開いて Escape キー -> 優先度2でシートのみ閉鎖 (TR-08 不発)
+    await openSheetFromHud();
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(page.getByTestId("reader-shader-sheet")).toHaveCount(0);
+
+    // 3. 再度開いてバックドロップ上部クリック -> 優先度2でシートのみ閉鎖 (TR-08 不発)
+    await openSheetFromHud();
+    const backdrop = page.getByTestId("reader-shader-backdrop");
+    await backdrop.click({ position: { x: 24, y: 24 } });
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(page.getByTestId("reader-shader-sheet")).toHaveCount(0);
+
+    // 4. シート閉鎖状態での AppBridge backButton -> 優先度3で TR-08 ('/' 復帰)
+    const minimizeAfterReaderBack = await triggerBridgeBack();
+    expect(minimizeAfterReaderBack).toBe(0);
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId("bookshelf-empty")).toBeVisible();
+
+    // 5. '/' 上での AppBridge backButton -> 優先度5で minimizeApp()
+    const minimizeOnHome = await triggerBridgeBack();
+    expect(minimizeOnHome).toBe(1);
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("rtl/ltr連動シークバーのドラッグプレビュー(非通信)・要素外リリース確定・キャンセル・ltrキーボード操作・1280x800見開き着地が動作すること (AC-RD-14)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 375, height: 667 });
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    const dragSeekbarToValue = async (
+      targetIndex: number,
+      maxIndex: number,
+      direction: "rtl" | "ltr",
+    ): Promise<{ currentX: number; topY: number }> => {
+      const seekbar = page.getByTestId("reader-seekbar");
+      const barBox = await seekbar.boundingBox();
+      expect(barBox).not.toBeNull();
+      const rect = barBox!;
+      const centerY = rect.y + rect.height / 2;
+      const currentVal = Number(await seekbar.inputValue());
+      const startRatio =
+        direction === "rtl" ? 1 - currentVal / maxIndex : currentVal / maxIndex;
+      const startX = Math.min(
+        rect.x + rect.width - 4,
+        Math.max(rect.x + 4, rect.x + rect.width * startRatio),
+      );
+      await page.mouse.move(startX, centerY);
+      await page.mouse.down();
+
+      const targetRatio =
+        direction === "rtl"
+          ? 1 - targetIndex / maxIndex
+          : targetIndex / maxIndex;
+      let currentX = Math.min(
+        rect.x + rect.width - 4,
+        Math.max(rect.x + 4, rect.x + rect.width * targetRatio),
+      );
+      await page.mouse.move(currentX, centerY, { steps: 6 });
+
+      for (let step = 0; step < 40; step += 1) {
+        const val = Number(await seekbar.inputValue());
+        if (val === targetIndex) {
+          break;
+        }
+        const moveSign =
+          direction === "rtl"
+            ? val < targetIndex
+              ? -1
+              : 1
+            : val < targetIndex
+              ? 1
+              : -1;
+        currentX = Math.min(
+          rect.x + rect.width - 2,
+          Math.max(rect.x + 2, currentX + moveSign * 6),
+        );
+        await page.mouse.move(currentX, centerY, { steps: 2 });
+      }
+      expect(Number(await seekbar.inputValue())).toBe(targetIndex);
+      return { currentX, topY: rect.y };
+    };
+
+    // Part A: 375x667 単ページ 7ページアーカイブ
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "seekbar-seven-pages.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSyntheticSevenPageArchive()),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const surface = page.getByTestId("reader-interaction-surface");
+    const box = await surface.boundingBox();
+    expect(box).not.toBeNull();
+    const surfaceBox = box!;
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeVisible();
+
+    const seekbar = page.getByTestId("reader-seekbar");
+    const indicator = page.getByTestId("reader-page-indicator");
+    await expect(seekbar).toHaveAttribute("dir", "rtl");
+    await expect(seekbar).toHaveAttribute("data-reading-direction", "rtl");
+    await expect(indicator).toHaveAttribute("data-seek-preview", "false");
+    await expect(indicator).toHaveText("1 / 7");
+
+    const epochBeforeDrag = Number(
+      await canvas.getAttribute("data-rendered-epoch"),
+    );
+
+    // 1. rtl ドラッグ中はプレビュー("5 / 7")のみ更新し canvas/Epoch は一切進まない -> 要素外リリースで1回だけジャンプ確定
+    const dragInfo = await dragSeekbarToValue(4, 6, "rtl");
+    await expect(indicator).toHaveAttribute("data-seek-preview", "true");
+    await expect(indicator).toHaveText("5 / 7");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-epoch",
+      String(epochBeforeDrag),
+    );
+
+    // 指をバー上側の矩形外へずらしてもプレビュー＆未通信を維持し、要素外 mouse.up で 1 回だけ新 Epoch ジャンプ
+    await page.mouse.move(dragInfo.currentX, dragInfo.topY - 60, { steps: 5 });
+    await expect(indicator).toHaveAttribute("data-seek-preview", "true");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-epoch",
+      String(epochBeforeDrag),
+    );
+    await page.mouse.up();
+
+    await expect(indicator).toHaveAttribute("data-seek-preview", "false");
+    await expect(indicator).toHaveText("5 / 7");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "4");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-epoch",
+      String(epochBeforeDrag + 1),
+    );
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    // HUDを一旦閉じて p.5 (シアン) が描画されていることも確認
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeHidden();
+    const seekedP4Pixel = readPngCenterPixel(await canvas.screenshot());
+    expect(seekedP4Pixel.r).toBeLessThan(30);
+    expect(seekedP4Pixel.g).toBeGreaterThan(200);
+    expect(seekedP4Pixel.b).toBeGreaterThan(200);
+
+    // 2. ドラッグ中の pointercancel はジャンプせずプレビュー解除
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeVisible();
+    const epochBeforeCancel = Number(
+      await canvas.getAttribute("data-rendered-epoch"),
+    );
+    await dragSeekbarToValue(1, 6, "rtl");
+    await expect(indicator).toHaveAttribute("data-seek-preview", "true");
+    await expect(indicator).toHaveText("2 / 7");
+    await page.evaluate(() => {
+      window.dispatchEvent(
+        new PointerEvent("pointercancel", { bubbles: true }),
+      );
+    });
+    await page.mouse.up();
+
+    await expect(indicator).toHaveAttribute("data-seek-preview", "false");
+    await expect(indicator).toHaveText("5 / 7");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "4");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-epoch",
+      String(epochBeforeCancel),
+    );
+
+    // 3. ltr 切替後の dir="ltr" 確認 + <input> フォーカス中 ArrowRight で1ページだけ確定ジャンプ（ページめくり二重非干渉）
+    await page.getByTestId("reader-direction-button").click();
+    await expect(seekbar).toHaveAttribute("dir", "ltr");
+    await expect(seekbar).toHaveAttribute("data-reading-direction", "ltr");
+    const epochBeforeKeySeek = Number(
+      await canvas.getAttribute("data-rendered-epoch"),
+    );
+
+    await seekbar.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(indicator).toHaveAttribute("data-seek-preview", "false");
+    await expect(indicator).toHaveText("6 / 7");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "5");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    // L1窓外の先頭(0)へ Home キーでキーボードシーク確定し、新 Epoch (ArrowRightのepoch+1に続くepoch+2) ジャンプを検証
+    await page.keyboard.press("Home");
+    await expect(indicator).toHaveAttribute("data-seek-preview", "false");
+    await expect(indicator).toHaveText("1 / 7");
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-epoch",
+      String(epochBeforeKeySeek + 2),
+    );
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    // TR-08 で戻る
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/$/);
+
+    // Part B: 1280x800 見開き状態でシーク確定時に目標ページが data-rendered-pages に確実に含まれること
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "seekbar-spread-landing.cbz",
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(buildSyntheticPortraitSpreadArchive()),
+    });
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const spreadBox = await surface.boundingBox();
+    expect(spreadBox).not.toBeNull();
+    await page.mouse.click(
+      spreadBox!.x + spreadBox!.width * 0.5,
+      spreadBox!.y + spreadBox!.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeVisible();
+
+    const spreadDrag = await dragSeekbarToValue(2, 5, "rtl");
+    await expect(indicator).toHaveAttribute("data-seek-preview", "true");
+    await expect(indicator).toHaveText("3 / 6");
+    await page.mouse.move(spreadDrag.currentX, spreadDrag.topY - 60, {
+      steps: 4,
+    });
+    await page.mouse.up();
+
+    await expect(indicator).toHaveAttribute("data-seek-preview", "false");
+    await expect(indicator).toHaveText("3-4 / 6");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:3,right:2",
+    );
+    const renderedPagesAttr = await canvas.getAttribute("data-rendered-pages");
+    expect((renderedPagesAttr ?? "").split(",")).toContain("2");
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("1280x800見開き+1ページずらしのreadingProgress自動レジューム・読了更新・SCR-01最近のローカル閲覧履歴の表示/リロード保持/個別削除/一括クリアが動作すること (AC-RD-15, AC-BS-06)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    const bookABytes = buildSyntheticPortraitSpreadArchive();
+    const bookAName = "progress-book-a.cbz";
+    const bookAKey = `local:${bookAName}:${bookABytes.byteLength}`;
+
+    // 1. 1280x800 見開きアーカイブを開き、1ページずらし ON で中間ページ (index 2 = 3-4 / 6) へ進めて TR-08 復帰
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: bookAName,
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(bookABytes),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    const canvas = page.getByTestId("reader-canvas");
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready");
+    await expect(canvas).toHaveAttribute("data-rendered-slots", "center:0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const surface = page.getByTestId("reader-interaction-surface");
+    const box = await surface.boundingBox();
+    expect(box).not.toBeNull();
+    const surfaceBox = box!;
+    await page.mouse.click(
+      surfaceBox.x + surfaceBox.width * 0.5,
+      surfaceBox.y + surfaceBox.height * 0.5,
+    );
+    await expect(page.getByTestId("reader-hud-bottom")).toBeVisible();
+
+    await page.getByTestId("reader-offset-toggle-button").click();
+    await expect(
+      page.getByTestId("reader-offset-toggle-button"),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:1,right:0",
+    );
+
+    await page.getByTestId("reader-next-button").click();
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:3,right:2",
+    );
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "3-4 / 6",
+    );
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/$/);
+
+    // 2. SCR-01 に「最近のローカル閲覧履歴」(読書中・3 / 6 ページ・進捗バー) が表示されリロード後も維持されること
+    const historySection = page.getByTestId("recent-local-history-section");
+    await expect(historySection).toBeVisible();
+    const items = page.getByTestId("recent-local-history-item");
+    await expect(items).toHaveCount(1);
+    await expect(items.first()).toContainText(bookAName);
+    await expect(items.first()).toContainText("読書中");
+    await expect(items.first()).toContainText("3 / 6 ページ");
+    const readingBar = items.first().getByRole("progressbar");
+    await expect(readingBar).toHaveAttribute("aria-valuenow", "50");
+    await expect(
+      items.first().getByTestId("local-history-progress-fill"),
+    ).toHaveAttribute("style", /width:\s*50%/);
+
+    await page.reload();
+    await waitForServicesReady(page);
+    await expect(historySection).toBeVisible();
+    await expect(items).toHaveCount(1);
+    await expect(items.first()).toContainText("読書中");
+    await expect(items.first()).toContainText("3 / 6 ページ");
+
+    // 3. 履歴行の reopen-local-history-button クリックで filechooser が開き、再選択時に index 2 & 1ページずらし ON で自動レジューム
+    const [reopenChooser1] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      items.first().getByTestId("reopen-local-history-button").click(),
+    ]);
+    await reopenChooser1.setFiles({
+      name: bookAName,
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(bookABytes),
+    });
+
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:3,right:2",
+    );
+    await expect(canvas).toHaveAttribute("data-rendered-pages", "2,3");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    const resumedBox = await surface.boundingBox();
+    expect(resumedBox).not.toBeNull();
+    await page.mouse.click(
+      resumedBox!.x + resumedBox!.width * 0.5,
+      resumedBox!.y + resumedBox!.height * 0.5,
+    );
+    await expect(
+      page.getByTestId("reader-offset-toggle-button"),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "3-4 / 6",
+    );
+
+    // 4. 最終見開き (index 4: 5-6 / 6) まで進めて TR-08 復帰 -> バッジ「読了」・進捗バー 100%
+    await page.getByTestId("reader-next-button").click();
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:5,right:4",
+    );
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "5-6 / 6",
+    );
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/$/);
+    await expect(historySection).toBeVisible();
+    await expect(items.first()).toContainText("読了");
+    await expect(items.first()).toContainText("5 / 6 ページ");
+    await expect(items.first().getByRole("progressbar")).toHaveAttribute(
+      "aria-valuenow",
+      "100",
+    );
+    await expect(
+      items.first().getByTestId("local-history-progress-fill"),
+    ).toHaveAttribute("style", /width:\s*100%/);
+
+    // 5. 「読了」状態を再選択しても保存位置 (index 4 & 1ページずらし ON) から忠実にレジュームすること (Q4)
+    const [reopenChooser2] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      items.first().getByTestId("reopen-local-history-button").click(),
+    ]);
+    await reopenChooser2.setFiles({
+      name: bookAName,
+      mimeType: "application/x-cbz",
+      buffer: Buffer.from(bookABytes),
+    });
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(canvas).toHaveAttribute(
+      "data-rendered-slots",
+      "left:5,right:4",
+    );
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    await page.mouse.click(
+      resumedBox!.x + resumedBox!.width * 0.5,
+      resumedBox!.y + resumedBox!.height * 0.5,
+    );
+    await expect(
+      page.getByTestId("reader-offset-toggle-button"),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("reader-page-indicator")).toHaveText(
+      "5-6 / 6",
+    );
+
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/$/);
+
+    const bookARecord = await readReadingProgressRecord(page, bookAKey);
+    expect(bookARecord).not.toBeNull();
+    const bookATimestamp = bookARecord!.lastReadAt;
+
+    // 6. 別ファイルも開いて 2 件履歴にした後、1 件目のみ個別削除(filechooser未発火) -> 最後に全消去で非表示
+    await expect
+      .poll(() => Date.now(), { timeout: 2_000 })
+      .toBeGreaterThan(bookATimestamp);
+
+    await page.getByTestId("local-zip-file-input").setInputFiles({
+      name: "progress-book-b.zip",
+      mimeType: "application/zip",
+      buffer: Buffer.from(buildSyntheticThreePageArchive()),
+    });
+    await expect(page).toHaveURL(/\/read\/local$/);
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/$/);
+
+    await expect(items).toHaveCount(2);
+    await expect(items.nth(0)).toContainText("progress-book-b.zip");
+    await expect(items.nth(1)).toContainText(bookAName);
+
+    let fileChooserOpenedOnDelete = false;
+    const handleUnexpectedChooser = () => {
+      fileChooserOpenedOnDelete = true;
+    };
+    page.on("filechooser", handleUnexpectedChooser);
+    await items.nth(0).getByTestId("delete-local-history-button").click();
+    await expect(items).toHaveCount(1);
+    await expect(items.first()).toContainText(bookAName);
+    page.off("filechooser", handleUnexpectedChooser);
+    expect(fileChooserOpenedOnDelete).toBe(false);
+
+    await page.getByTestId("clear-local-history-button").click();
+    await expect(historySection).toHaveCount(0);
+
+    await page.reload();
+    await waitForServicesReady(page);
+    await expect(historySection).toHaveCount(0);
 
     expect(pageErrors).toEqual([]);
   });

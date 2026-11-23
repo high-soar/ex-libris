@@ -499,6 +499,89 @@ export function buildSyntheticSevenPageArchive(): Uint8Array {
   });
 }
 
+function createQuadrantShaderTestPng(): Uint8Array {
+  const width = 400;
+  const height = 400;
+  const rowStride = 1 + width * 4;
+  const topRow = new Uint8Array(rowStride);
+  const bottomRow = new Uint8Array(rowStride);
+  topRow[0] = 0;
+  bottomRow[0] = 0;
+
+  const yellowPaper: readonly [number, number, number, number] = [
+    235, 228, 212, 255,
+  ];
+  const bleedDark: readonly [number, number, number, number] = [
+    42, 42, 42, 255,
+  ];
+  const thinInk: readonly [number, number, number, number] = [
+    128, 128, 128, 255,
+  ];
+  const edgeLow: readonly [number, number, number, number] = [80, 80, 80, 255];
+  const edgeHigh: readonly [number, number, number, number] = [
+    180, 180, 180, 255,
+  ];
+
+  for (let x = 0; x < width; x += 1) {
+    const px = 1 + x * 4;
+    const topColor = x < 200 ? yellowPaper : bleedDark;
+    topRow[px] = topColor[0];
+    topRow[px + 1] = topColor[1];
+    topRow[px + 2] = topColor[2];
+    topRow[px + 3] = topColor[3];
+
+    const bottomColor = x < 200 ? thinInk : x < 300 ? edgeLow : edgeHigh;
+    bottomRow[px] = bottomColor[0];
+    bottomRow[px + 1] = bottomColor[1];
+    bottomRow[px + 2] = bottomColor[2];
+    bottomRow[px + 3] = bottomColor[3];
+  }
+
+  const ihdrData = new Uint8Array(13);
+  const ihdrView = new DataView(ihdrData.buffer);
+  ihdrView.setUint32(0, width, false);
+  ihdrView.setUint32(4, height, false);
+  ihdrData[8] = 8;
+  ihdrData[9] = 6;
+  ihdrData[10] = 0;
+  ihdrData[11] = 0;
+  ihdrData[12] = 0;
+
+  const rawScanlines = new Uint8Array(height * rowStride);
+  for (let y = 0; y < height; y += 1) {
+    rawScanlines.set(y < 200 ? topRow : bottomRow, y * rowStride);
+  }
+
+  const ihdr = createPngChunk("IHDR", ihdrData);
+  const idat = createPngChunk("IDAT", zlibSync(rawScanlines));
+  const iend = createPngChunk("IEND", new Uint8Array(0));
+
+  const out = new Uint8Array(
+    PNG_SIGNATURE.byteLength +
+      ihdr.byteLength +
+      idat.byteLength +
+      iend.byteLength,
+  );
+  let offset = 0;
+  for (const part of [PNG_SIGNATURE, ihdr, idat, iend]) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+export function buildSyntheticShaderTestArchive(): Uint8Array {
+  return buildSyntheticZip({
+    entries: [
+      {
+        name: "001_shader_lab.png",
+        data: createQuadrantShaderTestPng(),
+        compressionMethod: 0,
+      },
+    ],
+  });
+}
+
 export interface InspectableZipIndexCacheRecord {
   readonly cacheKey: string;
   readonly pageCount: number;
@@ -556,15 +639,93 @@ export async function readZipIndexCacheRecord(
   }, cacheKey);
 }
 
-export function readPngPixelAtRatio(
-  pngBytes: Uint8Array,
-  xRatio: number,
-  yRatio: number,
-): {
-  r: number;
-  g: number;
-  b: number;
-} {
+export async function readSyncMetaValue(
+  page: Page,
+  metaKey: string,
+): Promise<string | null> {
+  return page.evaluate(async (key) => {
+    return await new Promise<string | null>((resolve, reject) => {
+      const request = indexedDB.open("ExLibrisDB");
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const idb = request.result;
+        if (!idb.objectStoreNames.contains("syncMeta")) {
+          idb.close();
+          resolve(null);
+          return;
+        }
+        const tx = idb.transaction("syncMeta", "readonly");
+        const store = tx.objectStore("syncMeta");
+        const getReq = store.get(key);
+        getReq.onerror = () => {
+          idb.close();
+          reject(getReq.error);
+        };
+        getReq.onsuccess = () => {
+          const raw = getReq.result as
+            { key: string; value: string } | undefined;
+          idb.close();
+          resolve(raw ? raw.value : null);
+        };
+      };
+    });
+  }, metaKey);
+}
+
+export interface InspectableReadingProgressRecord {
+  readonly targetKey: string;
+  readonly volumeId: string | null;
+  readonly currentPageIndex: number;
+  readonly totalPageCount: number;
+  readonly readStatus: "unread" | "reading" | "completed";
+  readonly spreadPageOffset: 0 | 1;
+  readonly lastReadAt: number;
+  readonly updatedAt: number;
+}
+
+export async function readReadingProgressRecord(
+  page: Page,
+  targetKey: string,
+): Promise<InspectableReadingProgressRecord | null> {
+  return page.evaluate(async (key) => {
+    return await new Promise<InspectableReadingProgressRecord | null>(
+      (resolve, reject) => {
+        const request = indexedDB.open("ExLibrisDB");
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const idb = request.result;
+          if (!idb.objectStoreNames.contains("readingProgress")) {
+            idb.close();
+            resolve(null);
+            return;
+          }
+          const tx = idb.transaction("readingProgress", "readonly");
+          const store = tx.objectStore("readingProgress");
+          const getReq = store.get(key);
+          getReq.onerror = () => {
+            idb.close();
+            reject(getReq.error);
+          };
+          getReq.onsuccess = () => {
+            const raw = getReq.result as
+              InspectableReadingProgressRecord | undefined;
+            idb.close();
+            resolve(raw ?? null);
+          };
+        };
+      },
+    );
+  }, targetKey);
+}
+
+interface DecodedPngRows {
+  readonly width: number;
+  readonly height: number;
+  readonly bpp: number;
+  readonly inflated: Uint8Array;
+}
+
+function decodePngScanlines(pngBytes: Uint8Array): DecodedPngRows {
   const view = new DataView(
     pngBytes.buffer,
     pngBytes.byteOffset,
@@ -616,13 +777,19 @@ export function readPngPixelAtRatio(
     compressed.set(chunk, idatOffset);
     idatOffset += chunk.byteLength;
   }
-  const inflated = unzlibSync(compressed);
+  return {
+    width,
+    height,
+    bpp,
+    inflated: unzlibSync(compressed),
+  };
+}
 
-  const clampedXRatio = Math.min(1, Math.max(0, xRatio));
-  const clampedYRatio = Math.min(1, Math.max(0, yRatio));
-  const targetX = Math.min(width - 1, Math.floor(width * clampedXRatio));
-  const targetY = Math.min(height - 1, Math.floor(height * clampedYRatio));
-
+function reconstructPngRow(
+  decoded: DecodedPngRows,
+  targetY: number,
+): Uint8Array {
+  const { width, bpp, inflated } = decoded;
   const stride = width * bpp;
   let prevRow: Uint8Array | null = null;
   let currRow = new Uint8Array(stride);
@@ -660,11 +827,78 @@ export function readPngPixelAtRatio(
     currRow = nextRow;
   }
 
-  const pixelOffset = targetX * bpp;
+  return currRow;
+}
+
+export function readPngPixelAtRatio(
+  pngBytes: Uint8Array,
+  xRatio: number,
+  yRatio: number,
+): {
+  r: number;
+  g: number;
+  b: number;
+} {
+  const decoded = decodePngScanlines(pngBytes);
+  const clampedXRatio = Math.min(1, Math.max(0, xRatio));
+  const clampedYRatio = Math.min(1, Math.max(0, yRatio));
+  const targetX = Math.min(
+    decoded.width - 1,
+    Math.floor(decoded.width * clampedXRatio),
+  );
+  const targetY = Math.min(
+    decoded.height - 1,
+    Math.floor(decoded.height * clampedYRatio),
+  );
+  const currRow = reconstructPngRow(decoded, targetY);
+  const pixelOffset = targetX * decoded.bpp;
   return {
     r: currRow[pixelOffset],
     g: currRow[pixelOffset + 1],
     b: currRow[pixelOffset + 2],
+  };
+}
+
+export function readPngHorizontalContrastRange(
+  pngBytes: Uint8Array,
+  yRatio: number,
+  xRatioStart: number,
+  xRatioEnd: number,
+): {
+  readonly min: number;
+  readonly max: number;
+  readonly contrast: number;
+} {
+  const decoded = decodePngScanlines(pngBytes);
+  const clampedYRatio = Math.min(1, Math.max(0, yRatio));
+  const targetY = Math.min(
+    decoded.height - 1,
+    Math.floor(decoded.height * clampedYRatio),
+  );
+  const currRow = reconstructPngRow(decoded, targetY);
+  const startX = Math.max(
+    0,
+    Math.min(decoded.width - 1, Math.floor(decoded.width * xRatioStart)),
+  );
+  const endX = Math.max(
+    startX,
+    Math.min(decoded.width - 1, Math.floor(decoded.width * xRatioEnd)),
+  );
+
+  let min = 255;
+  let max = 0;
+  for (let x = startX; x <= endX; x += 1) {
+    const off = x * decoded.bpp;
+    const luma = Math.round(
+      (currRow[off] + currRow[off + 1] + currRow[off + 2]) / 3,
+    );
+    if (luma < min) min = luma;
+    if (luma > max) max = luma;
+  }
+  return {
+    min,
+    max,
+    contrast: max - min,
   };
 }
 

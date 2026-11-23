@@ -2,7 +2,7 @@
 type: spec-delta
 title: "Issue #22 差分仕様: 自炊補正シェーダー・シークバー・readingProgress 自動レジューム"
 description: "生WebGL2 1パス画質補正シェーダー（画面微分5タップUSM＋白黒レベル＋標準ガンマ）と調整ボトムシート（優先度2戻る制御・syncMetaデフォルト保存）、rtl/ltr連動シークバー、およびDexie readingProgress自動レジューム・SCR-01ローカル閲覧履歴を定義する差分仕様"
-status: "Review (#22)"
+status: "Completed (Archived)"
 updated: "2026-11-22"
 issue: "#22"
 tags:
@@ -68,7 +68,7 @@ related_tests:
 2. **画質補正ボトムシートの保存・リセット・優先度2戻る制御（Q2）**:
    - `SCR-03` 上部 HUD の「画質補正」ボタン押下で HUD を閉じてクイック画質補正ボトムシート（`ReaderShaderSheet`）を開き、紙面の視認性を妨げない非着色バックドロップ上でリアルタイムに WebGL2 Uniform を再描画する。
    - スライダー変更は現在開いているセッションへ即時反映し、**「リセット」** は現在セッションの補正値を初期ニュートラル値（`sharpness: 0.00, whitePoint: 1.00, blackPoint: 0.00, gamma: 1.00`）へ戻す。**「デフォルト保存」** を押した時のみ Dexie `syncMeta['defaultReaderSettingsJson']` へ画質補正値を永続化し、次回以降のリーダー起動時に初期適用する。
-   - ボトムシート表示中（`activeFatalError === null && isShaderSheetOpen`）は、Android ハードウェア戻るボタン（`AppBridge` `backButton`）、キーボード `Escape` キー、およびシート外バックドロップタップのすべてで `TR-08`（リーダー終了）を発火せずボトムシートのみを閉じ、フルスクリーン閲覧状態へ戻る（[screen-transitions.md §4](../screen-transitions.md#4-android-ハードウェア戻るボタンback-button優先制御契約) 優先度 2。致命的エラー発生時は `isShaderSheetOpen = false` へ自動リセットして `TR-08` を阻害しない）。
+   - ボトムシート表示中（`activeFatalError === null && isShaderSheetOpen`）は、Android ハードウェア戻るボタン（`AppBridge` `backButton`）、キーボード `Escape` キー、およびシート外バックドロップタップのすべてで `TR-08`（リーダー終了）を発火せずボトムシートのみを閉じ、フルスクリーン閲覧状態へ戻る（[screen-transitions.md §4](../../screen-transitions.md#4-android-ハードウェア戻るボタンback-button優先制御契約) 優先度 2。致命的エラー発生時は `isShaderSheetOpen = false` へ自動リセットして `TR-08` を阻害しない）。
 3. **基本シークバーの通信発火タイミングと見開き着地仕様（Q3）**:
    - 将来の Google Drive HTTP Range レート制限（`NFR-04`）および大容量合本でのデコード負荷保護のため、**シークバードラッグ中はターゲットページ番号（`N / Total`）のプレビュー表示のみを更新し、Worker RPC / I/O は発火しない**。
    - ドラッグ中に指が要素外へ外れて離された場合も取りこぼさないよう、`window` の `pointerup`（確定）および `pointercancel`（キャンセル）を含むポインター確定時、ならびに非ドラッグのキーボードスライダー操作時に 1 回だけ `requestEpoch` を進めて古い I/O を中断し、Fast-Path 描画を実行する（`pointercancel`・HUD 閉鎖・アンマウント時はジャンプせずプレビューを解除する）。
@@ -80,7 +80,7 @@ related_tests:
    - `readingProgress` 内の `local:*` レコードが **1 件以上存在する時のみ**、`SCR-01` メインカードの下に最新 **10 件**（`lastReadAt` 降順、同値時は `targetKey` 昇順）を表示する（0 件時はセクション自体を非表示とし初期ホームの簡潔さを保つ）。
    - 各履歴行にはファイル名・フォーマット済みサイズ・ステータスバッジ（`読書中` / `読了`）・ページ進捗（`N / Total ページ` ＋ 進捗バー）を表示し、行クリックでファイル選択ピッカーを開いて再選択レジュームを案内するほか、**行単位の個別削除ボタン** と **「履歴をクリア」（`local:*` 一括消去）ボタン** を備える。
 6. **Android 実機検証（`HO-08`）と検証用サンプルアーカイブ（Q6）**:
-   - [workflow.md §2.2](../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット) の **区分 A（完了ゲート: `親 Issue #22 完了前`）** とし、`HO-08` を登録する。
+   - [workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット) の **区分 A（完了ゲート: `親 Issue #22 完了前`）** とし、`HO-08` を登録する。
    - 黄ばみ紙面・裏写り・薄墨文字・細線エッジ・20ページシーク＆見開き確認用の軽量検証アーカイブ `test/fixtures/manual/ho08-shader-seek-test.cbz` を決定論的生成スクリプトへ追加し、Step 4 実機検証時に `app-debug.apk` と併せて Google Drive へ配置する。
 
 ### 1.2 対象外スコープ
@@ -92,16 +92,16 @@ related_tests:
 
 ## 2. 変更対象の App 全体正本一覧
 
-|   種別   | 正本ファイル                                                     | 変更概要                                                                                                                                                                              |
-| :------: | :--------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **更新** | [requirements.md](../requirements.md)                            | 機能カタログのシャープネス補正表記を確定仕様（画面微分 5タップ USM ＋ 白黒レベル・ガンマ補正シェーダー）へ同期更新                                                                    |
-| **更新** | [architecture.md](../architecture.md)                            | Layer 3 Repository 構成（FIFO 直列化含む）、`src/webgl/shaderParams.ts` 分離契約、1パス画面微分5タップUSM＋レベル＋ガンマ仕様を反映                                                   |
-| **更新** | [db-schema.md](../db-schema.md)                                  | `syncMeta['defaultReaderSettingsJson']` 破損検証契約、`readingProgress` の FIFO 直列化・厳格レコード検証・`local:*` 最大100件 LRU（`vol:*` 非退避）・寸法確定 `readStatus` を明記     |
-| **更新** | [webgl2-renderer.md](../engine/webgl2-renderer.md)               | `shaderParams.ts` 分離、`shaders.ts` 1パス補正 GLSL 数式、`WebGLRendererCore` 4 Uniform 管理、`ReaderCanvas` コンテキストロスト中を含む状態常時同期＆`data-shader-params`・`AC-GL-09` |
-| **更新** | [reader.md](../features/reader.md)                               | `ReaderShaderSheet`・優先度2戻る制御（致命的エラー時解除）、`window` 解放対応シークバー、寸法確定ベース `readStatus`・1頁本ずらし正規化、`AC-RD-13`〜`15` 追加                        |
-| **更新** | [bookshelf.md](../features/bookshelf.md)                         | `architecture.md` 双方向参照追加、`SCR-01` `RecentLocalHistorySection`（最新10件表示・0件時非表示・再選択ピッカー起動・個別削除・一括クリア）および `AC-BS-06` を追加                 |
-| **更新** | [screen-transitions.md](../screen-transitions.md)                | `SCR-01` / `SCR-03`・`TR-02a` / `TR-08` 進捗フラッシュ契約、優先度2戻る制御（`backButton` / `Escape` / バックドロップ）、および `SCN-01` / `SCN-02` トレーサビリティ対応表を更新      |
-| **更新** | [bug-and-handover-log.md](../../quality/bug-and-handover-log.md) | 区分 A 実機検証申し送り事項 **`HO-08`**（完了ゲート: `親 Issue #22 完了前`）および PR #57 Round 1 指摘是正記録（`No. 32`〜`36`）を登録                                                |
+|   種別   | 正本ファイル                                                        | 変更概要                                                                                                                                                                              |
+| :------: | :------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **更新** | [requirements.md](../../requirements.md)                            | 機能カタログのシャープネス補正表記を確定仕様（画面微分 5タップ USM ＋ 白黒レベル・ガンマ補正シェーダー）へ同期更新                                                                    |
+| **更新** | [architecture.md](../../architecture.md)                            | Layer 3 Repository 構成（FIFO 直列化含む）、`src/webgl/shaderParams.ts` 分離契約、1パス画面微分5タップUSM＋レベル＋ガンマ仕様を反映                                                   |
+| **更新** | [db-schema.md](../../db-schema.md)                                  | `syncMeta['defaultReaderSettingsJson']` 破損検証契約、`readingProgress` の FIFO 直列化・厳格レコード検証・`local:*` 最大100件 LRU（`vol:*` 非退避）・寸法確定 `readStatus` を明記     |
+| **更新** | [webgl2-renderer.md](../../engine/webgl2-renderer.md)               | `shaderParams.ts` 分離、`shaders.ts` 1パス補正 GLSL 数式、`WebGLRendererCore` 4 Uniform 管理、`ReaderCanvas` コンテキストロスト中を含む状態常時同期＆`data-shader-params`・`AC-GL-09` |
+| **更新** | [reader.md](../../features/reader.md)                               | `ReaderShaderSheet`・優先度2戻る制御（致命的エラー時解除）、`window` 解放対応シークバー、寸法確定ベース `readStatus`・1頁本ずらし正規化、`AC-RD-13`〜`15` 追加                        |
+| **更新** | [bookshelf.md](../../features/bookshelf.md)                         | `architecture.md` 双方向参照追加、`SCR-01` `RecentLocalHistorySection`（最新10件表示・0件時非表示・再選択ピッカー起動・個別削除・一括クリア）および `AC-BS-06` を追加                 |
+| **更新** | [screen-transitions.md](../../screen-transitions.md)                | `SCR-01` / `SCR-03`・`TR-02a` / `TR-08` 進捗フラッシュ契約、優先度2戻る制御（`backButton` / `Escape` / バックドロップ）、および `SCN-01` / `SCN-02` トレーサビリティ対応表を更新      |
+| **更新** | [bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) | 区分 A 実機検証申し送り事項 **`HO-08`**（完了ゲート: `親 Issue #22 完了前`）および PR #57 Round 1 指摘是正記録（`No. 32`〜`36`）を登録                                                |
 
 ---
 
@@ -205,21 +205,25 @@ related_tests:
 
 ## 5. 実装 Sub-issue 分割計画・申し送り事項・Android 実機検証計画
 
-### 5.1 Sub-issue 分割計画（設計 PR マージ後に起票）
+### 5.1 Sub-issue 分割計画・完了結果（MK 3分割 ＋ 最終 IT）
 
-1. **MK-1: Storage Repositories（`readingProgress` / `defaultReaderSettings`）＆ 生 WebGL2 1パス補正シェーダーコア実装**
+1. **MK-1（`#58` / PR #62 @ `fd96909` マージ完了）: Storage Repositories（`readingProgress` / `defaultReaderSettings`）＆ 生 WebGL2 1パス補正シェーダーコア実装**:
    - 対象: `src/webgl/types.ts`, `src/webgl/shaderParams.ts`, `src/webgl/shaders.ts`, `src/webgl/WebGLRendererCore.ts`, `src/storage/repositories/readingProgressRepository.ts`, `src/storage/repositories/readerSettingsRepository.ts`, `src/app/serviceContext.ts`, `src/app/ServiceProvider.tsx` および各 1対1 単体テスト
-2. **MK-2: クイック画質補正ボトムシート・`rtl`/`ltr` シークバー付き HUD・ローカル閲覧履歴 UI コンポーネント ＆ Storybook/VRT 実装**
+   - 実績: C0/C1/Functions/Lines 100% PASS、AI 自律マージ完了（`Closes #58`）
+2. **MK-2（`#59` / PR #63 @ `634b74e` マージ完了）: クイック画質補正ボトムシート・`rtl`/`ltr` シークバー付き HUD・ローカル閲覧履歴 UI コンポーネント ＆ Storybook/VRT 実装**:
    - 対象: `src/features/reader/ReaderShaderSheet.tsx`（`.stories.tsx` / `.test.tsx`）, `src/features/reader/ReaderHudOverlay.tsx`（`.stories.tsx` / `.test.tsx`）, `src/features/bookshelf/RecentLocalHistorySection.tsx`（`.stories.tsx` / `.test.tsx`）, `test/vrt/snapshots/*`
-3. **MK-3: `ReaderCanvas` シェーダー反映・`ReaderPage` 自動レジューム／優先度2戻る制御・`BookshelfPage` 閲覧履歴統合**
+   - 実績: C0/C1/Functions/Lines 100% PASS ＆ VRT 104 シナリオ（1280px/375px）PASS、AI 自律マージ完了（`Closes #59`）
+3. **MK-3（`#60` / PR #64 @ `af8645b` マージ完了）: `ReaderCanvas` シェーダー反映・`ReaderPage` 自動レジューム／優先度2戻る制御・`BookshelfPage` 閲覧履歴統合**:
    - 対象: `src/webgl/ReaderCanvas.tsx`（`.stories.tsx` / `.test.tsx`）, `src/features/reader/ReaderPage.tsx`（`.stories.tsx` / `.test.tsx`）, `src/features/bookshelf/BookshelfPage.tsx`（`.stories.tsx` / `.test.tsx`）, `test/vrt/snapshots/*`
-4. **IT (Step 4): Playwright `SCN-01`/`SCN-02` E2E 拡充・手動検証用 `ho08-shader-seek-test.cbz` 生成・仕様アーカイブ・Android 実機検証（`Closes #22`）**
-   - 対象: `test/it/helpers.ts`, `test/it/smoke.spec.ts`, `test/it/local-reader.spec.ts`, `scripts/generate-manual-test-archives.mjs`, `scripts/generate-manual-test-archives.d.mts`, `scripts/generate-manual-test-archives.test.ts`, `test/fixtures/manual/ho08-shader-seek-test.cbz`, `test/fixtures/manual/README.md`, 差分仕様アーカイブ移動
+   - 実績: C0/C1/Functions/Lines 100% PASS ＆ VRT 1280px/375px PASS、AI 自律マージ完了（`Closes #60`）
+4. **IT (Step 4: `#61` / 最終 PR #65 `Closes #22`, `Closes #61`): Playwright `SCN-01`/`SCN-02` E2E 拡充・手動検証用 `ho08-shader-seek-test.cbz` 生成・仕様アーカイブ・Android 実機検証**:
+   - 対象: `test/it/helpers.ts`, `test/it/smoke.spec.ts`, `test/it/local-reader.spec.ts`, `scripts/generate-manual-test-archives.mjs`, `scripts/generate-manual-test-archives.d.mts`, `scripts/generate-manual-test-archives.test.ts`, `test/fixtures/manual/ho08-shader-seek-test.cbz`, `test/fixtures/manual/README.md`, `docs/quality/bug-and-handover-log.md`（No. 32〜41 同期 ＆ `HO-08` 実機確認精算）, 本差分仕様の `Completed (Archived)` 化＆`docs/specs/changes/archive/` 移動, App 全体正本 7 冊の `Approved (#22)` 化
+   - 実績: Playwright `SCN-01`/`SCN-02` 計 26/26 PASS ＆ CI/AI レビュー Gate 1〜6 収束後、`build-android.yml`（Run `#45042333265` / Drive `app-debug.apk` `1HIS95V2PjNom_l9dvszkRsMap0P8bJp7` ＆ `ho08-shader-seek-test.cbz` `1CCtDHrSJm_Q53ec94mAWh5togTscj17N`）により `HO-08` 実機項目 ①〜④ すべて問題なし・診断ログ `[WARN]`/`[ERROR]` ゼロを確認し `Resolved` へ精算。
 
-### 5.2 申し送り事項（`HO-08`）と Android 実機検証計画（区分 A: `親 Issue #22 完了前`）
+### 5.2 申し送り事項（`HO-08`）と Android 実機検証実績（区分 A: `親 Issue #22 完了前`）
 
-- **判定理由**: 生 WebGL2 カスタムフラグメントシェーダー（`dFdx`/`dFdy` 画面微分 5タップ USM ＋ レベル・ガンマ補正）のモバイル GPU 精度・60fps スライダー追従、タッチドラッグシークバー、および Android ハードウェア戻るボタン優先度 2 制御を含むため、[workflow.md §2.2](../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット) の **区分 A（親 Issue #22 完了前に実機検証を実施）** と判定する。
-- **`HO-08` 実機確認予定項目（Step 4 Gate 1〜6 通過後に `app-debug.apk` と `ho08-shader-seek-test.cbz` を Google Drive へ配置して提示）**:
+- **判定理由**: 生 WebGL2 カスタムフラグメントシェーダー（`dFdx`/`dFdy` 画面微分 5タップ USM ＋ レベル・ガンマ補正）のモバイル GPU 精度・60fps スライダー追従、タッチドラッグシークバー、および Android ハードウェア戻るボタン優先度 2 制御を含むため、[workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット) の **区分 A（親 Issue #22 完了前に実機検証を実施）** と判定する。
+- **`HO-08` 実機確認実績（状態: `Resolved`、完了ゲート: `親 Issue #22 完了前` / Run `#45042333265` `debug` / Drive `app-debug.apk` ＆ `ho08-shader-seek-test.cbz` にて全 4 項目 OK、診断ログ `entries: 8` `[WARN]`/`[ERROR]` ゼロ確認）**:
   1. **生 WebGL2 1パス画質補正シェーダー＆スライダー追従**: `ho08-shader-seek-test.cbz`（および手持ち自炊 CBZ）を開き、上部 HUD「画質補正」から `whitePoint`（黄ばみ白飛ばし）・`blackPoint`（裏写り引き締め）・`gamma`（薄墨濃化）・`sharpness`（描線強調）を動かした際、カクつき・シェーダーエラーなくリアルタイムに紙面が変化し、「リセット」および「デフォルト保存」（別ファイル／再起動後も維持）が機能すること。
   2. **Android ハードウェア戻るボタン優先度 2 → 優先度 3 遷移**: 画質補正ボトムシート表示中に Android の戻る操作（3ボタン／ジェスチャー）を行うとリーダーを終了せずシートのみが閉じ、もう一度戻る操作を行うと `SCR-01` へ戻ること。
   3. **`rtl` / `ltr` シークバー操作**: 右開き（右端＝1P・左端＝最終P）および左開き（左端＝1P・右端＝最終P）の双方で、ドラッグ中はページ番号プレビューが滑らかに追従し、指を離した確定時に目的ページへ即座にジャンプできること。
