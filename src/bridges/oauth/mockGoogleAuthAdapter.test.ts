@@ -112,6 +112,7 @@ describe("MockGoogleAuthAdapter", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(signInResolved).toBe(true);
     await delayedSignIn;
+    adapter.setOperationDelay("signIn", 0);
 
     // 各操作へのエラー注入
     adapter.queueNextFailure("restoreSession", "AUTH_NETWORK_ERROR");
