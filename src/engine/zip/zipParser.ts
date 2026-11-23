@@ -708,15 +708,13 @@ function assertValidLfhSpan(entry: ZipPageEntry): number {
   return maxSpan;
 }
 
+function computeLfhHeaderSpan(entry: ZipPageEntry): number {
+  return 30 + entry.entryNameByteLength + ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES;
+}
+
 export function computeEntryFetchSpan(entry: ZipPageEntry): number {
   const maxSpan = entry.physicalEnd - entry.localHeaderOffset;
-  return Math.min(
-    maxSpan,
-    30 +
-      entry.entryNameByteLength +
-      entry.compressedSize +
-      ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES,
-  );
+  return Math.min(maxSpan, computeLfhHeaderSpan(entry) + entry.compressedSize);
 }
 
 export async function extractCompressedSliceFromBuffer(
@@ -803,12 +801,7 @@ export async function readCompressedPageSlice(
 
   const fetchLength =
     entry.compressedSize > ENGINE_BUDGETS.L2_CACHE_MAX_BYTES
-      ? Math.min(
-          maxSpan,
-          30 +
-            entry.entryNameByteLength +
-            ENGINE_BUDGETS.LFH_EXTRA_MARGIN_BYTES,
-        )
+      ? Math.min(maxSpan, computeLfhHeaderSpan(entry))
       : computeEntryFetchSpan(entry);
   const initialBuf = await reader.readRange(
     entry.localHeaderOffset,
