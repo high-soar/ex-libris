@@ -4,6 +4,14 @@ import { registerZipArchiveErrorTransferHandler } from "../engine/workers/comlin
 
 export interface CoordinatorWorkerHandle {
   terminate(): void;
+  addEventListener?: (
+    type: "error" | "messageerror",
+    listener: (event: Event) => void,
+  ) => void;
+  removeEventListener?: (
+    type: "error" | "messageerror",
+    listener: (event: Event) => void,
+  ) => void;
 }
 
 export type CoordinatorRemoteProxy = CoordinatorWorkerApi & {
