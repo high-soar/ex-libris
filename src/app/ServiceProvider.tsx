@@ -40,9 +40,19 @@ export interface ResetTestDbExposureOptions {
 
 // eslint-disable-next-line react-refresh/only-export-components
 export function shouldExposeResetTestDb(
-  _options: ResetTestDbExposureOptions = {},
+  options: ResetTestDbExposureOptions = {},
 ): boolean {
-  return true;
+  const isNativePlatform =
+    options.isNativePlatform ?? Capacitor.isNativePlatform();
+  if (isNativePlatform) {
+    return false;
+  }
+  const isDev = options.isDev ?? import.meta.env.DEV;
+  const mode = options.mode ?? import.meta.env.MODE;
+  const isWebDriver =
+    options.isWebDriver ??
+    (typeof navigator !== "undefined" && navigator.webdriver === true);
+  return isDev || mode === "test" || isWebDriver;
 }
 
 function createDefaultAppBridge(): AppBridge {
@@ -105,10 +115,11 @@ export function ServiceProvider({
     createCoordinatorSession ?? defaultCreateCoordinatorSession;
 
   useEffect(() => {
+    const exposeResetTestDb = shouldExposeResetTestDb();
     window.__exLibrisServices = {
       isReady: true,
       appBridge: resolvedAppBridge,
-      resetTestDb: () => resetTestDb(),
+      ...(exposeResetTestDb ? { resetTestDb: () => resetTestDb() } : {}),
     };
   }, [resolvedAppBridge]);
 
