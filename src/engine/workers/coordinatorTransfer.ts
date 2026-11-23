@@ -1,3 +1,4 @@
+import * as Comlink from "comlink";
 import type { DecodedPageFrame } from "../types";
 
 /**
@@ -69,4 +70,11 @@ export function collectFrameTransferables(
         frame.status === "ready",
     )
     .map((frame) => frame.bitmap);
+}
+
+export function transferDecodedFrames<T extends readonly DecodedPageFrame[]>(
+  frames: T,
+  _transfer: (obj: T, transfers: Transferable[]) => T = Comlink.transfer,
+): T {
+  return frames;
 }
