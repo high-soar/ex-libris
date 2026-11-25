@@ -7,7 +7,7 @@ import type { ParseMangaFilenameInput, ParsedMangaFilename } from "./types";
 const ARCHIVE_EXTENSION_PATTERN = /\.(?:zip|cbz)$/i;
 const WHITESPACE_RUN_PATTERN = /\s+/g;
 const BRACKET_TOKEN_PATTERN =
-  /(?:\(([^()]*)\)|（([^（）]*)）|\[([^[\]]*)\]|［([^［］]*)］|【([^【】]*)】)/g;
+  /(?:\([^()]*\)|（[^（）]*）|\[[^[\]]*\]|［[^［］]*］|【[^【】]*】)/g;
 
 const NOISE_TAGS = new Set<string>([
   "一般コミック",
@@ -149,17 +149,8 @@ function stripNoiseAndEditionNotes(input: string): {
 
   const withoutNoiseBrackets = input.replace(
     BRACKET_TOKEN_PATTERN,
-    (
-      fullMatch,
-      p1?: string,
-      p2?: string,
-      p3?: string,
-      p4?: string,
-      p5?: string,
-    ) => {
-      const inner = collapseSpaces(
-        (p1 ?? p2 ?? p3 ?? p4 ?? p5 ?? "").normalize("NFKC"),
-      );
+    (fullMatch: string) => {
+      const inner = collapseSpaces(fullMatch.slice(1, -1).normalize("NFKC"));
       if (NOISE_TAGS.has(inner.toLowerCase())) {
         return " ";
       }
@@ -235,7 +226,7 @@ function extractLeadingAuthors(input: string): {
     if (match === null) {
       break;
     }
-    const inner = collapseSpaces(match[1] ?? match[2] ?? match[3] ?? "");
+    const inner = collapseSpaces((match[1] ?? match[2] ?? match[3])!);
     const rest = match[4]!.trim();
     if (
       rest.length === 0 ||
@@ -258,6 +249,58 @@ function removeMatch(source: string, match: RegExpExecArray): string {
   return cleanRemainingTitle(`${before} ${after}`);
 }
 
+function buildOmnibusRangeResult(
+  text: string,
+  match: RegExpExecArray,
+  start: number,
+  end: number,
+  editionNote: string | null,
+): ExtractedVolume {
+  return {
+    title: removeMatch(text, match),
+    volumeNumber: start,
+    volumeRangeEnd: end,
+    isOmnibus: true,
+    volumeLabel: appendEditionNote(
+      `第${formatVolumeNumber(start)}-${formatVolumeNumber(end)}巻 合本`,
+      editionNote,
+    ),
+  };
+}
+
+function buildSingleVolumeResult(
+  text: string,
+  match: RegExpExecArray,
+  volumeNumber: number,
+  editionNote: string | null,
+): ExtractedVolume {
+  return {
+    title: removeMatch(text, match),
+    volumeNumber,
+    volumeRangeEnd: null,
+    isOmnibus: false,
+    volumeLabel: appendEditionNote(
+      `第${formatVolumeNumber(volumeNumber)}巻`,
+      editionNote,
+    ),
+  };
+}
+
+function buildPartVolumeResult(
+  text: string,
+  match: RegExpExecArray,
+  editionNote: string | null,
+): ExtractedVolume {
+  const info = PART_VOLUME_MAP[match[1]!]!;
+  return {
+    title: removeMatch(text, match),
+    volumeNumber: info.number,
+    volumeRangeEnd: null,
+    isOmnibus: false,
+    volumeLabel: appendEditionNote(info.label, editionNote),
+  };
+}
+
 function extractVolume(
   text: string,
   editionNote: string | null,
@@ -269,16 +312,7 @@ function extractVolume(
       const start = parseNumericToken(match[1]!);
       const end = parseNumericToken(match[2]!);
       if (start > 0 && end > start) {
-        return {
-          title: removeMatch(text, match),
-          volumeNumber: start,
-          volumeRangeEnd: end,
-          isOmnibus: true,
-          volumeLabel: appendEditionNote(
-            `第${formatVolumeNumber(start)}-${formatVolumeNumber(end)}巻 合本`,
-            editionNote,
-          ),
-        };
+        return buildOmnibusRangeResult(text, match, start, end, editionNote);
       }
     }
   }
@@ -287,16 +321,13 @@ function extractVolume(
   if (allVolumesMatch !== null) {
     const total = parseNumericToken(allVolumesMatch[1]!);
     if (total >= 2) {
-      return {
-        title: removeMatch(text, allVolumesMatch),
-        volumeNumber: 1,
-        volumeRangeEnd: total,
-        isOmnibus: true,
-        volumeLabel: appendEditionNote(
-          `第01-${formatVolumeNumber(total)}巻 合本`,
-          editionNote,
-        ),
-      };
+      return buildOmnibusRangeResult(
+        text,
+        allVolumesMatch,
+        1,
+        total,
+        editionNote,
+      );
     }
   }
 
@@ -316,17 +347,12 @@ function extractVolume(
   for (const pattern of EXPLICIT_VOLUME_PATTERNS) {
     const match = pattern.exec(text);
     if (match !== null) {
-      const volumeNumber = parseNumericToken(match[1]!);
-      return {
-        title: removeMatch(text, match),
-        volumeNumber,
-        volumeRangeEnd: null,
-        isOmnibus: false,
-        volumeLabel: appendEditionNote(
-          `第${formatVolumeNumber(volumeNumber)}巻`,
-          editionNote,
-        ),
-      };
+      return buildSingleVolumeResult(
+        text,
+        match,
+        parseNumericToken(match[1]!),
+        editionNote,
+      );
     }
   }
 
@@ -334,42 +360,20 @@ function extractVolume(
   if (trailingParenMatch !== null) {
     const volumeNumber = parseNumericToken(trailingParenMatch[1]!);
     if (volumeNumber < 1000) {
-      return {
-        title: removeMatch(text, trailingParenMatch),
+      return buildSingleVolumeResult(
+        text,
+        trailingParenMatch,
         volumeNumber,
-        volumeRangeEnd: null,
-        isOmnibus: false,
-        volumeLabel: appendEditionNote(
-          `第${formatVolumeNumber(volumeNumber)}巻`,
-          editionNote,
-        ),
-      };
+        editionNote,
+      );
     }
   }
 
   // 優先順位 4: 上下巻・前後編
-  const namedPartMatch = NAMED_PART_PATTERN.exec(text);
-  if (namedPartMatch !== null) {
-    const info = PART_VOLUME_MAP[namedPartMatch[1]!]!;
-    return {
-      title: removeMatch(text, namedPartMatch),
-      volumeNumber: info.number,
-      volumeRangeEnd: null,
-      isOmnibus: false,
-      volumeLabel: appendEditionNote(info.label, editionNote),
-    };
-  }
-
-  const shortPartMatch = TRAILING_SHORT_PART_PATTERN.exec(text);
-  if (shortPartMatch !== null) {
-    const info = PART_VOLUME_MAP[shortPartMatch[1]!]!;
-    return {
-      title: removeMatch(text, shortPartMatch),
-      volumeNumber: info.number,
-      volumeRangeEnd: null,
-      isOmnibus: false,
-      volumeLabel: appendEditionNote(info.label, editionNote),
-    };
+  const partMatch =
+    NAMED_PART_PATTERN.exec(text) ?? TRAILING_SHORT_PART_PATTERN.exec(text);
+  if (partMatch !== null) {
+    return buildPartVolumeResult(text, partMatch, editionNote);
   }
 
   // 優先順位 5: 末尾数値フォールバック
@@ -377,16 +381,12 @@ function extractVolume(
   if (trailingNumberMatch !== null) {
     const volumeNumber = parseNumericToken(trailingNumberMatch[1]!);
     if (volumeNumber > 0 && volumeNumber < 1000) {
-      return {
-        title: removeMatch(text, trailingNumberMatch),
+      return buildSingleVolumeResult(
+        text,
+        trailingNumberMatch,
         volumeNumber,
-        volumeRangeEnd: null,
-        isOmnibus: false,
-        volumeLabel: appendEditionNote(
-          `第${formatVolumeNumber(volumeNumber)}巻`,
-          editionNote,
-        ),
-      };
+        editionNote,
+      );
     }
   }
 

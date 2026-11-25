@@ -67,6 +67,13 @@ describe("parseMangaFilename", () => {
       expect(doujin.title).toBe("異世界冒険 [番外編]");
       expect(doujin.volumeNumber).toBe(4);
       expect(doujin.volumeLabel).toBe("第04巻");
+
+      const nestedAndTrailing = parseMangaFilename({
+        fileName: "[サークル （著者A×著者B）,, /] 異世界冒険 第０５巻.cbz",
+      });
+      expect(nestedAndTrailing.authors).toEqual(["サークル （著者A×著者B）"]);
+      expect(nestedAndTrailing.volumeNumber).toBe(5);
+      expect(nestedAndTrailing.volumeLabel).toBe("第05巻");
     });
 
     it("全角ブラケット著者・複数先頭著者ブロック・各種分類ノイズタグを処理する (AC-FP-01)", () => {
