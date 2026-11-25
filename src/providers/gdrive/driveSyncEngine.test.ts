@@ -963,4 +963,108 @@ describe("DefaultDriveSyncEngine", () => {
     const resDefaultClock = await defaultClockEngine.sync();
     expect(Number.isFinite(resDefaultClock.syncedAt)).toBe(true);
   });
+
+  it("changes.listで深度上限超過フォルダの直後に浅い祖先配下の有効ファイルが処理されても祖先キャッシュが汚染されず正常に取り込まれること (AC-GD-10)", async () => {
+    const mockClient = new MockDriveSyncClient();
+    const ctx = createTestContext({
+      client: mockClient,
+      maxAncestorDepth: 3,
+    });
+
+    await ctx.driveSyncRootsRepo.upsertRoot({
+      folderId: "mock-folder-comics",
+      folderName: "Comics",
+    });
+    await ctx.engine.sync();
+
+    // 有効ルート配下に深度 4 のフォルダチェーンを作成 (d4 -> d3 -> d2 -> d1 -> mock-folder-comics)
+    mockClient.upsertItem(
+      {
+        id: "d1",
+        name: "D1",
+        mimeType: GOOGLE_DRIVE_FOLDER_MIME_TYPE,
+        parents: ["mock-folder-comics"],
+        size: null,
+        md5Checksum: null,
+        modifiedTime: 3000,
+        trashed: false,
+      },
+      false,
+    );
+    mockClient.upsertItem(
+      {
+        id: "d2",
+        name: "D2",
+        mimeType: GOOGLE_DRIVE_FOLDER_MIME_TYPE,
+        parents: ["d1"],
+        size: null,
+        md5Checksum: null,
+        modifiedTime: 3000,
+        trashed: false,
+      },
+      false,
+    );
+    mockClient.upsertItem(
+      {
+        id: "d3",
+        name: "D3",
+        mimeType: GOOGLE_DRIVE_FOLDER_MIME_TYPE,
+        parents: ["d2"],
+        size: null,
+        md5Checksum: null,
+        modifiedTime: 3000,
+        trashed: false,
+      },
+      false,
+    );
+    mockClient.upsertItem(
+      {
+        id: "d4",
+        name: "D4",
+        mimeType: GOOGLE_DRIVE_FOLDER_MIME_TYPE,
+        parents: ["d3"],
+        size: null,
+        md5Checksum: null,
+        modifiedTime: 3000,
+        trashed: false,
+      },
+      false,
+    );
+
+    // 同一 changes.list バッチ内で先に深度超過ファイル (d4 配下)、直後に浅い祖先 d1 配下の有効ファイルを配置
+    mockClient.upsertItem({
+      id: "under-deep-first",
+      name: "深度超過ファイル 第01巻.cbz",
+      mimeType: "application/zip",
+      parents: ["d4"],
+      size: 500,
+      md5Checksum: "md5-deep",
+      modifiedTime: 5000,
+      trashed: false,
+    });
+    mockClient.upsertItem({
+      id: "under-shallow-d1",
+      name: "浅い祖先ファイル 第01巻.cbz",
+      mimeType: "application/zip",
+      parents: ["d1"],
+      size: 600,
+      md5Checksum: "md5-shallow",
+      modifiedTime: 5100,
+      trashed: false,
+    });
+
+    const inc = await ctx.engine.sync();
+    expect(inc.mode).toBe("incremental");
+    expect(inc.upsertedVolumes).toBe(1);
+    expect(
+      await ctx.volumesRepo.getByDriveFileId("under-deep-first"),
+    ).toBeNull();
+
+    const shallowVol =
+      await ctx.volumesRepo.getByDriveFileId("under-shallow-d1");
+    expect(shallowVol).not.toBeNull();
+    expect(shallowVol?.rootFolderId).toBe("mock-folder-comics");
+    expect(shallowVol?.parentFolderId).toBe("d1");
+    expect(shallowVol?.rawFileName).toBe("浅い祖先ファイル 第01巻.cbz");
+  });
 });

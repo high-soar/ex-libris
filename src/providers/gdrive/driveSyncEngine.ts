@@ -420,11 +420,15 @@ export class DefaultDriveSyncEngine implements DriveSyncEngine {
           return ancestorCache.get(startFolderId)!;
         }
 
-        if (visiting.has(currentId) || depth >= this.maxAncestorDepth) {
+        if (visiting.has(currentId)) {
           for (const node of path) {
             ancestorCache.set(node.id, null);
           }
           ancestorCache.set(currentId, null);
+          return null;
+        }
+
+        if (depth >= this.maxAncestorDepth) {
           return null;
         }
 
