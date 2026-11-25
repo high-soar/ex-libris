@@ -59,37 +59,36 @@ const LEADING_AUTHOR_BRACKET_PATTERN =
   /^(?:\[([^[\]]+)\]|［([^［］]+)］|【([^【】]+)】)\s*(.*)$/;
 
 const VOLUME_BLOCK_PATTERN =
-  /^(?:第?\s*\d+(?:\.\d+)?\s*巻|第?\s*\d+\s*巻?\s*[-~〜～‐‑‒–—―−]\s*第?\s*\d+\s*巻|全\s*\d+\s*巻|全巻合本|全巻セット|合本版?|vol\.?\s*\d+|v\s*\d+)$/i;
+  /^(?:第?\s*\d+(?:\.\d+)?\s*巻|第?\s*\d+\s*巻?\s*[-~〜‐‑‒–—―−]\s*第?\s*\d+\s*巻(?:\s*(?:合本版?|セット))?|(?:vol\.?|v)\s*\d+\s*[-~〜‐‑‒–—―−]\s*(?:vol\.?|v)?\s*\d+(?:\s*(?:合本版?|セット))?|\d+\s*[-~〜‐‑‒–—―−]\s*\d+\s*(?:合本版?|セット)|全\s*\d+\s*巻(?:\s*(?:合本版?|セット))?|全巻合本|全巻セット|合本版?|(?:vol\.?|v|no\.?|#|その)\s*\d+(?:\.\d+)?)$/i;
 
 const AUTHOR_SEPARATOR_SET = new Set(["×", "・", "&", "＆", ",", "、", "/"]);
 
 const RANGE_PATTERNS: readonly RegExp[] = [
-  /(?:^|[\s_])?(?:第\s*)?([0-9０-９]+)\s*巻?\s*[-~〜～‐‑‒–—―−]\s*(?:第\s*)?([0-9０-９]+)\s*巻(?:\s*(?:合本版?|セット))?/u,
-  /(?:^|[\s_])(?:vol\.?|v)\s*([0-9０-９]+)\s*[-~〜～‐‑‒–—―−]\s*(?:vol\.?|v)?\s*([0-9０-９]+)(?:\s*(?:合本版?|セット))?/iu,
-  /(?:^|[\s_])([0-9０-９]+)\s*[-~〜～‐‑‒–—―−]\s*([0-9０-９]+)\s*(?:合本版?|セット)/u,
+  /(?:^|[\s_])?(?:[[【]\s*)?(?:第\s*)?(\d+)\s*巻?\s*[-~〜‐‑‒–—―−]\s*(?:第\s*)?(\d+)\s*巻(?:\s*(?:合本版?|セット))?(?:\s*[\]】])?/u,
+  /(?:^|[\s_])(?:[[【]\s*)?(?:vol\.?|v)\s*(\d+)\s*[-~〜‐‑‒–—―−]\s*(?:vol\.?|v)?\s*(\d+)(?:\s*(?:合本版?|セット))?(?:\s*[\]】])?(?=$|[\s_])/iu,
+  /(?:^|[\s_])(?:[[【]\s*)?(\d+)\s*[-~〜‐‑‒–—―−]\s*(\d+)\s*(?:合本版?|セット)(?:\s*[\]】])?(?=$|[\s_])/u,
 ];
 
 const ALL_VOLUMES_PATTERN =
-  /(?:^|[\s_])?全\s*([0-9０-９]+)\s*巻(?:\s*(?:合本版?|セット))?/u;
+  /(?:^|[\s_])?(?:[[【]\s*)?全\s*(\d+)\s*巻(?:\s*(?:合本版?|セット))?(?:\s*[\]】])?/u;
 
 const OMNIBUS_WITHOUT_NUMBER_PATTERN =
-  /(?:^|[\s_])?(?:[[［【(（]\s*)?(?:全巻合本|全巻セット|合本版?)(?:\s*[\]］】)）])?(?=$|[\s_])/u;
+  /(?:^|[\s_])?(?:[[【(]\s*)?(?:全巻合本|全巻セット|合本版?)(?:\s*[\]】)])?(?=$|[\s_])/u;
 
 const EXPLICIT_VOLUME_PATTERNS: readonly RegExp[] = [
-  /(?:\[|［|【)?第\s*([0-9０-９]+(?:\.[0-9０-９]+)?)\s*巻(?:\]|］|】)?/u,
-  /(?<![0-9０-９-~〜～‐‑‒–—―−全])([0-9０-９]+(?:\.[0-9０-９]+)?)\s*巻/u,
-  /(?:^|[\s_])(?:vol\.?|v|no\.?|#|その)\s*([0-9０-９]+(?:\.[0-9０-９]+)?)(?=$|[\s_])/iu,
+  /(?:[[【]\s*)?第\s*(\d+(?:\.\d+)?)\s*巻(?:\s*[\]】])?/u,
+  /(?:[[【]\s*)?(?<![0-9-~〜‐‑‒–—―−全])(\d+(?:\.\d+)?)\s*巻(?:\s*[\]】])?/u,
+  /(?:^|[\s_])(?:[[【]\s*)?(?:vol\.?|v|no\.?|#|その)\s*(\d+(?:\.\d+)?)(?:\s*[\]】])?(?=$|[\s_])/iu,
 ];
 
-const TRAILING_PAREN_VOLUME_PATTERN =
-  /(?:^|[\s_])[（(]\s*([0-9０-９]+(?:\.[0-9０-９]+)?)\s*[）)]$/u;
+const TRAILING_PAREN_VOLUME_PATTERN = /(?:^|[\s_])\(\s*(\d+(?:\.\d+)?)\s*\)$/u;
 
 const NAMED_PART_PATTERN =
   /(?:^|[\s_])?(上巻|中巻|下巻|前編|中編|後編)(?=$|[\s_])/u;
 
 const TRAILING_SHORT_PART_PATTERN = /(?:^|[\s_])([上中下])$/u;
 
-const TRAILING_NUMBER_PATTERN = /(?:^|[\s_])([0-9０-９]+(?:\.[0-9０-９]+)?)$/u;
+const TRAILING_NUMBER_PATTERN = /(?:^|[\s_])(\d+(?:\.\d+)?)$/u;
 
 const PART_VOLUME_MAP: Readonly<
   Record<string, { readonly number: number; readonly label: string }>
@@ -113,16 +112,17 @@ interface ExtractedVolume {
   readonly volumeLabel: string;
 }
 
+interface AnalysisText {
+  readonly normalized: string;
+  readonly indexMap: readonly number[];
+}
+
 function collapseSpaces(value: string): string {
   return value.replace(WHITESPACE_RUN_PATTERN, " ").trim();
 }
 
 function cleanRemainingTitle(raw: string): string {
   return collapseSpaces(raw.replace(/[\s_]+$/, "").replace(/\s+[-–—]\s*$/, ""));
-}
-
-function parseNumericToken(token: string): number {
-  return Number(token.normalize("NFKC"));
 }
 
 function formatVolumeNumber(value: number): string {
@@ -243,21 +243,59 @@ function extractLeadingAuthors(input: string): {
   return { text: remaining, authors };
 }
 
-function removeMatch(source: string, match: RegExpExecArray): string {
-  const before = source.slice(0, match.index);
-  const after = source.slice(match.index + match[0].length);
+function buildAnalysisText(source: string): AnalysisText {
+  let normalized = "";
+  const indexMap: number[] = [];
+  let sourceOffset = 0;
+
+  for (const ch of source) {
+    const nfkc = ch.normalize("NFKC");
+    for (let i = 0; i < nfkc.length; i += 1) {
+      indexMap.push(sourceOffset);
+    }
+    normalized += nfkc;
+    sourceOffset += ch.length;
+  }
+  indexMap.push(source.length);
+
+  return { normalized, indexMap };
+}
+
+function removeAnalysisMatch(
+  source: string,
+  analysis: AnalysisText,
+  match: RegExpExecArray,
+): string {
+  const origStart = analysis.indexMap[match.index]!;
+  const origEnd = analysis.indexMap[match.index + match[0].length]!;
+  const before = source.slice(0, origStart);
+  const after = source.slice(origEnd);
   return cleanRemainingTitle(`${before} ${after}`);
+}
+
+function buildOneshotResult(
+  text: string,
+  editionNote: string | null,
+): ExtractedVolume {
+  return {
+    title: cleanRemainingTitle(text),
+    volumeNumber: null,
+    volumeRangeEnd: null,
+    isOmnibus: false,
+    volumeLabel: appendEditionNote("単巻", editionNote),
+  };
 }
 
 function buildOmnibusRangeResult(
   text: string,
+  analysis: AnalysisText,
   match: RegExpExecArray,
   start: number,
   end: number,
   editionNote: string | null,
 ): ExtractedVolume {
   return {
-    title: removeMatch(text, match),
+    title: removeAnalysisMatch(text, analysis, match),
     volumeNumber: start,
     volumeRangeEnd: end,
     isOmnibus: true,
@@ -270,12 +308,13 @@ function buildOmnibusRangeResult(
 
 function buildSingleVolumeResult(
   text: string,
+  analysis: AnalysisText,
   match: RegExpExecArray,
   volumeNumber: number,
   editionNote: string | null,
 ): ExtractedVolume {
   return {
-    title: removeMatch(text, match),
+    title: removeAnalysisMatch(text, analysis, match),
     volumeNumber,
     volumeRangeEnd: null,
     isOmnibus: false,
@@ -288,12 +327,13 @@ function buildSingleVolumeResult(
 
 function buildPartVolumeResult(
   text: string,
+  analysis: AnalysisText,
   match: RegExpExecArray,
   editionNote: string | null,
 ): ExtractedVolume {
   const info = PART_VOLUME_MAP[match[1]!]!;
   return {
-    title: removeMatch(text, match),
+    title: removeAnalysisMatch(text, analysis, match),
     volumeNumber: info.number,
     volumeRangeEnd: null,
     isOmnibus: false,
@@ -305,37 +345,50 @@ function extractVolume(
   text: string,
   editionNote: string | null,
 ): ExtractedVolume {
+  const analysis = buildAnalysisText(text);
+  const normalized = analysis.normalized;
+
   // 優先順位 1: 合本・範囲巻
   for (const pattern of RANGE_PATTERNS) {
-    const match = pattern.exec(text);
+    const match = pattern.exec(normalized);
     if (match !== null) {
-      const start = parseNumericToken(match[1]!);
-      const end = parseNumericToken(match[2]!);
+      const start = Number(match[1]!);
+      const end = Number(match[2]!);
       if (start > 0 && end > start) {
-        return buildOmnibusRangeResult(text, match, start, end, editionNote);
+        return buildOmnibusRangeResult(
+          text,
+          analysis,
+          match,
+          start,
+          end,
+          editionNote,
+        );
       }
+      return buildOneshotResult(text, editionNote);
     }
   }
 
-  const allVolumesMatch = ALL_VOLUMES_PATTERN.exec(text);
+  const allVolumesMatch = ALL_VOLUMES_PATTERN.exec(normalized);
   if (allVolumesMatch !== null) {
-    const total = parseNumericToken(allVolumesMatch[1]!);
+    const total = Number(allVolumesMatch[1]!);
     if (total >= 2) {
       return buildOmnibusRangeResult(
         text,
+        analysis,
         allVolumesMatch,
         1,
         total,
         editionNote,
       );
     }
+    return buildOneshotResult(text, editionNote);
   }
 
   // 優先順位 2: 数値なし合本
-  const omnibusMatch = OMNIBUS_WITHOUT_NUMBER_PATTERN.exec(text);
+  const omnibusMatch = OMNIBUS_WITHOUT_NUMBER_PATTERN.exec(normalized);
   if (omnibusMatch !== null) {
     return {
-      title: removeMatch(text, omnibusMatch),
+      title: removeAnalysisMatch(text, analysis, omnibusMatch),
       volumeNumber: null,
       volumeRangeEnd: null,
       isOmnibus: true,
@@ -345,23 +398,25 @@ function extractVolume(
 
   // 優先順位 3: 明示単巻・小数巻
   for (const pattern of EXPLICIT_VOLUME_PATTERNS) {
-    const match = pattern.exec(text);
+    const match = pattern.exec(normalized);
     if (match !== null) {
       return buildSingleVolumeResult(
         text,
+        analysis,
         match,
-        parseNumericToken(match[1]!),
+        Number(match[1]!),
         editionNote,
       );
     }
   }
 
-  const trailingParenMatch = TRAILING_PAREN_VOLUME_PATTERN.exec(text);
+  const trailingParenMatch = TRAILING_PAREN_VOLUME_PATTERN.exec(normalized);
   if (trailingParenMatch !== null) {
-    const volumeNumber = parseNumericToken(trailingParenMatch[1]!);
+    const volumeNumber = Number(trailingParenMatch[1]!);
     if (volumeNumber < 1000) {
       return buildSingleVolumeResult(
         text,
+        analysis,
         trailingParenMatch,
         volumeNumber,
         editionNote,
@@ -371,18 +426,20 @@ function extractVolume(
 
   // 優先順位 4: 上下巻・前後編
   const partMatch =
-    NAMED_PART_PATTERN.exec(text) ?? TRAILING_SHORT_PART_PATTERN.exec(text);
+    NAMED_PART_PATTERN.exec(normalized) ??
+    TRAILING_SHORT_PART_PATTERN.exec(normalized);
   if (partMatch !== null) {
-    return buildPartVolumeResult(text, partMatch, editionNote);
+    return buildPartVolumeResult(text, analysis, partMatch, editionNote);
   }
 
   // 優先順位 5: 末尾数値フォールバック
-  const trailingNumberMatch = TRAILING_NUMBER_PATTERN.exec(text);
+  const trailingNumberMatch = TRAILING_NUMBER_PATTERN.exec(normalized);
   if (trailingNumberMatch !== null) {
-    const volumeNumber = parseNumericToken(trailingNumberMatch[1]!);
+    const volumeNumber = Number(trailingNumberMatch[1]!);
     if (volumeNumber > 0 && volumeNumber < 1000) {
       return buildSingleVolumeResult(
         text,
+        analysis,
         trailingNumberMatch,
         volumeNumber,
         editionNote,
@@ -391,13 +448,7 @@ function extractVolume(
   }
 
   // 優先順位 6: 巻数なし単発本
-  return {
-    title: cleanRemainingTitle(text),
-    volumeNumber: null,
-    volumeRangeEnd: null,
-    isOmnibus: false,
-    volumeLabel: appendEditionNote("単巻", editionNote),
-  };
+  return buildOneshotResult(text, editionNote);
 }
 
 export function parseMangaFilename(

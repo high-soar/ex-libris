@@ -103,6 +103,50 @@ describe("parseMangaFilename", () => {
       expect(onlyBracket.title).toBe("[単独タイトル]");
       expect(onlyBracket.volumeNumber).toBeNull();
       expect(onlyBracket.volumeLabel).toBe("単巻");
+
+      expect(
+        parseMangaFilename({ fileName: "[第01-05巻] 作品名.cbz" }),
+      ).toMatchObject({
+        authors: [],
+        title: "作品名",
+        volumeNumber: 1,
+        volumeRangeEnd: 5,
+        isOmnibus: true,
+        volumeLabel: "第01-05巻 合本",
+      });
+
+      expect(
+        parseMangaFilename({ fileName: "[01-05巻 合本] 作品名.cbz" }),
+      ).toMatchObject({
+        authors: [],
+        title: "作品名",
+        volumeNumber: 1,
+        volumeRangeEnd: 5,
+        isOmnibus: true,
+        volumeLabel: "第01-05巻 合本",
+      });
+
+      expect(
+        parseMangaFilename({ fileName: "[v01-05] 作品名.cbz" }),
+      ).toMatchObject({
+        authors: [],
+        title: "作品名",
+        volumeNumber: 1,
+        volumeRangeEnd: 5,
+        isOmnibus: true,
+        volumeLabel: "第01-05巻 合本",
+      });
+
+      expect(
+        parseMangaFilename({ fileName: "[Vol.10.5] 作品名.cbz" }),
+      ).toMatchObject({
+        authors: [],
+        title: "作品名",
+        volumeNumber: 10.5,
+        volumeRangeEnd: null,
+        isOmnibus: false,
+        volumeLabel: "第10.5巻",
+      });
     });
   });
 
@@ -184,6 +228,39 @@ describe("parseMangaFilename", () => {
         title: "作品名",
         volumeNumber: 2,
         volumeLabel: "第02巻",
+      });
+
+      expect(
+        parseMangaFilename({ fileName: "ＭＡＮＧＡ 第１０．５巻.cbz" }),
+      ).toMatchObject({
+        title: "ＭＡＮＧＡ",
+        normalizedTitleKey: "manga",
+        volumeNumber: 10.5,
+        volumeLabel: "第10.5巻",
+      });
+
+      expect(
+        parseMangaFilename({ fileName: "作品名 Ｖｏｌ．０１.cbz" }),
+      ).toMatchObject({
+        title: "作品名",
+        volumeNumber: 1,
+        volumeLabel: "第01巻",
+      });
+
+      expect(
+        parseMangaFilename({ fileName: "作品名 ＃０４.cbz" }),
+      ).toMatchObject({
+        title: "作品名",
+        volumeNumber: 4,
+        volumeLabel: "第04巻",
+      });
+
+      expect(
+        parseMangaFilename({ fileName: "作品名 Ｎｏ．５.cbz" }),
+      ).toMatchObject({
+        title: "作品名",
+        volumeNumber: 5,
+        volumeLabel: "第05巻",
       });
     });
 
@@ -485,14 +562,64 @@ describe("parseMangaFilename", () => {
       });
       expect(equalRange.isOmnibus).toBe(false);
       expect(equalRange.volumeRangeEnd).toBeNull();
+      expect(equalRange.volumeNumber).toBeNull();
+      expect(equalRange.title).toBe("作品名 第01-01巻");
+
+      const reversedExplicit = parseMangaFilename({
+        fileName: "作品名 第05巻-第01巻.cbz",
+      });
+      expect(reversedExplicit).toMatchObject({
+        title: "作品名 第05巻-第01巻",
+        isOmnibus: false,
+        volumeRangeEnd: null,
+        volumeNumber: null,
+        volumeLabel: "単巻",
+      });
+
+      const equalExplicit = parseMangaFilename({
+        fileName: "作品名 第01巻-第01巻.cbz",
+      });
+      expect(equalExplicit).toMatchObject({
+        title: "作品名 第01巻-第01巻",
+        isOmnibus: false,
+        volumeRangeEnd: null,
+        volumeNumber: null,
+        volumeLabel: "単巻",
+      });
+
+      const spacedReversed = parseMangaFilename({
+        fileName: "作品名 10 - 05巻.cbz",
+      });
+      expect(spacedReversed).toMatchObject({
+        title: "作品名 10 - 05巻",
+        isOmnibus: false,
+        volumeRangeEnd: null,
+        volumeNumber: null,
+        volumeLabel: "単巻",
+      });
 
       const zeroStart = parseMangaFilename({ fileName: "作品名 00-05巻.cbz" });
       expect(zeroStart.isOmnibus).toBe(false);
       expect(zeroStart.volumeRangeEnd).toBeNull();
+      expect(zeroStart.volumeNumber).toBeNull();
+      expect(zeroStart.title).toBe("作品名 00-05巻");
 
       const singleAll = parseMangaFilename({ fileName: "作品名 全1巻.cbz" });
       expect(singleAll.isOmnibus).toBe(false);
       expect(singleAll.volumeRangeEnd).toBeNull();
+      expect(singleAll.volumeNumber).toBeNull();
+      expect(singleAll.title).toBe("作品名 全1巻");
+
+      const spacedSingleAll = parseMangaFilename({
+        fileName: "作品名 全 1巻.cbz",
+      });
+      expect(spacedSingleAll).toMatchObject({
+        title: "作品名 全 1巻",
+        isOmnibus: false,
+        volumeRangeEnd: null,
+        volumeNumber: null,
+        volumeLabel: "単巻",
+      });
     });
 
     it("西暦4桁（1900〜2099）および末尾単独0を巻数として誤認識しない (AC-FP-05)", () => {
