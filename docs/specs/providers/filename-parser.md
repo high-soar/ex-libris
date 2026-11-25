@@ -21,7 +21,9 @@ related_specs:
   - docs/specs/screen-transitions.md
   - docs/specs/providers/google-drive.md
   - docs/guidelines/testing.md
-related_tests: []
+related_tests:
+  - src/providers/filename/textNormalization.test.ts
+  - src/providers/filename/mangaFilenameParser.test.ts
 ---
 
 # 自炊ファイル名スマートパーサー仕様書（`src/providers/filename/`）
