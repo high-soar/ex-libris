@@ -2,7 +2,7 @@
 type: spec-architecture
 title: "4層＋マルチスレッドアーキテクチャと共通インターフェース契約"
 description: "Streaming & Provider・Engine Worker・Storage・Viewer & Bridge の4層責務境界、Zero-Copy 転送、メモリ予算定数、および TypeScript コア契約の正本"
-status: "Review (#24)"
+status: "Approved (#24)"
 updated: "2026-11-25"
 tags:
   [
@@ -55,10 +55,20 @@ related_tests:
   - src/features/reader/ReaderHudOverlay.test.tsx
   - src/features/reader/ReaderShaderSheet.test.tsx
   - src/features/reader/ReaderPage.test.tsx
+  - src/providers/filename/textNormalization.test.ts
+  - src/providers/filename/mangaFilenameParser.test.ts
+  - src/providers/gdrive/driveHttpClient.test.ts
+  - src/providers/gdrive/googleDriveSyncClient.test.ts
+  - src/providers/gdrive/mockDriveSyncClient.test.ts
+  - src/providers/gdrive/driveSyncEngine.test.ts
   - src/shared/constants/app.test.ts
   - src/shared/router/RouterProvider.test.tsx
   - src/shared/router/routerContext.test.ts
   - src/storage/db.test.ts
+  - src/storage/repositories/driveSyncMetaRepository.test.ts
+  - src/storage/repositories/driveSyncRootsRepository.test.ts
+  - src/storage/repositories/seriesRepository.test.ts
+  - src/storage/repositories/volumesRepository.test.ts
   - src/storage/repositories/zipIndexCacheRepository.test.ts
   - src/storage/repositories/readingProgressRepository.test.ts
   - src/storage/repositories/readerSettingsRepository.test.ts
@@ -71,6 +81,7 @@ related_tests:
   - test/it/smoke.spec.ts
   - test/it/local-reader.spec.ts
   - test/it/settings-oauth.spec.ts
+  - test/it/drive-sync.spec.ts
 ---
 
 # ExLibris 4層＋マルチスレッドアーキテクチャと共通インターフェース契約

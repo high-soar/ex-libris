@@ -2,7 +2,7 @@
 type: spec-screen-transition
 title: "主要画面一覧（SCR-xx）と画面遷移（TR-xx）の全体マップ"
 description: "ダークテーマ標準シェル、4画面ルート設計（ローカル一時ZIP対応含む）、ハードウェア戻るボタン制御、およびリソース解放遷移契約の正本"
-status: "Review (#24)"
+status: "Approved (#24)"
 updated: "2026-11-25"
 tags: [screen-transition, navigation, routing, back-button, dark-theme, ui]
 related_specs:
@@ -47,6 +47,7 @@ related_tests:
   - test/it/smoke.spec.ts
   - test/it/local-reader.spec.ts
   - test/it/settings-oauth.spec.ts
+  - test/it/drive-sync.spec.ts
 ---
 
 # ExLibris 主要画面一覧（`SCR-xx`）と画面遷移（`TR-xx`）

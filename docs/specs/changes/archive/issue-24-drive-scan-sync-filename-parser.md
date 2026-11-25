@@ -2,7 +2,7 @@
 type: spec-delta
 title: "Issue #24 差分仕様: 指定フォルダ Drive スキャン・changes差分同期・ファイル名パーサー・Dexie v3 DB"
 description: "自炊ファイル名スマートパーサー（src/providers/filename/）、Series/Volumes/DriveSyncMeta Repository（Dexie version(3)）、共通 Drive JSON HTTP ヘルパ（429/403 指数バックオフ付き）、および指定ルート限定 BFS フルスキャン＆changes.list 増分差分同期エンジンを定義する差分仕様"
-status: "Review (#24)"
+status: "Completed (Archived)"
 updated: "2026-11-25"
 issue: "#24"
 tags:
@@ -31,10 +31,21 @@ related_specs:
 related_tests:
   - src/app/ServiceProvider.test.tsx
   - src/app/serviceContext.test.ts
+  - src/providers/filename/textNormalization.test.ts
+  - src/providers/filename/mangaFilenameParser.test.ts
+  - src/providers/gdrive/driveApiErrors.test.ts
+  - src/providers/gdrive/driveHttpClient.test.ts
   - src/providers/gdrive/googleDriveFolderClient.test.ts
+  - src/providers/gdrive/googleDriveSyncClient.test.ts
+  - src/providers/gdrive/mockDriveSyncClient.test.ts
+  - src/providers/gdrive/driveSyncEngine.test.ts
   - src/storage/db.test.ts
+  - src/storage/repositories/driveSyncMetaRepository.test.ts
   - src/storage/repositories/driveSyncRootsRepository.test.ts
+  - src/storage/repositories/seriesRepository.test.ts
+  - src/storage/repositories/volumesRepository.test.ts
   - src/storage/repositories/zipIndexCacheRepository.test.ts
+  - test/it/drive-sync.spec.ts
 ---
 
 # Issue #24 差分仕様: 指定フォルダ Drive スキャン・`changes.list` 差分同期・ファイル名パーサー・Dexie v3 DB
@@ -71,7 +82,7 @@ related_tests:
    - `429` / `403 (rateLimitExceeded / userRateLimitExceeded)` 時は最大 3 回の指数バックオフ（`500ms → 1000ms → 2000ms`、`sleepFn` 注入可能）で自動リトライする。
    - 途中ページ失敗・`AbortError` 時は `driveStartPageToken` を一切進めず、全 API ページ取得および `series` / `volumes` の Dexie 反映が完了した後にのみ `driveStartPageToken`・`lastDriveSyncAt`・`syncedRootFolderIds`（同期完了時点の有効ルート ID 配列 `[...enabledRootIds].sort()` で上書き保存）を単一トランザクションで `syncMeta` へ原子保存する。
 8. **仕様書分割・Sub-issue 粒度・実機検証区分（Q8）**:
-   - 正本仕様書として [filename-parser.md](../providers/filename-parser.md) を新設分離し、実装は **3 MK（MK-1: ファイル名パーサー / MK-2: Storage Repositories / MK-3: Drive 同期エンジン＆DI）＋ Step 4 IT（`SCN-04`）** の 4 分割とする。
+   - 正本仕様書として [filename-parser.md](../../providers/filename-parser.md) を新設分離し、実装は **3 MK（MK-1: ファイル名パーサー / MK-2: Storage Repositories / MK-3: Drive 同期エンジン＆DI）＋ Step 4 IT（`SCN-04`）** の 4 分割とする。
    - 実機検証は **区分 B（`Milestone v0.2 完了前`：`HO-12` として `#25` 実機検証時にあわせて実施）** とする。
 
 ### 1.2 対象外スコープ
@@ -85,16 +96,16 @@ related_tests:
 
 ## 2. 新規作成・変更対象の App 全体正本一覧
 
-|   種別   | 正本ファイル                                                     | 変更概要                                                                                                                                                       |
-| :------: | :--------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **新規** | [filename-parser.md](../providers/filename-parser.md)            | 自炊ファイル名スマートパーサーの型契約・正規化/初期読み仮名・ノイズ/著者/巻数/合本/上下巻/親フォルダ補完ルール・`AC-FP-01`〜`06` を新設                        |
-| **更新** | [google-drive.md](../providers/google-drive.md)                  | `driveHttpClient` 共通化（`TOKEN_EXPIRED`・429/403 指数バックオフ）、`DriveSyncClient`/`DriveSyncEngine`/`MockDriveSyncClient` 仕様、`AC-GD-09`〜`14`          |
-| **更新** | [db-schema.md](../db-schema.md)                                  | `DriveSyncMetaRepository`（`syncMeta` 同期キー群）、`SeriesRepository`、`VolumesRepository` の FIFO 直列化・有効ルートフィルタ・LWW 保護契約を追記             |
-| **更新** | [architecture.md](../architecture.md)                            | Layer 1/3/4 責務表へファイル名パーサー・Drive 同期エンジン・新設 Repository 群・`ServiceProvider` DI 契約を反映                                                |
-| **更新** | [requirements.md](../requirements.md)                            | `related_specs` へ `docs/specs/providers/filename-parser.md` を双方向同期                                                                                      |
-| **更新** | [screen-transitions.md](../screen-transitions.md)                | `SCR-04` 同期 UI の `#25` 担当を明確化し、結合テストシナリオ **`SCN-04`**（`test/it/drive-sync.spec.ts`）を追加                                                |
-| **更新** | [settings.md](../features/settings.md)                           | 冒頭 NOTE にて同期実行 UI トリガーが `#25` 担当であることを明確化                                                                                              |
-| **更新** | [bug-and-handover-log.md](../../quality/bug-and-handover-log.md) | 区分 B 実機検証申し送り **`HO-12`**（完了ゲート: `Milestone v0.2 完了前`、`#25` 実機検証時に併設確認）および PR `#83` Round 1 指摘是正（`No. 23`〜`27`）を登録 |
+|   種別   | 正本ファイル                                                        | 変更概要                                                                                                                                                       |
+| :------: | :------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **新規** | [filename-parser.md](../../providers/filename-parser.md)            | 自炊ファイル名スマートパーサーの型契約・正規化/初期読み仮名・ノイズ/著者/巻数/合本/上下巻/親フォルダ補完ルール・`AC-FP-01`〜`06` を新設                        |
+| **更新** | [google-drive.md](../../providers/google-drive.md)                  | `driveHttpClient` 共通化（`TOKEN_EXPIRED`・429/403 指数バックオフ）、`DriveSyncClient`/`DriveSyncEngine`/`MockDriveSyncClient` 仕様、`AC-GD-09`〜`14`          |
+| **更新** | [db-schema.md](../../db-schema.md)                                  | `DriveSyncMetaRepository`（`syncMeta` 同期キー群）、`SeriesRepository`、`VolumesRepository` の FIFO 直列化・有効ルートフィルタ・LWW 保護契約を追記             |
+| **更新** | [architecture.md](../../architecture.md)                            | Layer 1/3/4 責務表へファイル名パーサー・Drive 同期エンジン・新設 Repository 群・`ServiceProvider` DI 契約を反映                                                |
+| **更新** | [requirements.md](../../requirements.md)                            | `related_specs` へ `docs/specs/providers/filename-parser.md` を双方向同期                                                                                      |
+| **更新** | [screen-transitions.md](../../screen-transitions.md)                | `SCR-04` 同期 UI の `#25` 担当を明確化し、結合テストシナリオ **`SCN-04`**（`test/it/drive-sync.spec.ts`）を追加                                                |
+| **更新** | [settings.md](../../features/settings.md)                           | 冒頭 NOTE にて同期実行 UI トリガーが `#25` 担当であることを明確化                                                                                              |
+| **更新** | [bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) | 区分 B 実機検証申し送り **`HO-12`**（完了ゲート: `Milestone v0.2 完了前`、`#25` 実機検証時に併設確認）および PR `#83` Round 1 指摘是正（`No. 23`〜`27`）を登録 |
 
 ---
 
@@ -153,6 +164,6 @@ related_tests:
 
 ### 5.2 Android 実機検証計画 ＆ 申し送り事項（`HO-12`）
 
-- **実施粒度判定（[workflow.md §2.2](../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 B（Milestone `v0.2` 完了前：一括実施）**
+- **実施粒度判定（[workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 B（Milestone `v0.2` 完了前：一括実施）**
   - **根拠**: `#24` は Android ネイティブ層・WebGL2 シェーダー・新規 UI 変更を含まない純粋 TypeScript / Dexie 層であるため、Vitest 100% カバレッジおよび Playwright 実ブラウザ IndexedDB 結合テスト（`SCN-04`）で仕様を完全に担保できる。実 Google Drive アカウントを用いたフルスキャン・`changes.list` 増分同期・シリーズ束ね・診断ログ秘匿の実機確認は、同期 UI トリガーと本棚表示を統合する `#25` の実機検証（`HO-10` 併設）および `Milestone v0.2` 完了前ゲート（`HO-12`）にて一括検証する。
-- **登録済み申し送り**: `HO-12`（[bug-and-handover-log.md §3](../../quality/bug-and-handover-log.md#3-申し送り事項追跡一覧handover-items-ho-xx)、完了ゲート: `Milestone v0.2 完了前`）
+- **登録済み申し送り**: `HO-12`（[bug-and-handover-log.md §3](../../../quality/bug-and-handover-log.md#3-申し送り事項追跡一覧handover-items-ho-xx)、完了ゲート: `Milestone v0.2 完了前`）
