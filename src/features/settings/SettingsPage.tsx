@@ -58,6 +58,8 @@ const DRIVE_ERROR_MESSAGES: Record<DriveApiErrorCode, string> = {
   FOLDER_TRASHED: "ゴミ箱内のフォルダは登録できません。",
   RATE_LIMITED:
     "Google Drive API のアクセス上限に達しました。しばらく時間をおいて再試行してください。",
+  TOKEN_EXPIRED:
+    "同期トークンの有効期限が切れました。再度同期を実行してください。",
   NETWORK_ERROR:
     "Google Drive との通信に失敗しました。通信環境を確認して再試行してください。",
 };
