@@ -4,8 +4,15 @@ import { describe, expect, it, vi } from "vitest";
 import { MockAppBridge } from "../bridges/app/mockAppBridge";
 import type { GoogleAuthBridge } from "../bridges/oauth/types";
 import type { CoordinatorWorkerApi } from "../engine/types";
-import type { DriveFolderClient } from "../providers/gdrive/types";
+import type {
+  DriveFolderClient,
+  DriveSyncClient,
+  DriveSyncEngine,
+} from "../providers/gdrive/types";
+import type { DriveSyncMetaRepository } from "../storage/repositories/driveSyncMetaRepository";
 import type { DriveSyncRootsRepository } from "../storage/repositories/driveSyncRootsRepository";
+import type { SeriesRepository } from "../storage/repositories/seriesRepository";
+import type { VolumesRepository } from "../storage/repositories/volumesRepository";
 import { DEFAULT_SHADER_CORRECTION_PARAMS } from "../webgl/shaderParams";
 import {
   ServiceContext,
@@ -43,6 +50,54 @@ describe("serviceContext", () => {
         nextPageToken: null,
       })),
     };
+    const seriesRepo: SeriesRepository = {
+      getById: vi.fn(async () => null),
+      listActive: vi.fn(async () => []),
+      findOrCreateByParsedTitle: vi.fn(),
+      mergeAuthorsIfUnlocked: vi.fn(async () => null),
+      updateLastReadAt: vi.fn(async () => null),
+    };
+    const volumesRepo: VolumesRepository = {
+      getById: vi.fn(async () => null),
+      getByDriveFileId: vi.fn(async () => null),
+      listBySeriesId: vi.fn(async () => []),
+      listVisibleByEnabledRoots: vi.fn(async () => []),
+      listByRootFolderIds: vi.fn(async () => []),
+      upsertFromDriveSync: vi.fn(),
+      markTrashedByDriveFileIds: vi.fn(async () => 0),
+    };
+    const driveSyncMetaRepo: DriveSyncMetaRepository = {
+      getSyncState: vi.fn(async () => ({
+        startPageToken: null,
+        lastDriveSyncAt: null,
+        syncedRootFolderIds: [],
+      })),
+      saveSyncState: vi.fn(),
+      clearSyncState: vi.fn(async () => {}),
+    };
+    const driveSyncClient: DriveSyncClient = {
+      getStartPageToken: vi.fn(async () => "1"),
+      listItemsInParents: vi.fn(async () => ({
+        files: [],
+        nextPageToken: null,
+      })),
+      getFileMetadata: vi.fn(async () => null),
+      listChanges: vi.fn(async () => ({
+        changes: [],
+        nextPageToken: null,
+        newStartPageToken: "1",
+      })),
+    };
+    const driveSyncEngine: DriveSyncEngine = {
+      sync: vi.fn(async () => ({
+        mode: "skipped-no-roots" as const,
+        scannedRoots: 0,
+        upsertedVolumes: 0,
+        trashedVolumes: 0,
+        invalidatedZipCaches: 0,
+        syncedAt: 0,
+      })),
+    };
 
     const value: ServiceContextValue = {
       appBridge: new MockAppBridge(),
@@ -71,6 +126,11 @@ describe("serviceContext", () => {
       googleAuthBridge,
       driveSyncRootsRepo,
       driveFolderClient,
+      seriesRepo,
+      volumesRepo,
+      driveSyncMetaRepo,
+      driveSyncClient,
+      driveSyncEngine,
     };
 
     const wrapper = ({ children }: { children: ReactNode }) =>

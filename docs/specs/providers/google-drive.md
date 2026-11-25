@@ -38,8 +38,12 @@ related_tests:
   - src/bridges/oauth/googleAuthTokenManager.test.ts
   - src/providers/gdrive/driveApiErrors.test.ts
   - src/providers/gdrive/driveFolderInput.test.ts
+  - src/providers/gdrive/driveHttpClient.test.ts
   - src/providers/gdrive/googleDriveFolderClient.test.ts
   - src/providers/gdrive/mockDriveFolderClient.test.ts
+  - src/providers/gdrive/googleDriveSyncClient.test.ts
+  - src/providers/gdrive/mockDriveSyncClient.test.ts
+  - src/providers/gdrive/driveSyncEngine.test.ts
 ---
 
 # Google OAuth（Single-Flight）・Google Drive フォルダ参照 ＆ 差分同期プロバイダ仕様書

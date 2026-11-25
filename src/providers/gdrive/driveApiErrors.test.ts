@@ -12,6 +12,7 @@ describe("DriveApiError", () => {
       "NOT_A_FOLDER",
       "FOLDER_TRASHED",
       "RATE_LIMITED",
+      "TOKEN_EXPIRED",
       "NETWORK_ERROR",
     ];
 
