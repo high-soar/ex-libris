@@ -58,6 +58,7 @@ function resetGlobalServices(): void {
 
 describe("ServiceProvider", () => {
   beforeEach(async () => {
+    window.sessionStorage.clear();
     resetGlobalServices();
     await resetTestDb();
   });
@@ -65,6 +66,7 @@ describe("ServiceProvider", () => {
   afterEach(async () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    window.sessionStorage.clear();
     resetGlobalServices();
     await resetTestDb();
   });
@@ -526,5 +528,153 @@ describe("ServiceProvider", () => {
     expect(shouldExposeResetTestDb()).toBe(true);
     vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(true);
     expect(shouldExposeResetTestDb()).toBe(false);
+  });
+
+  it("WebDriver環境でMockGoogleAuthAdapterのサインイン/サインアウトをsessionStorageへ永続化しリロード時にサイレント復元、resetTestDbで初期化すること", async () => {
+    vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(false);
+    vi.stubGlobal("navigator", { webdriver: true });
+
+    // 1. サインインすると sessionStorage へ永続化され、再マウント後も復元されること
+    const captured1: ServiceContextValue[] = [];
+    const { unmount: unmount1 } = render(
+      <ServiceProvider>
+        <ServicesProbe onCapture={(s) => captured1.push(s)} />
+      </ServiceProvider>,
+    );
+    const signedIn = await captured1[0]!.googleAuthBridge.signIn();
+    expect(signedIn.email).toBe("reader@example.com");
+    unmount1();
+
+    const captured2: ServiceContextValue[] = [];
+    const { unmount: unmount2 } = render(
+      <ServiceProvider>
+        <ServicesProbe onCapture={(s) => captured2.push(s)} />
+      </ServiceProvider>,
+    );
+    const restored = await captured2[0]!.googleAuthBridge.getSession();
+    expect(restored).toMatchObject({
+      email: "reader@example.com",
+      accessToken: signedIn.accessToken,
+    });
+
+    // 2. resetTestDb() で DB・モックアダプタ・sessionStorage がまとめて初期化されること
+    await db.syncMeta.put({ key: "authResetCheck", value: "1" });
+    await window.__exLibrisServices?.resetTestDb?.();
+    expect(await db.syncMeta.count()).toBe(0);
+    expect(
+      window.__exLibrisServices?.mockGoogleAuthAdapter?.getLinkedState().linked,
+    ).toBe(false);
+    unmount2();
+
+    const captured3: ServiceContextValue[] = [];
+    const { unmount: unmount3 } = render(
+      <ServiceProvider>
+        <ServicesProbe onCapture={(s) => captured3.push(s)} />
+      </ServiceProvider>,
+    );
+    expect(await captured3[0]!.googleAuthBridge.getSession()).toBeNull();
+
+    // 3. サインイン後のサインアウトで永続状態が削除されること
+    await captured3[0]!.googleAuthBridge.signIn();
+    await captured3[0]!.googleAuthBridge.signOut();
+    unmount3();
+
+    const captured4: ServiceContextValue[] = [];
+    const { unmount: unmount4 } = render(
+      <ServiceProvider>
+        <ServicesProbe onCapture={(s) => captured4.push(s)} />
+      </ServiceProvider>,
+    );
+    expect(await captured4[0]!.googleAuthBridge.getSession()).toBeNull();
+    unmount4();
+
+    // 4. 不正 JSON や null / 非オブジェクト / 必須フィールド欠損値、sessionStorage 例外時は安全に未連携開始となること
+    for (const invalidPayload of [
+      "{bad",
+      "null",
+      "123",
+      JSON.stringify({ email: 123, accessToken: "tok" }),
+      JSON.stringify({ email: "only@example.com" }),
+    ]) {
+      window.sessionStorage.setItem(
+        "exLibris:test:mockGoogleAuthSession",
+        invalidPayload,
+      );
+      const capturedInvalid: ServiceContextValue[] = [];
+      const { unmount: unmountInvalid } = render(
+        <ServiceProvider>
+          <ServicesProbe onCapture={(s) => capturedInvalid.push(s)} />
+        </ServiceProvider>,
+      );
+      expect(
+        await capturedInvalid[0]!.googleAuthBridge.getSession(),
+      ).toBeNull();
+      unmountInvalid();
+    }
+
+    const getItemSpy = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("storage blocked");
+      });
+    const setItemSpy = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("storage quota");
+      });
+    const capturedErr: ServiceContextValue[] = [];
+    const { unmount: unmountErr } = render(
+      <ServiceProvider>
+        <ServicesProbe onCapture={(s) => capturedErr.push(s)} />
+      </ServiceProvider>,
+    );
+    expect(await capturedErr[0]!.googleAuthBridge.getSession()).toBeNull();
+    await capturedErr[0]!.googleAuthBridge.signIn();
+    unmountErr();
+    getItemSpy.mockRestore();
+    setItemSpy.mockRestore();
+
+    // 5. 非 WebDriver 環境では sessionStorage に保存済みでも復元せず書き込まないこと
+    window.sessionStorage.setItem(
+      "exLibris:test:mockGoogleAuthSession",
+      JSON.stringify({ email: "ignored@example.com", accessToken: "tok" }),
+    );
+    vi.stubGlobal("navigator", { webdriver: false });
+    const capturedNonWd: ServiceContextValue[] = [];
+    const { unmount: unmountNonWd } = render(
+      <ServiceProvider>
+        <ServicesProbe onCapture={(s) => capturedNonWd.push(s)} />
+      </ServiceProvider>,
+    );
+    expect(await capturedNonWd[0]!.googleAuthBridge.getSession()).toBeNull();
+    unmountNonWd();
+
+    // 6. カスタム googleAuthBridge / driveFolderClient 指定時の resetTestDb() もエラーなく動作すること
+    const customAuth: GoogleAuthBridge = {
+      getCachedSession: vi.fn(() => null),
+      getSession: vi.fn(async () => null),
+      signIn: vi.fn(async () => {
+        throw new Error("unused");
+      }),
+      signOut: vi.fn(async () => undefined),
+      getValidAccessToken: vi.fn(async () => "tok"),
+      subscribeSession: vi.fn(() => () => undefined),
+    };
+    const customFolderClient: DriveFolderClient = {
+      listChildFolders: vi.fn(async () => ({
+        folders: [],
+        nextPageToken: null,
+      })),
+      resolveFolderById: vi.fn(async () => ({ id: "f1", name: "Folder 1" })),
+    };
+    render(
+      <ServiceProvider
+        googleAuthBridge={customAuth}
+        driveFolderClient={customFolderClient}
+      >
+        <div>custom</div>
+      </ServiceProvider>,
+    );
+    await window.__exLibrisServices?.resetTestDb?.();
   });
 });

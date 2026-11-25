@@ -43,6 +43,9 @@ const meta: Meta<typeof BookshelfPage> = {
   parameters: {
     layout: "fullscreen",
   },
+  args: {
+    initialDriveSetupState: { kind: "ready" },
+  },
   decorators: [
     (Story) => (
       <ServiceProvider>
@@ -60,6 +63,22 @@ type Story = StoryObj<typeof BookshelfPage>;
 /** 仮想本棚ページ全体の初期表示状態 */
 export const Default: Story = {
   name: "初期状態",
+};
+
+/** Google アカウント未連携時のセットアップ案内バナー表示状態 */
+export const Unauthenticated: Story = {
+  name: "Google未連携バナー状態",
+  args: {
+    initialDriveSetupState: { kind: "unauthenticated" },
+  },
+};
+
+/** Google アカウント連携済み・有効ルートフォルダ0件時のセットアップ案内バナー表示状態 */
+export const NoDriveRoots: Story = {
+  name: "Driveフォルダ未設定バナー状態",
+  args: {
+    initialDriveSetupState: { kind: "no-roots", email: "reader@example.com" },
+  },
 };
 
 /** ドラッグ＆ドロップ受け入れ中のハイライト状態 */

@@ -21,6 +21,8 @@ describe("routerContext", () => {
       navigate: vi.fn(),
       replace: vi.fn(),
       back: vi.fn(),
+      isBackBlocked: false,
+      setBackBlocked: vi.fn(),
     };
 
     const wrapper = ({ children }: { children: ReactNode }) =>

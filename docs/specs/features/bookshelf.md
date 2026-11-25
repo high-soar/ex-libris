@@ -2,7 +2,7 @@
 type: spec-feature
 title: "仮想本棚ホーム画面仕様書（SCR-01: Bookshelf）"
 description: "SCR-01（/）のダークテーマシェル、設定画面（SCR-04）導線・段階別Google Drive連携ガイドバナー、ローカルZIP/CBZ選択導線（Web D&D・Android SAF互換）、最近のローカル閲覧履歴、診断ログコピー、およびTR-02a/TR-03/TR-09仕様の正本"
-status: "Review (#23)"
+status: "Approved (#23)"
 updated: "2026-11-23"
 tags:
   [
@@ -34,12 +34,14 @@ related_tests:
   - src/features/bookshelf/DriveSetupBanner.test.tsx
   - src/features/bookshelf/LocalArchiveEmptyState.test.tsx
   - src/features/bookshelf/RecentLocalHistorySection.test.tsx
+  - src/features/bookshelf/bookshelfUiStateStore.test.ts
   - src/features/reader/localReaderSessionStore.test.ts
   - src/storage/repositories/readingProgressRepository.test.ts
   - src/diagnostics/diagnosticLogger.test.ts
   - test/vrt/vrt.spec.ts
   - test/it/smoke.spec.ts
   - test/it/local-reader.spec.ts
+  - test/it/settings-oauth.spec.ts
 ---
 
 # 仮想本棚ホーム画面仕様書（`SCR-01`: Bookshelf）

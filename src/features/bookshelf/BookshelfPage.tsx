@@ -7,7 +7,9 @@ import {
   useState,
 } from "react";
 import { useServices } from "../../app/serviceContext";
+import type { GoogleAuthSession } from "../../bridges/oauth/types";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
+import { SETTINGS_ROUTE } from "../../shared/router/routeMatcher";
 import { useRouter } from "../../shared/router/routerContext";
 import {
   type LocalReadingHistoryItem,
@@ -15,14 +17,20 @@ import {
 } from "../../storage/repositories/readingProgressRepository";
 import { useLocalReaderSessionStore } from "../reader/localReaderSessionStore";
 import { BookshelfHeader, type CopyStatus } from "./BookshelfHeader";
+import {
+  DriveSetupBanner,
+  type DriveSetupBannerState,
+} from "./DriveSetupBanner";
 import { LocalArchiveEmptyState } from "./LocalArchiveEmptyState";
 import { RecentLocalHistorySection } from "./RecentLocalHistorySection";
+import { useBookshelfUiStateStore } from "./bookshelfUiStateStore";
 
 export interface BookshelfPageProps {
   readonly initialCopyStatus?: CopyStatus;
   readonly initialErrorMessage?: string | null;
   readonly initialDragActive?: boolean;
   readonly initialRecentHistory?: readonly LocalReadingHistoryItem[];
+  readonly initialDriveSetupState?: DriveSetupBannerState;
 }
 
 const LOCAL_ARCHIVE_INPUT_ACCEPT =
@@ -45,12 +53,16 @@ export function BookshelfPage({
   initialErrorMessage = null,
   initialDragActive = false,
   initialRecentHistory,
+  initialDriveSetupState,
 }: BookshelfPageProps) {
-  const { readingProgressRepo } = useServices();
+  const { readingProgressRepo, googleAuthBridge, driveSyncRootsRepo } =
+    useServices();
   const { navigate } = useRouter();
   const openLocalFile = useLocalReaderSessionStore(
     (state) => state.openLocalFile,
   );
+  const saveScrollY = useBookshelfUiStateStore((state) => state.saveScrollY);
+  const clearScrollY = useBookshelfUiStateStore((state) => state.clearScrollY);
 
   const [copyStatus, setCopyStatus] = useState<CopyStatus>(initialCopyStatus);
   const [errorMessage, setErrorMessage] = useState<string | null>(
@@ -60,6 +72,16 @@ export function BookshelfPage({
   const [recentHistory, setRecentHistory] = useState<
     readonly LocalReadingHistoryItem[]
   >(initialRecentHistory ?? []);
+  const [driveSetupState, setDriveSetupState] = useState<DriveSetupBannerState>(
+    () => initialDriveSetupState ?? { kind: "loading" },
+  );
+  const [isDriveSetupSettled, setIsDriveSetupSettled] = useState<boolean>(
+    initialDriveSetupState !== undefined,
+  );
+  const [isRecentHistorySettled, setIsRecentHistorySettled] = useState<boolean>(
+    initialRecentHistory !== undefined,
+  );
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isMountedRef = useRef<boolean>(true);
 
@@ -69,6 +91,24 @@ export function BookshelfPage({
       isMountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    const savedScrollY = useBookshelfUiStateStore.getState().scrollY;
+    if (savedScrollY > 0) {
+      window.scrollTo(0, savedScrollY);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isDriveSetupSettled || !isRecentHistorySettled) {
+      return;
+    }
+    const savedScrollY = useBookshelfUiStateStore.getState().scrollY;
+    if (savedScrollY > 0) {
+      window.scrollTo(0, savedScrollY);
+      clearScrollY();
+    }
+  }, [clearScrollY, isDriveSetupSettled, isRecentHistorySettled]);
 
   useEffect(() => {
     if (initialRecentHistory !== undefined) {
@@ -81,6 +121,7 @@ export function BookshelfPage({
       .then((items) => {
         if (!cancelled) {
           setRecentHistory(items);
+          setIsRecentHistorySettled(true);
         }
       })
       .catch((error: unknown) => {
@@ -90,6 +131,7 @@ export function BookshelfPage({
             "最近の閲覧履歴の取得に失敗しました",
             formatErrorMessage(error),
           );
+          setIsRecentHistorySettled(true);
         }
       });
 
@@ -97,6 +139,95 @@ export function BookshelfPage({
       cancelled = true;
     };
   }, [initialRecentHistory, readingProgressRepo]);
+
+  useEffect(() => {
+    if (initialDriveSetupState !== undefined) {
+      setDriveSetupState(initialDriveSetupState);
+      setIsDriveSetupSettled(true);
+      return;
+    }
+
+    let isActive = true;
+    let resolutionEpoch = 0;
+
+    const resolveSetupForSession = async (
+      session: GoogleAuthSession | null,
+    ): Promise<void> => {
+      resolutionEpoch += 1;
+      const currentEpoch = resolutionEpoch;
+
+      if (session === null) {
+        setDriveSetupState({ kind: "unauthenticated" });
+        setIsDriveSetupSettled(true);
+        return;
+      }
+
+      try {
+        const enabledCount = await driveSyncRootsRepo.countEnabled();
+        if (!isActive || currentEpoch !== resolutionEpoch) {
+          return;
+        }
+        setDriveSetupState(
+          enabledCount > 0
+            ? { kind: "ready" }
+            : { kind: "no-roots", email: session.email },
+        );
+        setIsDriveSetupSettled(true);
+      } catch (error: unknown) {
+        if (!isActive || currentEpoch !== resolutionEpoch) {
+          return;
+        }
+        diagnosticLogger.warn(
+          "bookshelf",
+          "Google Drive 連携状態の確認に失敗しました",
+          formatErrorMessage(error),
+        );
+        setDriveSetupState({ kind: "no-roots", email: session.email });
+        setIsDriveSetupSettled(true);
+      }
+    };
+
+    const unsubscribe = googleAuthBridge.subscribeSession((nextSession) => {
+      void resolveSetupForSession(nextSession);
+    });
+
+    const cachedSession = googleAuthBridge.getCachedSession();
+    if (cachedSession !== null) {
+      void resolveSetupForSession(cachedSession);
+    } else {
+      const initialEpoch = resolutionEpoch;
+      void googleAuthBridge
+        .getSession()
+        .then((session) => {
+          if (!isActive || resolutionEpoch !== initialEpoch) {
+            return;
+          }
+          return resolveSetupForSession(session);
+        })
+        .catch((error: unknown) => {
+          if (!isActive || resolutionEpoch !== initialEpoch) {
+            return;
+          }
+          diagnosticLogger.warn(
+            "bookshelf",
+            "Google セッションの確認に失敗しました",
+            formatErrorMessage(error),
+          );
+          setDriveSetupState({ kind: "unauthenticated" });
+          setIsDriveSetupSettled(true);
+        });
+    }
+
+    return () => {
+      isActive = false;
+      unsubscribe();
+    };
+  }, [driveSyncRootsRepo, googleAuthBridge, initialDriveSetupState]);
+
+  const handleOpenSettings = useCallback(() => {
+    saveScrollY(window.scrollY);
+    navigate(SETTINGS_ROUTE.path);
+  }, [navigate, saveScrollY]);
 
   const handleOpenLocalZip = useCallback(() => {
     (fileInputRef.current as HTMLInputElement).click();
@@ -119,10 +250,11 @@ export function BookshelfPage({
       }
 
       setErrorMessage(null);
+      clearScrollY();
       openLocalFile(file);
       navigate("/read/local");
     },
-    [navigate, openLocalFile],
+    [clearScrollY, navigate, openLocalFile],
   );
 
   const handleFileChange = useCallback(
@@ -232,6 +364,7 @@ export function BookshelfPage({
         copyStatus={copyStatus}
         onCopyDiagnostics={handleCopyDiagnostics}
         onOpenLocalZip={handleOpenLocalZip}
+        onOpenSettings={handleOpenSettings}
       />
       <main
         className="flex-1 flex flex-col items-center justify-center gap-6 p-6"
@@ -239,6 +372,10 @@ export function BookshelfPage({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
+        <DriveSetupBanner
+          state={driveSetupState}
+          onOpenSettings={handleOpenSettings}
+        />
         <LocalArchiveEmptyState
           isDragActive={isDragActive}
           errorMessage={errorMessage}

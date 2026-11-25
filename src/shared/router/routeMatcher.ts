@@ -1,11 +1,16 @@
 export type AppRoute =
   | { readonly name: "bookshelf"; readonly path: "/" }
-  | { readonly name: "reader-local"; readonly path: "/read/local" };
+  | { readonly name: "reader-local"; readonly path: "/read/local" }
+  | { readonly name: "settings"; readonly path: "/settings" };
 
 export const BOOKSHELF_ROUTE: AppRoute = { name: "bookshelf", path: "/" };
 export const READER_LOCAL_ROUTE: AppRoute = {
   name: "reader-local",
   path: "/read/local",
+};
+export const SETTINGS_ROUTE: AppRoute = {
+  name: "settings",
+  path: "/settings",
 };
 
 export function normalizePath(path: string): string {
@@ -23,6 +28,9 @@ export function matchRoute(path: string): AppRoute {
   const normalized = normalizePath(path);
   if (normalized === READER_LOCAL_ROUTE.path) {
     return READER_LOCAL_ROUTE;
+  }
+  if (normalized === SETTINGS_ROUTE.path) {
+    return SETTINGS_ROUTE;
   }
   return BOOKSHELF_ROUTE;
 }

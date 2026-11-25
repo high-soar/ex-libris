@@ -35,12 +35,20 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
   const [currentPath, setCurrentPath] = useState<string>(() =>
     resolveInitialPath(initialPath, readWindowPath()),
   );
+  const [isBackBlocked, setIsBackBlocked] = useState<boolean>(false);
   const currentPathRef = useRef<string>(currentPath);
+  const lastHistoryStateRef = useRef<unknown>(window.history.state);
+  const isBackBlockedRef = useRef<boolean>(false);
   const prevInitialPathRef = useRef<string | undefined>(initialPath);
 
   const commitPathState = useCallback((nextPath: string) => {
     currentPathRef.current = nextPath;
     setCurrentPath(nextPath);
+  }, []);
+
+  const setBackBlocked = useCallback((blocked: boolean) => {
+    isBackBlockedRef.current = blocked;
+    setIsBackBlocked(blocked);
   }, []);
 
   useEffect(() => {
@@ -54,6 +62,17 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
 
   useEffect(() => {
     const handlePopState = () => {
+      if (isBackBlockedRef.current) {
+        if (readWindowPath() !== currentPathRef.current) {
+          window.history.pushState(
+            lastHistoryStateRef.current,
+            "",
+            currentPathRef.current,
+          );
+        }
+        return;
+      }
+      lastHistoryStateRef.current = window.history.state;
       commitPathState(readWindowPath());
     };
 
@@ -71,13 +90,14 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
       }
 
       if (options?.replace) {
+        lastHistoryStateRef.current = null;
         window.history.replaceState(null, "", target);
       } else {
-        window.history.pushState(
-          { exLibrisCanGoBackFrom: currentPathRef.current },
-          "",
-          target,
-        );
+        const nextState: ExLibrisHistoryState = {
+          exLibrisCanGoBackFrom: currentPathRef.current,
+        };
+        lastHistoryStateRef.current = nextState;
+        window.history.pushState(nextState, "", target);
       }
       commitPathState(target);
     },
@@ -94,7 +114,10 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
   const route = useMemo(() => matchRoute(currentPath), [currentPath]);
 
   const back = useCallback(() => {
-    if (route.name === "reader-local") {
+    if (isBackBlockedRef.current) {
+      return;
+    }
+    if (route.name === "reader-local" || route.name === "settings") {
       const state = window.history.state as ExLibrisHistoryState | null;
       if (state?.exLibrisCanGoBackFrom === BOOKSHELF_ROUTE.path) {
         window.history.back();
@@ -111,8 +134,18 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
       navigate,
       replace,
       back,
+      isBackBlocked,
+      setBackBlocked,
     }),
-    [currentPath, route, navigate, replace, back],
+    [
+      currentPath,
+      route,
+      navigate,
+      replace,
+      back,
+      isBackBlocked,
+      setBackBlocked,
+    ],
   );
 
   return (

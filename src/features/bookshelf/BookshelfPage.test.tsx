@@ -1,6 +1,6 @@
 import { composeStories } from "@storybook/react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import type { ReactElement } from "react";
+import { StrictMode, type ReactElement } from "react";
 import {
   afterEach,
   beforeEach,
@@ -11,9 +11,15 @@ import {
   vi,
 } from "vitest";
 import { ServiceProvider } from "../../app/ServiceProvider";
+import type {
+  AuthSessionListener,
+  GoogleAuthBridge,
+  GoogleAuthSession,
+} from "../../bridges/oauth/types";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
 import { RouterProvider } from "../../shared/router/RouterProvider";
 import { resetTestDb } from "../../storage/db";
+import type { DriveSyncRootsRepository } from "../../storage/repositories/driveSyncRootsRepository";
 import {
   type LocalReadingHistoryItem,
   RECENT_LOCAL_HISTORY_DEFAULT_LIMIT,
@@ -22,12 +28,19 @@ import {
 import * as BookshelfHeaderModule from "./BookshelfHeader";
 import { BookshelfPage, type BookshelfPageProps } from "./BookshelfPage";
 import * as stories from "./BookshelfPage.stories";
+import * as DriveSetupBannerModule from "./DriveSetupBanner";
 import * as LocalArchiveEmptyStateModule from "./LocalArchiveEmptyState";
 import * as RecentLocalHistorySectionModule from "./RecentLocalHistorySection";
+import {
+  resetBookshelfUiState,
+  useBookshelfUiStateStore,
+} from "./bookshelfUiStateStore";
 import { useLocalReaderSessionStore } from "../reader/localReaderSessionStore";
 
 const {
   Default,
+  Unauthenticated,
+  NoDriveRoots,
   DragActive,
   UnsupportedExtensionError,
   CopiedFeedback,
@@ -85,6 +98,46 @@ function createMockReadingProgressRepo(
   };
 }
 
+function createMockGoogleAuthBridge(
+  overrides: Partial<GoogleAuthBridge> = {},
+): GoogleAuthBridge & {
+  emitSession: (session: GoogleAuthSession | null) => void;
+} {
+  const listeners = new Set<AuthSessionListener>();
+  return {
+    getCachedSession: vi.fn(() => null),
+    getSession: vi.fn(async () => null),
+    signIn: vi.fn(),
+    signOut: vi.fn(async () => undefined),
+    getValidAccessToken: vi.fn(async () => "ya29.mock"),
+    subscribeSession: vi.fn((listener: AuthSessionListener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    }),
+    emitSession: (session: GoogleAuthSession | null) => {
+      for (const listener of [...listeners]) {
+        listener(session);
+      }
+    },
+    ...overrides,
+  };
+}
+
+function createMockDriveSyncRootsRepo(
+  overrides: Partial<DriveSyncRootsRepository> = {},
+): DriveSyncRootsRepository {
+  return {
+    listActive: vi.fn(async () => []),
+    countEnabled: vi.fn(async () => 0),
+    upsertRoot: vi.fn(),
+    setEnabled: vi.fn(async () => null),
+    removeRoot: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
 describe("BookshelfPage", () => {
   const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
     navigator,
@@ -93,6 +146,9 @@ describe("BookshelfPage", () => {
   const originalUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
 
   let headerSpy: MockInstance<typeof BookshelfHeaderModule.BookshelfHeader>;
+  let driveBannerSpy: MockInstance<
+    typeof DriveSetupBannerModule.DriveSetupBanner
+  >;
   let emptyStateSpy: MockInstance<
     typeof LocalArchiveEmptyStateModule.LocalArchiveEmptyState
   >;
@@ -104,10 +160,14 @@ describe("BookshelfPage", () => {
     await resetTestDb();
     diagnosticLogger.clear();
     useLocalReaderSessionStore.setState({ session: null });
+    resetBookshelfUiState();
     window.history.replaceState(null, "", "/");
 
     headerSpy = vi
       .spyOn(BookshelfHeaderModule, "BookshelfHeader")
+      .mockImplementation(() => null);
+    driveBannerSpy = vi
+      .spyOn(DriveSetupBannerModule, "DriveSetupBanner")
       .mockImplementation(() => null);
     emptyStateSpy = vi
       .spyOn(LocalArchiveEmptyStateModule, "LocalArchiveEmptyState")
@@ -120,6 +180,7 @@ describe("BookshelfPage", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await resetTestDb();
+    resetBookshelfUiState();
     window.history.replaceState(null, "", originalUrl || "/");
     if (originalClipboardDescriptor) {
       Object.defineProperty(
@@ -137,6 +198,13 @@ describe("BookshelfPage", () => {
       const lastCall = headerSpy.mock.calls.at(-1);
       expect(lastCall).toBeDefined();
       return lastCall![0] as BookshelfHeaderModule.BookshelfHeaderProps;
+    };
+
+  const getLatestDriveBannerProps =
+    (): DriveSetupBannerModule.DriveSetupBannerProps => {
+      const lastCall = driveBannerSpy.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      return lastCall![0] as DriveSetupBannerModule.DriveSetupBannerProps;
     };
 
   const getLatestEmptyStateProps =
@@ -181,6 +249,11 @@ describe("BookshelfPage", () => {
       copyStatus: "idle",
       onCopyDiagnostics: expect.any(Function),
       onOpenLocalZip: expect.any(Function),
+      onOpenSettings: expect.any(Function),
+    });
+    expect(getLatestDriveBannerProps()).toEqual({
+      state: { kind: "ready" },
+      onOpenSettings: expect.any(Function),
     });
     expect(getLatestEmptyStateProps()).toEqual({
       isDragActive: false,
@@ -194,6 +267,21 @@ describe("BookshelfPage", () => {
       onClearAll: expect.any(Function),
     });
     unmountDefault();
+
+    const { unmount: unmountUnauth } = await renderAndFlush(
+      <Unauthenticated />,
+    );
+    expect(getLatestDriveBannerProps().state).toEqual({
+      kind: "unauthenticated",
+    });
+    unmountUnauth();
+
+    const { unmount: unmountNoRoots } = await renderAndFlush(<NoDriveRoots />);
+    expect(getLatestDriveBannerProps().state).toEqual({
+      kind: "no-roots",
+      email: "reader@example.com",
+    });
+    unmountNoRoots();
 
     const { unmount: unmountDrag } = await renderAndFlush(<DragActive />);
     expect(getLatestEmptyStateProps().isDragActive).toBe(true);
@@ -699,6 +787,348 @@ describe("BookshelfPage", () => {
         pendingClear1,
         pendingClear2,
       ]);
+    });
+    expect(diagnosticLogger.getEntries()).toEqual([]);
+  });
+
+  it("ヘッダーおよびバナーのonOpenSettingsでスクロール位置を保存して/settingsへ遷移し、復帰時(StrictMode含む)にwindow.scrollToで復元すること (TR-03, TR-09, AC-BS-07)", async () => {
+    const scrollToSpy = vi
+      .spyOn(window, "scrollTo")
+      .mockImplementation(() => {});
+    Object.defineProperty(window, "scrollY", {
+      configurable: true,
+      value: 185,
+    });
+
+    const { unmount: unmount1 } = await renderAndFlush(
+      <ServiceProvider readingProgressRepo={createMockReadingProgressRepo()}>
+        <RouterProvider initialPath="/">
+          <BookshelfPage initialDriveSetupState={{ kind: "unauthenticated" }} />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+
+    // 1. ヘッダー設定ボタン -> scrollY 保存 + /settings 遷移
+    act(() => {
+      getLatestHeaderProps().onOpenSettings?.();
+    });
+    expect(useBookshelfUiStateStore.getState().scrollY).toBe(185);
+    expect(window.location.pathname).toBe("/settings");
+    unmount1();
+
+    // 2. バナー CTA -> scrollY 更新 + /settings 遷移
+    window.history.replaceState(null, "", "/");
+    Object.defineProperty(window, "scrollY", {
+      configurable: true,
+      value: 240,
+    });
+    const { unmount: unmount2 } = await renderAndFlush(
+      <ServiceProvider readingProgressRepo={createMockReadingProgressRepo()}>
+        <RouterProvider initialPath="/">
+          <BookshelfPage initialDriveSetupState={{ kind: "unauthenticated" }} />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    act(() => {
+      getLatestDriveBannerProps().onOpenSettings();
+    });
+    expect(useBookshelfUiStateStore.getState().scrollY).toBe(240);
+    expect(window.location.pathname).toBe("/settings");
+    unmount2();
+
+    // 3. / 復帰時（StrictMode + 非同期取得後）に window.scrollTo(0, 240) で復元されストアがクリアされること
+    window.history.replaceState(null, "", "/");
+    scrollToSpy.mockClear();
+    const historyDeferred =
+      createDeferred<readonly LocalReadingHistoryItem[]>();
+    const delayedProgressRepo = createMockReadingProgressRepo({
+      listRecentLocal: vi.fn(() => historyDeferred.promise),
+    });
+    const authBridge = createMockGoogleAuthBridge({
+      getSession: vi.fn(async () => null),
+    });
+
+    const { unmount: unmount3 } = render(
+      <StrictMode>
+        <ServiceProvider
+          readingProgressRepo={delayedProgressRepo}
+          googleAuthBridge={authBridge}
+          driveSyncRootsRepo={createMockDriveSyncRootsRepo()}
+        >
+          <RouterProvider initialPath="/">
+            <BookshelfPage />
+          </RouterProvider>
+        </ServiceProvider>
+      </StrictMode>,
+    );
+
+    expect(scrollToSpy).toHaveBeenCalledWith(0, 240);
+    // 非同期完了前は store の scrollY を消去しないこと
+    expect(useBookshelfUiStateStore.getState().scrollY).toBe(240);
+
+    await act(async () => {
+      historyDeferred.resolve([]);
+      await flushMicrotasks();
+    });
+
+    expect(scrollToSpy).toHaveBeenLastCalledWith(0, 240);
+    expect(useBookshelfUiStateStore.getState().scrollY).toBe(0);
+    unmount3();
+
+    // 4. ローカルファイル選択時 (TR-02a) に残留 scrollY をクリアすること
+    useBookshelfUiStateStore.getState().saveScrollY(120);
+    await renderAndFlush(<Default />);
+    const input = screen.getByTestId("local-zip-file-input");
+    fireEvent.change(input, {
+      target: {
+        files: [
+          new File(["zip"], "clean-scroll.zip", { type: "application/zip" }),
+        ],
+      },
+    });
+    expect(useBookshelfUiStateStore.getState().scrollY).toBe(0);
+
+    Object.defineProperty(window, "scrollY", {
+      configurable: true,
+      value: 0,
+    });
+  });
+
+  it("initialDriveSetupState未指定時にgetCachedSession・getSession・subscribeSession・countEnabledからバナー状態を導出し失敗時は安全フォールバックすること (AC-BS-07)", async () => {
+    const progressRepo = createMockReadingProgressRepo();
+    const sessionA: GoogleAuthSession = {
+      email: "cached@example.com",
+      accessToken: "ya29.cached",
+      expiresAt: Date.now() + 3_600_000,
+    };
+
+    // 1. getCachedSession ヒット + countEnabled > 0 -> ready
+    const cachedAuth = createMockGoogleAuthBridge({
+      getCachedSession: vi.fn(() => sessionA),
+    });
+    const rootsReadyRepo = createMockDriveSyncRootsRepo({
+      countEnabled: vi.fn(async () => 2),
+    });
+    const { unmount: unmountCached } = await renderAndFlush(
+      <ServiceProvider
+        readingProgressRepo={progressRepo}
+        googleAuthBridge={cachedAuth}
+        driveSyncRootsRepo={rootsReadyRepo}
+      >
+        <RouterProvider initialPath="/">
+          <BookshelfPage initialRecentHistory={[]} />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    expect(cachedAuth.getSession).not.toHaveBeenCalled();
+    expect(getLatestDriveBannerProps().state).toEqual({ kind: "ready" });
+
+    // subscribeSession で null (サインアウト) -> unauthenticated、再ログイン + countEnabled=0 -> no-roots
+    vi.mocked(rootsReadyRepo.countEnabled).mockResolvedValueOnce(0);
+    act(() => {
+      cachedAuth.emitSession(null);
+    });
+    expect(getLatestDriveBannerProps().state).toEqual({
+      kind: "unauthenticated",
+    });
+
+    await act(async () => {
+      cachedAuth.emitSession({
+        email: "relinked@example.com",
+        accessToken: "ya29.new",
+        expiresAt: Date.now() + 3_600_000,
+      });
+      await flushMicrotasks();
+    });
+    expect(getLatestDriveBannerProps().state).toEqual({
+      kind: "no-roots",
+      email: "relinked@example.com",
+    });
+    unmountCached();
+
+    // 2. getCachedSession()=null -> getSession() 解決 & subscribeSession 連携 & countEnabled失敗時は no-roots フォールバック
+    const failingRootsRepo = createMockDriveSyncRootsRepo({
+      countEnabled: vi.fn(async () => {
+        throw new Error("count failed");
+      }),
+    });
+    const asyncAuth = createMockGoogleAuthBridge({
+      getCachedSession: vi.fn(() => null),
+      getSession: vi.fn(async () => sessionA),
+    });
+    const { unmount: unmountCountErr } = await renderAndFlush(
+      <ServiceProvider
+        readingProgressRepo={progressRepo}
+        googleAuthBridge={asyncAuth}
+        driveSyncRootsRepo={failingRootsRepo}
+      >
+        <RouterProvider initialPath="/">
+          <BookshelfPage initialRecentHistory={[]} />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    expect(getLatestDriveBannerProps().state).toEqual({
+      kind: "no-roots",
+      email: "cached@example.com",
+    });
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "warn",
+          scope: "bookshelf",
+          detail: "count failed",
+        }),
+      ]),
+    );
+    unmountCountErr();
+
+    // 3. getSession() 失敗時は warn 記録し unauthenticated へフォールバック
+    diagnosticLogger.clear();
+    const failingAuth = createMockGoogleAuthBridge({
+      getCachedSession: vi.fn(() => null),
+      getSession: vi.fn(async () => {
+        throw new Error("getSession boom");
+      }),
+    });
+    await renderAndFlush(
+      <ServiceProvider
+        readingProgressRepo={progressRepo}
+        googleAuthBridge={failingAuth}
+        driveSyncRootsRepo={createMockDriveSyncRootsRepo()}
+      >
+        <RouterProvider initialPath="/">
+          <BookshelfPage initialRecentHistory={[]} />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    expect(getLatestDriveBannerProps().state).toEqual({
+      kind: "unauthenticated",
+    });
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "warn",
+          scope: "bookshelf",
+          detail: "getSession boom",
+        }),
+      ]),
+    );
+  });
+
+  it("Driveバナー非同期解決中にアンマウントまたはセッション更新が起きた場合は古い結果を破棄すること (AC-BS-07)", async () => {
+    const progressRepo = createMockReadingProgressRepo();
+    const sessionLate: GoogleAuthSession = {
+      email: "late@example.com",
+      accessToken: "ya29.late",
+      expiresAt: Date.now() + 3_600_000,
+    };
+
+    // 1. getSession() 待機中に subscribeSession でサインアウト変化 -> 遅延 resolve / reject は無視
+    const getSessionResolve = createDeferred<GoogleAuthSession | null>();
+    const raceAuth1 = createMockGoogleAuthBridge({
+      getSession: vi.fn(() => getSessionResolve.promise),
+    });
+    const { unmount: unmountRace1 } = render(
+      <ServiceProvider
+        readingProgressRepo={progressRepo}
+        googleAuthBridge={raceAuth1}
+        driveSyncRootsRepo={createMockDriveSyncRootsRepo()}
+      >
+        <RouterProvider initialPath="/">
+          <BookshelfPage initialRecentHistory={[]} />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    act(() => {
+      raceAuth1.emitSession(null);
+    });
+    expect(getLatestDriveBannerProps().state).toEqual({
+      kind: "unauthenticated",
+    });
+    await act(async () => {
+      getSessionResolve.resolve(sessionLate);
+      await flushMicrotasks();
+    });
+    expect(getLatestDriveBannerProps().state).toEqual({
+      kind: "unauthenticated",
+    });
+    unmountRace1();
+
+    const getSessionReject = createDeferred<GoogleAuthSession | null>();
+    const raceAuth2 = createMockGoogleAuthBridge({
+      getSession: vi.fn(() => getSessionReject.promise),
+    });
+    const { unmount: unmountRace2 } = render(
+      <ServiceProvider
+        readingProgressRepo={progressRepo}
+        googleAuthBridge={raceAuth2}
+        driveSyncRootsRepo={createMockDriveSyncRootsRepo()}
+      >
+        <RouterProvider initialPath="/">
+          <BookshelfPage initialRecentHistory={[]} />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    unmountRace2();
+    await act(async () => {
+      getSessionReject.reject(new Error("late session err"));
+      await flushMicrotasks();
+    });
+    expect(diagnosticLogger.getEntries()).toEqual([]);
+
+    // 2. countEnabled() 待機中にアンマウントおよびセッション更新 -> 遅延 resolve / reject は無視
+    const countResolve = createDeferred<number>();
+    const countAuth1 = createMockGoogleAuthBridge({
+      getCachedSession: vi.fn(() => sessionLate),
+    });
+    const countRoots1 = createMockDriveSyncRootsRepo({
+      countEnabled: vi.fn(() => countResolve.promise),
+    });
+    const { unmount: unmountCount1 } = render(
+      <ServiceProvider
+        readingProgressRepo={progressRepo}
+        googleAuthBridge={countAuth1}
+        driveSyncRootsRepo={countRoots1}
+      >
+        <RouterProvider initialPath="/">
+          <BookshelfPage initialRecentHistory={[]} />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    act(() => {
+      countAuth1.emitSession(null);
+    });
+    await act(async () => {
+      countResolve.resolve(3);
+      await flushMicrotasks();
+    });
+    expect(getLatestDriveBannerProps().state).toEqual({
+      kind: "unauthenticated",
+    });
+    unmountCount1();
+
+    const countReject = createDeferred<number>();
+    const countAuth2 = createMockGoogleAuthBridge({
+      getCachedSession: vi.fn(() => sessionLate),
+    });
+    const countRoots2 = createMockDriveSyncRootsRepo({
+      countEnabled: vi.fn(() => countReject.promise),
+    });
+    const { unmount: unmountCount2 } = render(
+      <ServiceProvider
+        readingProgressRepo={progressRepo}
+        googleAuthBridge={countAuth2}
+        driveSyncRootsRepo={countRoots2}
+      >
+        <RouterProvider initialPath="/">
+          <BookshelfPage initialRecentHistory={[]} />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    unmountCount2();
+    await act(async () => {
+      countReject.reject(new Error("late count err"));
+      await flushMicrotasks();
     });
     expect(diagnosticLogger.getEntries()).toEqual([]);
   });

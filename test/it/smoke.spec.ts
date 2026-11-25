@@ -35,7 +35,16 @@ test.describe("SCN-01: 初期シェル起動・WebGL2環境・診断ログ・ロ
     await expect(
       page.getByTestId("header-open-local-zip-button"),
     ).toBeVisible();
+    await expect(page.getByTestId("header-settings-button")).toBeVisible();
     await expect(page.getByTestId("open-local-zip-button")).toBeVisible();
+
+    const setupBanner = page.getByTestId("drive-setup-banner");
+    await expect(setupBanner).toBeVisible();
+    await expect(setupBanner).toHaveAttribute(
+      "data-banner-kind",
+      "unauthenticated",
+    );
+    await expect(page.getByTestId("drive-setup-banner-cta")).toBeVisible();
 
     const hasWebGL2 = await page.evaluate(() => {
       const canvas = document.createElement("canvas");

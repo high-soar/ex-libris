@@ -15,14 +15,23 @@ import * as stories from "./App.stories";
 import { useServices } from "./app/serviceContext";
 import type { CoordinatorSessionHandle } from "./app/coordinatorClient";
 import { MockAppBridge } from "./bridges/app/mockAppBridge";
-import { diagnosticLogger } from "./diagnostics/diagnosticLogger";
+import {
+  createDiagnosticLogger,
+  diagnosticLogger,
+} from "./diagnostics/diagnosticLogger";
 import type { CoordinatorWorkerApi } from "./engine/types";
 import * as BookshelfPageModule from "./features/bookshelf/BookshelfPage";
 import * as ReaderPageModule from "./features/reader/ReaderPage";
+import * as SettingsPageModule from "./features/settings/SettingsPage";
 import { useRouter } from "./shared/router/routerContext";
 
-const { Default, CopiedFeedback, CopyFailedFeedback, ReaderLocalFallback } =
-  composeStories(stories);
+const {
+  Default,
+  CopiedFeedback,
+  CopyFailedFeedback,
+  SettingsRoute,
+  ReaderLocalFallback,
+} = composeStories(stories);
 
 function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => {
@@ -35,6 +44,7 @@ describe("App", () => {
 
   let bookshelfSpy: MockInstance<typeof BookshelfPageModule.BookshelfPage>;
   let readerSpy: MockInstance<typeof ReaderPageModule.ReaderPage>;
+  let settingsSpy: MockInstance<typeof SettingsPageModule.SettingsPage>;
 
   beforeEach(() => {
     diagnosticLogger.clear();
@@ -46,6 +56,9 @@ describe("App", () => {
       .mockImplementation(() => null as unknown as ReactElement);
     readerSpy = vi
       .spyOn(ReaderPageModule, "ReaderPage")
+      .mockImplementation(() => null);
+    settingsSpy = vi
+      .spyOn(SettingsPageModule, "SettingsPage")
       .mockImplementation(() => null);
   });
 
@@ -69,6 +82,12 @@ describe("App", () => {
     return lastCall![0] as ReaderPageModule.ReaderPageProps;
   };
 
+  const getLatestSettingsProps = (): SettingsPageModule.SettingsPageProps => {
+    const lastCall = settingsSpy.mock.calls.at(-1);
+    expect(lastCall).toBeDefined();
+    return lastCall![0] as SettingsPageModule.SettingsPageProps;
+  };
+
   it("全Storybookストーリーを描画しルートに応じた子PageへPropsを正しく渡すこと", () => {
     const { unmount: unmountDefault } = render(<Default />);
     expect(screen.getByTestId("app-root")).toHaveAttribute(
@@ -76,8 +95,12 @@ describe("App", () => {
       "true",
     );
     expect(window.__exLibrisServices?.isReady).toBe(true);
-    expect(getLatestBookshelfProps()).toEqual({ initialCopyStatus: "idle" });
+    expect(getLatestBookshelfProps()).toEqual({
+      initialCopyStatus: "idle",
+      initialDriveSetupState: { kind: "ready" },
+    });
     expect(readerSpy).not.toHaveBeenCalled();
+    expect(settingsSpy).not.toHaveBeenCalled();
     expect(diagnosticLogger.getEntries()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -90,16 +113,36 @@ describe("App", () => {
 
     bookshelfSpy.mockClear();
     const { unmount: unmountCopied } = render(<CopiedFeedback />);
-    expect(getLatestBookshelfProps()).toEqual({ initialCopyStatus: "copied" });
+    expect(getLatestBookshelfProps()).toEqual({
+      initialCopyStatus: "copied",
+      initialDriveSetupState: { kind: "ready" },
+    });
     unmountCopied();
 
     bookshelfSpy.mockClear();
     const { unmount: unmountFailed } = render(<CopyFailedFeedback />);
-    expect(getLatestBookshelfProps()).toEqual({ initialCopyStatus: "failed" });
+    expect(getLatestBookshelfProps()).toEqual({
+      initialCopyStatus: "failed",
+      initialDriveSetupState: { kind: "ready" },
+    });
     unmountFailed();
 
     bookshelfSpy.mockClear();
+    settingsSpy.mockClear();
+    const { unmount: unmountSettings } = render(<SettingsRoute />);
+    expect(settingsSpy).toHaveBeenCalledTimes(1);
+    expect(bookshelfSpy).not.toHaveBeenCalled();
+    expect(getLatestSettingsProps()).toEqual({
+      onRegisterModalBack: expect.any(Function),
+      initialSnapshot: expect.objectContaining({
+        authState: expect.objectContaining({ status: "connected" }),
+      }),
+    });
+    unmountSettings();
+
+    bookshelfSpy.mockClear();
     readerSpy.mockClear();
+    settingsSpy.mockClear();
     render(<ReaderLocalFallback />);
     expect(readerSpy).toHaveBeenCalledTimes(1);
     expect(getLatestReaderProps()).toEqual({
@@ -108,7 +151,7 @@ describe("App", () => {
     expect(bookshelfSpy).not.toHaveBeenCalled();
   });
 
-  it("ルートパス（'/'・'/read/local'・未知パス）に応じてBookshelfPageとReaderPageを切り替えること", () => {
+  it("ルートパス（'/'・'/settings'・'/read/local'・未知パス）に応じてBookshelfPage・SettingsPage・ReaderPageを切り替えること", () => {
     let triggerNavigate: ((to: string) => void) | null = null;
     bookshelfSpy.mockImplementation(() => {
       const { navigate } = useRouter();
@@ -120,23 +163,43 @@ describe("App", () => {
       <App initialPath="/unknown/path" />,
     );
     expect(bookshelfSpy).toHaveBeenCalledTimes(1);
+    expect(getLatestBookshelfProps()).toEqual({ initialCopyStatus: "idle" });
     expect(readerSpy).not.toHaveBeenCalled();
+    expect(settingsSpy).not.toHaveBeenCalled();
 
-    // Bookshelf -> /read/local への遷移で ReaderPage へ切り替わる
+    // Bookshelf -> /settings への遷移で SettingsPage へ切り替わる
+    act(() => {
+      triggerNavigate?.("/settings");
+    });
+    expect(settingsSpy).toHaveBeenCalledTimes(1);
+
+    // /settings -> /read/local への遷移で ReaderPage へ切り替わる
     act(() => {
       triggerNavigate?.("/read/local");
     });
     expect(readerSpy).toHaveBeenCalledTimes(1);
     unmountUnknown();
 
+    const customLogger = createDiagnosticLogger(10);
     bookshelfSpy.mockClear();
     readerSpy.mockClear();
+    settingsSpy.mockClear();
+    render(<App initialPath="/settings" settingsLogger={customLogger} />);
+    expect(settingsSpy).toHaveBeenCalledTimes(1);
+    expect(getLatestSettingsProps()).toEqual({
+      onRegisterModalBack: expect.any(Function),
+      logger: customLogger,
+    });
+
+    bookshelfSpy.mockClear();
+    readerSpy.mockClear();
+    settingsSpy.mockClear();
     render(<App initialPath="/read/local" />);
     expect(readerSpy).toHaveBeenCalledTimes(1);
     expect(bookshelfSpy).not.toHaveBeenCalled();
   });
 
-  it("AppBridgeのハードウェア戻るボタンで優先度3(TR-08終了)と優先度5(minimizeApp)を実行しアンマウント時に解除すること", async () => {
+  it("AppBridgeのハードウェア戻るボタンで優先度1(isBackBlocked)・2(Settingsモーダル)・3(TR-08終了)・4(/settings復帰)・5(minimizeApp)を実行しアンマウント時に解除すること", async () => {
     const bridge = new MockAppBridge();
     const customSessionFactory = vi.fn((): CoordinatorSessionHandle => ({
       api: {} as CoordinatorWorkerApi,
@@ -145,12 +208,24 @@ describe("App", () => {
 
     let capturedFactory: (() => CoordinatorSessionHandle) | null = null;
     let triggerNavigate: ((to: string) => void) | null = null;
+    let setBackBlockedRef: ((blocked: boolean) => void) | null = null;
+    let currentRoutePath = "/";
+
     bookshelfSpy.mockImplementation(() => {
       const services = useServices();
       const router = useRouter();
       capturedFactory = services.createCoordinatorSession;
       triggerNavigate = router.navigate;
+      setBackBlockedRef = router.setBackBlocked;
+      currentRoutePath = router.route.path;
       return null as unknown as ReactElement;
+    });
+    settingsSpy.mockImplementation(() => {
+      const router = useRouter();
+      triggerNavigate = router.navigate;
+      setBackBlockedRef = router.setBackBlocked;
+      currentRoutePath = router.route.path;
+      return null;
     });
 
     const { unmount } = render(
@@ -167,6 +242,51 @@ describe("App", () => {
     // 優先度 5: SCR-01 表示中に戻るボタン押下 -> minimizeApp() 実行
     await act(async () => {
       await bridge.triggerBackButton();
+    });
+    expect(bridge.getMinimizeAppCallCount()).toBe(1);
+
+    // 優先度 1 + 2 + 4: /settings へ遷移
+    act(() => {
+      triggerNavigate?.("/settings");
+    });
+    expect(currentRoutePath).toBe("/settings");
+
+    const modalBackSpy = vi.fn();
+    act(() => {
+      getLatestSettingsProps().onRegisterModalBack?.(modalBackSpy);
+      setBackBlockedRef?.(true);
+    });
+
+    // 優先度 1: isBackBlocked=true 中はモーダル閉鎖・戻る遷移・minimize いずれも発火しない
+    await act(async () => {
+      await bridge.triggerBackButton();
+    });
+    expect(modalBackSpy).not.toHaveBeenCalled();
+    expect(currentRoutePath).toBe("/settings");
+    expect(bridge.getMinimizeAppCallCount()).toBe(1);
+
+    // 優先度 2: isBackBlocked=false かつモーダル登録あり -> モーダルのみ閉鎖し /settings に留まる
+    act(() => {
+      setBackBlockedRef?.(false);
+    });
+    await act(async () => {
+      await bridge.triggerBackButton();
+    });
+    expect(modalBackSpy).toHaveBeenCalledTimes(1);
+    expect(currentRoutePath).toBe("/settings");
+    expect(bridge.getMinimizeAppCallCount()).toBe(1);
+
+    // 優先度 4: モーダル登録解除後 -> /settings から前画面 '/' へ復帰 (TR-09)
+    act(() => {
+      getLatestSettingsProps().onRegisterModalBack?.(null);
+    });
+    await act(async () => {
+      await bridge.triggerBackButton();
+    });
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(currentRoutePath).toBe("/");
+      });
     });
     expect(bridge.getMinimizeAppCallCount()).toBe(1);
 

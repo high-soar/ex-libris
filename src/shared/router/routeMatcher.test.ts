@@ -53,10 +53,32 @@ describe("routeMatcher", () => {
       });
     });
 
+    it("'/settings' を末尾スラッシュやクエリ付きも含め settings ルートへ解決すること", () => {
+      expect(matchRoute("/settings")).toEqual({
+        name: "settings",
+        path: "/settings",
+      });
+      expect(matchRoute("/settings/")).toEqual({
+        name: "settings",
+        path: "/settings",
+      });
+      expect(matchRoute("/settings?tab=oauth")).toEqual({
+        name: "settings",
+        path: "/settings",
+      });
+      expect(matchRoute("  /settings/?foo=bar#diag  ")).toEqual({
+        name: "settings",
+        path: "/settings",
+      });
+    });
+
     it("未知または不正なパスは例外を投げず bookshelf ルート '/' へフォールバックすること", () => {
       expect(matchRoute("/unknown")).toEqual({ name: "bookshelf", path: "/" });
-      expect(matchRoute("/settings")).toEqual({ name: "bookshelf", path: "/" });
       expect(matchRoute("/series/123")).toEqual({
+        name: "bookshelf",
+        path: "/",
+      });
+      expect(matchRoute("/settings/extra")).toEqual({
         name: "bookshelf",
         path: "/",
       });
@@ -64,6 +86,7 @@ describe("routeMatcher", () => {
         name: "bookshelf",
         path: "/",
       });
+      expect(matchRoute("settings")).toEqual({ name: "bookshelf", path: "/" });
       expect(matchRoute("read/local")).toEqual({
         name: "bookshelf",
         path: "/",
