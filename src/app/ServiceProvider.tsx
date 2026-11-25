@@ -7,15 +7,21 @@ import { CapacitorGoogleAuthAdapter } from "../bridges/oauth/capacitorGoogleAuth
 import { GoogleAuthTokenManager } from "../bridges/oauth/googleAuthTokenManager";
 import { MockGoogleAuthAdapter } from "../bridges/oauth/mockGoogleAuthAdapter";
 import type { GoogleAuthBridge } from "../bridges/oauth/types";
+import { DefaultDriveSyncEngine } from "../providers/gdrive/driveSyncEngine";
 import { GoogleDriveFolderClient } from "../providers/gdrive/googleDriveFolderClient";
+import { GoogleDriveSyncClient } from "../providers/gdrive/googleDriveSyncClient";
 import { MockDriveFolderClient } from "../providers/gdrive/mockDriveFolderClient";
+import { MockDriveSyncClient } from "../providers/gdrive/mockDriveSyncClient";
 import type {
   DriveFolderClient,
   DriveSyncClient,
   DriveSyncEngine,
 } from "../providers/gdrive/types";
 import { db, resetTestDb } from "../storage/db";
-import type { DriveSyncMetaRepository } from "../storage/repositories/driveSyncMetaRepository";
+import {
+  DexieDriveSyncMetaRepository,
+  type DriveSyncMetaRepository,
+} from "../storage/repositories/driveSyncMetaRepository";
 import {
   DexieDriveSyncRootsRepository,
   type DriveSyncRootsRepository,
@@ -28,8 +34,14 @@ import {
   DexieReadingProgressRepository,
   type ReadingProgressRepository,
 } from "../storage/repositories/readingProgressRepository";
-import type { SeriesRepository } from "../storage/repositories/seriesRepository";
-import type { VolumesRepository } from "../storage/repositories/volumesRepository";
+import {
+  DexieSeriesRepository,
+  type SeriesRepository,
+} from "../storage/repositories/seriesRepository";
+import {
+  DexieVolumesRepository,
+  type VolumesRepository,
+} from "../storage/repositories/volumesRepository";
 import {
   DexieZipIndexCacheRepository,
   type ZipIndexCacheRepository,
@@ -68,6 +80,17 @@ export interface ResetTestDbExposureOptions {
 interface DefaultGoogleAuthResources {
   readonly bridge: GoogleAuthBridge;
   readonly mockAdapter?: MockGoogleAuthAdapter;
+}
+
+interface GlobalServicesBuildParams {
+  readonly appBridge: AppBridge;
+  readonly mockGoogleAuthAdapter?: MockGoogleAuthAdapter;
+  readonly mockDriveFolderClient?: MockDriveFolderClient;
+  readonly driveSyncEngine: DriveSyncEngine;
+  readonly seriesRepo: SeriesRepository;
+  readonly volumesRepo: VolumesRepository;
+  readonly driveSyncMetaRepo: DriveSyncMetaRepository;
+  readonly mockDriveSyncClient?: MockDriveSyncClient;
 }
 
 const TEST_MOCK_AUTH_STORAGE_KEY = "exLibris:test:mockGoogleAuthSession";
@@ -139,28 +162,38 @@ function writePersistedMockAuthSession(
 }
 
 function buildGlobalServicesState(
-  appBridge: AppBridge,
-  mockGoogleAuthAdapter?: MockGoogleAuthAdapter,
-  mockDriveFolderClient?: MockDriveFolderClient,
+  params: GlobalServicesBuildParams,
 ): ExLibrisServicesState {
   if (!shouldExposeResetTestDb()) {
     return {
       isReady: true,
-      appBridge,
+      appBridge: params.appBridge,
     };
   }
 
   return {
     isReady: true,
-    appBridge,
+    appBridge: params.appBridge,
     resetTestDb: async () => {
       writePersistedMockAuthSession(null);
-      mockGoogleAuthAdapter?.reset();
-      mockDriveFolderClient?.reset();
+      params.mockGoogleAuthAdapter?.reset();
+      params.mockDriveFolderClient?.reset();
+      params.mockDriveSyncClient?.reset();
       await resetTestDb();
     },
-    ...(mockGoogleAuthAdapter !== undefined ? { mockGoogleAuthAdapter } : {}),
-    ...(mockDriveFolderClient !== undefined ? { mockDriveFolderClient } : {}),
+    ...(params.mockGoogleAuthAdapter !== undefined
+      ? { mockGoogleAuthAdapter: params.mockGoogleAuthAdapter }
+      : {}),
+    ...(params.mockDriveFolderClient !== undefined
+      ? { mockDriveFolderClient: params.mockDriveFolderClient }
+      : {}),
+    driveSyncEngine: params.driveSyncEngine,
+    seriesRepo: params.seriesRepo,
+    volumesRepo: params.volumesRepo,
+    driveSyncMetaRepo: params.driveSyncMetaRepo,
+    ...(params.mockDriveSyncClient !== undefined
+      ? { mockDriveSyncClient: params.mockDriveSyncClient }
+      : {}),
   };
 }
 
@@ -218,6 +251,26 @@ function createDefaultDriveFolderClient(
     : new MockDriveFolderClient();
 }
 
+function createDefaultSeriesRepo(): SeriesRepository {
+  return new DexieSeriesRepository(db);
+}
+
+function createDefaultVolumesRepo(): VolumesRepository {
+  return new DexieVolumesRepository(db);
+}
+
+function createDefaultDriveSyncMetaRepo(): DriveSyncMetaRepository {
+  return new DexieDriveSyncMetaRepository(db);
+}
+
+function createDefaultDriveSyncClient(
+  authBridge: GoogleAuthBridge,
+): DriveSyncClient {
+  return Capacitor.isNativePlatform()
+    ? new GoogleDriveSyncClient({ authBridge })
+    : new MockDriveSyncClient();
+}
+
 function useStableService<T>(
   provided: T | undefined,
   createDefault: () => T,
@@ -244,6 +297,11 @@ export function ServiceProvider({
   googleAuthBridge,
   driveSyncRootsRepo,
   driveFolderClient,
+  seriesRepo,
+  volumesRepo,
+  driveSyncMetaRepo,
+  driveSyncClient,
+  driveSyncEngine,
 }: ServiceProviderProps) {
   const resolvedAppBridge = useStableService(appBridge, createDefaultAppBridge);
   const resolvedZipIndexCacheRepo = useStableService(
@@ -292,6 +350,57 @@ export function ServiceProvider({
       ? resolvedDriveFolderClient
       : undefined;
 
+  const resolvedSeriesRepo = useStableService(
+    seriesRepo,
+    createDefaultSeriesRepo,
+  );
+  const resolvedVolumesRepo = useStableService(
+    volumesRepo,
+    createDefaultVolumesRepo,
+  );
+  const resolvedDriveSyncMetaRepo = useStableService(
+    driveSyncMetaRepo,
+    createDefaultDriveSyncMetaRepo,
+  );
+
+  const createDefaultSyncClient = useCallback(
+    () => createDefaultDriveSyncClient(resolvedGoogleAuthBridge),
+    [resolvedGoogleAuthBridge],
+  );
+  const resolvedDriveSyncClient = useStableService(
+    driveSyncClient,
+    createDefaultSyncClient,
+  );
+
+  const resolvedMockDriveSyncClient =
+    resolvedDriveSyncClient instanceof MockDriveSyncClient
+      ? resolvedDriveSyncClient
+      : undefined;
+
+  const createDefaultSyncEngine = useCallback(
+    () =>
+      new DefaultDriveSyncEngine({
+        driveSyncClient: resolvedDriveSyncClient,
+        driveSyncRootsRepo: resolvedDriveSyncRootsRepo,
+        driveSyncMetaRepo: resolvedDriveSyncMetaRepo,
+        seriesRepo: resolvedSeriesRepo,
+        volumesRepo: resolvedVolumesRepo,
+        zipIndexCacheRepo: resolvedZipIndexCacheRepo,
+      }),
+    [
+      resolvedDriveSyncClient,
+      resolvedDriveSyncRootsRepo,
+      resolvedDriveSyncMetaRepo,
+      resolvedSeriesRepo,
+      resolvedVolumesRepo,
+      resolvedZipIndexCacheRepo,
+    ],
+  );
+  const resolvedDriveSyncEngine = useStableService(
+    driveSyncEngine,
+    createDefaultSyncEngine,
+  );
+
   const resolvedCreateCoordinatorSession = useMemo(
     () =>
       createCoordinatorSession ??
@@ -303,15 +412,25 @@ export function ServiceProvider({
   );
 
   useEffect(() => {
-    window.__exLibrisServices = buildGlobalServicesState(
-      resolvedAppBridge,
-      resolvedMockGoogleAuthAdapter,
-      resolvedMockDriveFolderClient,
-    );
+    window.__exLibrisServices = buildGlobalServicesState({
+      appBridge: resolvedAppBridge,
+      mockGoogleAuthAdapter: resolvedMockGoogleAuthAdapter,
+      mockDriveFolderClient: resolvedMockDriveFolderClient,
+      driveSyncEngine: resolvedDriveSyncEngine,
+      seriesRepo: resolvedSeriesRepo,
+      volumesRepo: resolvedVolumesRepo,
+      driveSyncMetaRepo: resolvedDriveSyncMetaRepo,
+      mockDriveSyncClient: resolvedMockDriveSyncClient,
+    });
   }, [
     resolvedAppBridge,
     resolvedMockGoogleAuthAdapter,
     resolvedMockDriveFolderClient,
+    resolvedDriveSyncEngine,
+    resolvedSeriesRepo,
+    resolvedVolumesRepo,
+    resolvedDriveSyncMetaRepo,
+    resolvedMockDriveSyncClient,
   ]);
 
   useEffect(() => {
@@ -340,11 +459,11 @@ export function ServiceProvider({
       googleAuthBridge: resolvedGoogleAuthBridge,
       driveSyncRootsRepo: resolvedDriveSyncRootsRepo,
       driveFolderClient: resolvedDriveFolderClient,
-      seriesRepo: undefined as unknown as SeriesRepository,
-      volumesRepo: undefined as unknown as VolumesRepository,
-      driveSyncMetaRepo: undefined as unknown as DriveSyncMetaRepository,
-      driveSyncClient: undefined as unknown as DriveSyncClient,
-      driveSyncEngine: undefined as unknown as DriveSyncEngine,
+      seriesRepo: resolvedSeriesRepo,
+      volumesRepo: resolvedVolumesRepo,
+      driveSyncMetaRepo: resolvedDriveSyncMetaRepo,
+      driveSyncClient: resolvedDriveSyncClient,
+      driveSyncEngine: resolvedDriveSyncEngine,
     }),
     [
       resolvedAppBridge,
@@ -355,6 +474,11 @@ export function ServiceProvider({
       resolvedGoogleAuthBridge,
       resolvedDriveSyncRootsRepo,
       resolvedDriveFolderClient,
+      resolvedSeriesRepo,
+      resolvedVolumesRepo,
+      resolvedDriveSyncMetaRepo,
+      resolvedDriveSyncClient,
+      resolvedDriveSyncEngine,
     ],
   );
 
