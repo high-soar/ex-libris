@@ -205,7 +205,7 @@ erDiagram
 
 - **`VolumesRepository` 契約（`src/storage/repositories/volumesRepository.ts` / `v0.2 [2/4]`〜）**:
   - **FIFO 直列化 ＆ 有効ルートクエリフィルタ**: 内部 Promise キューで全メソッド（`getById`, `getByDriveFileId`, `listBySeriesId`, `listVisibleByEnabledRoots`, `listByRootFolderIds`, `upsertFromDriveSync`, `markTrashedByDriveFileIds`）を FIFO 直列実行する。
-  - **巻表示ソート順（決定論的）**: `listBySeriesId` / `listVisibleByEnabledRoots` では `volumeNumber` 昇順（`null` は末尾）→ 同一 `volumeNumber` 時は単巻優先・`volumeLabel` 昇順 → `rawFileName` 昇順 → `id` 昇順の決定論ソートで返却する。
+  - **巻表示ソート順（決定論的）**: `listBySeriesId` / `listVisibleByEnabledRoots` では `volumeNumber` 昇順（`null` は末尾）→ 同一 `volumeNumber` 時は単巻優先（`volumeLabel.includes("合本")` を合本とみなし `false < true` で単巻を先）→ `volumeLabel` 昇順 → `rawFileName` 昇順 → `id` 昇順の決定論ソートで返却する（`VolumeRecord` スキーマ維持）。
   - **有効ルート所属フィルタと既存データ保護**: `SCR-04` でルートフォルダが一時無効化（`enabled: 0`）または論理削除（`deletedAt !== null`）された場合も、既存 `volumes` レコードや `coverBlob` は破壊せず保持し、`listVisibleByEnabledRoots(enabledRootIds)` 側で **`enabledRootIds.has(volume.rootFolderId) && volume.isTrashed === 0`** を満たす巻のみを本棚表示対象として返す。
   - **同期反映時の LWW `updatedAt` 保護 ＆ MD5 変化リセット**: `upsertFromDriveSync` で既存 `driveFileId` を更新する際は **`updatedAt` を一切変更せず維持** する。また `prev.md5Checksum !== next.md5Checksum || prev.fileSize !== next.fileSize` を検知した場合は戻り値に `invalidatedCacheKey: "gdrive:${driveFileId}:${prev.md5Checksum ?? prev.fileSize}"` を含めるとともに `coverBlob = null`, `coverStatus = "pending"`, `coverUpdatedAt = null` へリセットする。新規作成時のみ `addedAt = updatedAt = now`, `coverBlob = null`, `coverStatus = "pending"`, `coverCropMode = "auto"`, `coverPageIndex = 0`, `coverUpdatedAt = null`, `isTrashed = 0` で初期化する。
 

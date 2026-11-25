@@ -52,9 +52,9 @@ related_tests:
 2. **Drive スキャン ＆ `changes.list` 探索アルゴリズム（Q2）**:
    - フルスキャン**開始前**に `changes.getStartPageToken()` を取得し、有効な `driveSyncRoots`（`enabled === 1 && deletedAt === null`）を起点とする **バッチ BFS**（最大 20 親 ID 束ね・循環防止セット）で配下フォルダ木を構築する。
    - MIME 揺れ（`.cbz` が `application/octet-stream` 等になるケース）を取りこぼさないよう、`files.list` で非フォルダ項目を取得した上で JS 側で `/\.(zip|cbz)$/i` を厳密判定する。
-   - `driveStartPageToken` 未保持、`changes.list` の `410 TOKEN_EXPIRED`、または `syncMeta['syncedRootFolderIds']` に無い新規／再有効化ルート検出時は自動でフルスキャンへ切り替える。`changes.list` 処理中に未知の `parentFolderId` を検出した場合は `getFileMetadata()` で親方向へ遡り（メモ化キャッシュ＋最大深度・循環ガード）有効ルート帰属を判定する。
+   - `driveStartPageToken` 未保持、`changes.list` の `410 TOKEN_EXPIRED`（および `treatInvalidPageTokenAsExpired: true` 指定時の `400` かつ `pageToken` 失効）、または `syncMeta['syncedRootFolderIds']` に無い新規／再有効化ルート検出時は自動でフルスキャンへ切り替える。`changes.list` 処理中にフォルダ単位の変更イベント（有効ルート自身・既知親フォルダ・有効ルート配下のサブフォルダ移動/ゴミ箱/リネーム）を検知した場合も子ファイル個別イベント不発に備えて自動でフルスキャンへフォールバックする。未知の `parentFolderId` 遡り（メモ化キャッシュ＋最大深度 32・循環ガード）では `metadata === null || metadata.trashed === true || metadata.parents.length === 0` で即座に有効ルート外として打ち切る。
 3. **ルート無効化・ゴミ箱・ファイル上書き時の DB 遷移（Q3）**:
-   - Drive 上の削除・ゴミ箱・有効ルート外移動は `volumes.isTrashed = 1` に更新する。
+   - Drive 上の削除・ゴミ箱・有効ルート外移動は、現在有効なルート所属の既存巻（`enabledRootIds.has(existing.rootFolderId)`）に限定して `volumes.isTrashed = 1` に更新する（一時無効化中ルートの既存巻には触れない）。
    - `SCR-04` でのルート一時無効化（`enabled = 0`）や解除（`deletedAt !== null`）時は既存 `volumes` や `coverBlob` を破壊せず、本棚クエリ（`listVisibleByEnabledRoots`）側で「有効ルート所属 かつ `isTrashed === 0`」をフィルタする。
    - 同一 `driveFileId` の `md5Checksum` または `fileSize` 変化時は、旧キー `gdrive:${driveFileId}:${prev.md5Checksum ?? prev.fileSize}` の `zipIndexCache` を即時削除し、`coverBlob = null` / `coverStatus = "pending"` / `coverUpdatedAt = null` へリセットする。同期処理全体を通じて既存 `series.updatedAt` / `volumes.updatedAt` は一切更新しない（LWW 非汚染）。
 4. **Drive リネーム・移動追従と空シリーズの扱い（Q4）**:
@@ -64,12 +64,12 @@ related_tests:
    - シリーズ名寄せキーは `NFKC` 正規化＋記号/空白正規化＋ASCII 小文字化による **正規化タイトル単独キー（`normalizedTitleKey`）** とし、未ロック `series` には後続巻の抽出著者を重複排除マージする。
    - ファイル名からタイトルが空になる場合（`01.cbz` 等）は、親フォルダが `driveSyncRoots` 直下でないサブフォルダ（`isParentSyncRoot !== true`）のときのみ親フォルダ名からタイトル・著者を補完する。
 6. **巻数（単巻・小数・合本・上下巻・単発本）と `titleReading` 規則（Q6）**:
-   - 単巻・小数巻は数値（`1`, `10.5` 等）＋ `"第01巻"`（`特装版`・`限定版` 等の付記保持）、合本範囲（`01-05巻`）は開始巻数（`1`）＋ `"第01-05巻 合本"`、上下巻・前後編は Unicode 逆転防止のため `1/2/3` を割り当て、巻数なし単発本は `volumeNumber = null, volumeLabel = "単巻"` とする。
+   - 明示単巻・小数巻は数値（`0`, `1`, `10.5` 等）＋ `"第00巻"` / `"第01巻"`（`特装版`・`限定版` 等の付記保持）、合本範囲（`01-05巻`：`start <= 0 || end <= start` は不正範囲除外）は開始巻数（`1`）＋ `"第01-05巻 合本"`、上下巻・前後編は Unicode 逆転防止のため `1/2/3` を割り当て、巻数なし単発本は `volumeNumber = null, volumeLabel = "単巻"` とする。
    - `titleReading` 初期値は `NFKC` ＋ カタカナ→ひらがな変換 ＋ 英数字小文字化で生成する。
 7. **レート制限リトライ・排他ロック・トークン原子性（Q7）**:
    - `DriveSyncEngine` は内部排他ロックで多重 `sync()` を直列化する。
    - `429` / `403 (rateLimitExceeded / userRateLimitExceeded)` 時は最大 3 回の指数バックオフ（`500ms → 1000ms → 2000ms`、`sleepFn` 注入可能）で自動リトライする。
-   - 途中ページ失敗・`AbortError` 時は `driveStartPageToken` を一切進めず、全ページ取得と Dexie 反映完了後にのみトークン・最終同期時刻・同期済みルート ID 群を原子保存する。
+   - 途中ページ失敗・`AbortError` 時は `driveStartPageToken` を一切進めず、全 API ページ取得および `series` / `volumes` の Dexie 反映が完了した後にのみ `driveStartPageToken`・`lastDriveSyncAt`・`syncedRootFolderIds`（同期完了時点の有効ルート ID 配列 `[...enabledRootIds].sort()` で上書き保存）を単一トランザクションで `syncMeta` へ原子保存する。
 8. **仕様書分割・Sub-issue 粒度・実機検証区分（Q8）**:
    - 正本仕様書として [filename-parser.md](../providers/filename-parser.md) を新設分離し、実装は **3 MK（MK-1: ファイル名パーサー / MK-2: Storage Repositories / MK-3: Drive 同期エンジン＆DI）＋ Step 4 IT（`SCN-04`）** の 4 分割とする。
    - 実機検証は **区分 B（`Milestone v0.2 完了前`：`HO-12` として `#25` 実機検証時にあわせて実施）** とする。
@@ -85,16 +85,16 @@ related_tests:
 
 ## 2. 新規作成・変更対象の App 全体正本一覧
 
-|   種別   | 正本ファイル                                                     | 変更概要                                                                                                                                              |
-| :------: | :--------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **新規** | [filename-parser.md](../providers/filename-parser.md)            | 自炊ファイル名スマートパーサーの型契約・正規化/初期読み仮名・ノイズ/著者/巻数/合本/上下巻/親フォルダ補完ルール・`AC-FP-01`〜`06` を新設               |
-| **更新** | [google-drive.md](../providers/google-drive.md)                  | `driveHttpClient` 共通化（`TOKEN_EXPIRED`・429/403 指数バックオフ）、`DriveSyncClient`/`DriveSyncEngine`/`MockDriveSyncClient` 仕様、`AC-GD-09`〜`14` |
-| **更新** | [db-schema.md](../db-schema.md)                                  | `DriveSyncMetaRepository`（`syncMeta` 同期キー群）、`SeriesRepository`、`VolumesRepository` の FIFO 直列化・有効ルートフィルタ・LWW 保護契約を追記    |
-| **更新** | [architecture.md](../architecture.md)                            | Layer 1/3/4 責務表へファイル名パーサー・Drive 同期エンジン・新設 Repository 群・`ServiceProvider` DI 契約を反映                                       |
-| **更新** | [requirements.md](../requirements.md)                            | `related_specs` へ `docs/specs/providers/filename-parser.md` を双方向同期                                                                             |
-| **更新** | [screen-transitions.md](../screen-transitions.md)                | `SCR-04` 同期 UI の `#25` 担当を明確化し、結合テストシナリオ **`SCN-04`**（`test/it/drive-sync.spec.ts`）を追加                                       |
-| **更新** | [settings.md](../features/settings.md)                           | 冒頭 NOTE にて同期実行 UI トリガーが `#25` 担当であることを明確化                                                                                     |
-| **更新** | [bug-and-handover-log.md](../../quality/bug-and-handover-log.md) | 区分 B 実機検証申し送り **`HO-12`**（完了ゲート: `Milestone v0.2 完了前`、`#25` 実機検証時に併設確認）を登録                                          |
+|   種別   | 正本ファイル                                                     | 変更概要                                                                                                                                                       |
+| :------: | :--------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **新規** | [filename-parser.md](../providers/filename-parser.md)            | 自炊ファイル名スマートパーサーの型契約・正規化/初期読み仮名・ノイズ/著者/巻数/合本/上下巻/親フォルダ補完ルール・`AC-FP-01`〜`06` を新設                        |
+| **更新** | [google-drive.md](../providers/google-drive.md)                  | `driveHttpClient` 共通化（`TOKEN_EXPIRED`・429/403 指数バックオフ）、`DriveSyncClient`/`DriveSyncEngine`/`MockDriveSyncClient` 仕様、`AC-GD-09`〜`14`          |
+| **更新** | [db-schema.md](../db-schema.md)                                  | `DriveSyncMetaRepository`（`syncMeta` 同期キー群）、`SeriesRepository`、`VolumesRepository` の FIFO 直列化・有効ルートフィルタ・LWW 保護契約を追記             |
+| **更新** | [architecture.md](../architecture.md)                            | Layer 1/3/4 責務表へファイル名パーサー・Drive 同期エンジン・新設 Repository 群・`ServiceProvider` DI 契約を反映                                                |
+| **更新** | [requirements.md](../requirements.md)                            | `related_specs` へ `docs/specs/providers/filename-parser.md` を双方向同期                                                                                      |
+| **更新** | [screen-transitions.md](../screen-transitions.md)                | `SCR-04` 同期 UI の `#25` 担当を明確化し、結合テストシナリオ **`SCN-04`**（`test/it/drive-sync.spec.ts`）を追加                                                |
+| **更新** | [settings.md](../features/settings.md)                           | 冒頭 NOTE にて同期実行 UI トリガーが `#25` 担当であることを明確化                                                                                              |
+| **更新** | [bug-and-handover-log.md](../../quality/bug-and-handover-log.md) | 区分 B 実機検証申し送り **`HO-12`**（完了ゲート: `Milestone v0.2 完了前`、`#25` 実機検証時に併設確認）および PR `#83` Round 1 指摘是正（`No. 23`〜`27`）を登録 |
 
 ---
 
@@ -110,15 +110,15 @@ related_tests:
 
 - `src/storage/repositories/driveSyncMetaRepository.ts`: `DriveSyncMetaRepository` / `DexieDriveSyncMetaRepository`（`getSyncState`, `saveSyncState`, `clearSyncState`、破損 JSON / 非有限数値の自己修復、単一 `rw` トランザクション原子保存）
 - `src/storage/repositories/seriesRepository.ts`: `SeriesRepository` / `DexieSeriesRepository`（FIFO 直列化、`getById`, `listActive`, `findOrCreateByParsedTitle`, `mergeAuthorsIfUnlocked`, `updateLastReadAt`、正規化タイトル名寄せ、`updatedAt` 非汚染）
-- `src/storage/repositories/volumesRepository.ts`: `VolumesRepository` / `DexieVolumesRepository`（FIFO 直列化、`getById`, `getByDriveFileId`, `listBySeriesId`, `listVisibleByEnabledRoots`, `listByRootFolderIds`, `upsertFromDriveSync`, `markTrashedByDriveFileIds`、決定論ソート、`md5Checksum`/`fileSize` 変化時の `invalidatedCacheKey` 返却＆表紙リセット、`updatedAt` 非汚染）
+- `src/storage/repositories/volumesRepository.ts`: `VolumesRepository` / `DexieVolumesRepository`（FIFO 直列化、`getById`, `getByDriveFileId`, `listBySeriesId`, `listVisibleByEnabledRoots`, `listByRootFolderIds`, `upsertFromDriveSync`, `markTrashedByDriveFileIds`、決定論ソート［同一 `volumeNumber` 時は `volumeLabel.includes("合本")` の `false < true` で単巻優先］、`md5Checksum`/`fileSize` 変化時の `invalidatedCacheKey` 返却＆表紙リセット、`updatedAt` 非汚染）
 
 ### 3.3 Drive スキャン・`changes.list` 差分同期エンジン ＆ `ServiceProvider` DI 配線（MK-3）
 
-- `src/providers/gdrive/driveHttpClient.ts`: 既存 `GoogleDriveFolderClient` 内の通信・401 Compare-and-Refresh・エラー分類ロジックを抽出し、`TOKEN_EXPIRED`（`410` 等）および 429/403 指数バックオフ（最大 3 回、`sleepFn` 注入）をサポート。`GoogleDriveFolderClient` も本共通ヘルパを利用するようリファクタする。
+- `src/providers/gdrive/driveHttpClient.ts`: 既存 `GoogleDriveFolderClient` 内の通信・401 Compare-and-Refresh・エラー分類ロジックを抽出し、`TOKEN_EXPIRED`（`410` 常時、および `treatInvalidPageTokenAsExpired: true` 指定時の `400` かつ `pageToken` 失効）と 429/403 指数バックオフ（最大 3 回、`sleepFn` 注入）をサポート。`GoogleDriveFolderClient` も本共通ヘルパを利用するようリファクタする（`treatInvalidPageTokenAsExpired: false` 維持）。
 - `src/providers/gdrive/googleDriveSyncClient.ts`: `DriveSyncClient` 本番実装（`getStartPageToken`, `listItemsInParents`, `getFileMetadata`, `listChanges`）。
-- `src/providers/gdrive/mockDriveSyncClient.ts`: `DriveSyncClient` 決定論モック実装（初期サンプルファイル木・ページネーション・変更イベント投入・410 失効シミュレーション・ルート外ファイル混入テスト用フック付き）。
-- `src/providers/gdrive/driveSyncEngine.ts`: `DefaultDriveSyncEngine`（排他ロック・有効ルート 0 件早期リターン・BFS フルスキャン・`changes.list` 増分同期・未知親フォルダ遡り・ファイル名パース/再パース・`ZipIndexCacheRepository.delete` 連携・トークン原子保存）。
-- `src/app/serviceContext.ts` / `src/app/ServiceProvider.tsx` / `src/types.ts`: `seriesRepo`, `volumesRepo`, `driveSyncMetaRepo`, `driveSyncClient`, `driveSyncEngine` を DI コンテナへ追加し、`shouldExposeResetTestDb()` ガード下でのみ `window.__exLibrisServices` へテスト用ハンドル（`driveSyncEngine`, `seriesRepo`, `volumesRepo`, `driveSyncMetaRepo`, `mockDriveSyncClient`）を公開する。
+- `src/providers/gdrive/mockDriveSyncClient.ts`: `DriveSyncClient` 決定論モック実装（初期サンプルルート ID は既存 `MockDriveFolderClient` の `mock-folder-comics` / `mock-folder-manga` と統一し、ページネーション・変更イベント投入・410 失効シミュレーション・ルート外ファイル混入テスト用フックおよび `reset()` を提供）。
+- `src/providers/gdrive/driveSyncEngine.ts`: `DefaultDriveSyncEngine`（排他ロック・有効ルート 0 件早期リターン・BFS フルスキャン・`changes.list` 増分同期・フォルダ変更フルスキャン切替・未知親フォルダ遡り［ゴミ箱祖先即打切り］・無効化ルート保護・ファイル名パース/再パース・`ZipIndexCacheRepository.delete` 連携・トークン＆`syncedRootFolderIds` 原子保存）。
+- `src/app/serviceContext.ts` / `src/app/ServiceProvider.tsx` / `src/types.ts`: `seriesRepo`, `volumesRepo`, `driveSyncMetaRepo`, `driveSyncClient`, `driveSyncEngine` を DI コンテナへ追加し、`shouldExposeResetTestDb()` ガード下でのみ `window.__exLibrisServices` へテスト用ハンドル（`driveSyncEngine`, `seriesRepo`, `volumesRepo`, `driveSyncMetaRepo`, `mockDriveSyncClient`）を公開する。また `window.__exLibrisServices.resetTestDb()` 内で `mockDriveSyncClient?.reset()` を呼び出しテスト間のモック状態残留を防止する。
 
 ### 3.4 Playwright IT `SCN-04` ＆ 差分仕様アーカイブ（Step 4 IT）
 
