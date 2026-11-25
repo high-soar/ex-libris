@@ -2,8 +2,8 @@
 type: spec-db-schema
 title: "Dexie.js（IndexedDB）ローカルDBスキーマ・インデックス定義"
 description: "仮想本棚、指定ルートフォルダ同期、ZIP目次キャッシュ、ローカル一時ZIP共用レジューム、および appDataFolder LWW 端末間同期を支える全9テーブル定義の正本"
-status: "Approved (#23)"
-updated: "2026-11-23"
+status: "Review (#24)"
+updated: "2026-11-25"
 tags:
   [database, dexie, indexeddb, schema, bookshelf, lww-sync, reading-progress]
 related_specs:
@@ -16,6 +16,7 @@ related_specs:
   - docs/specs/features/reader.md
   - docs/specs/features/settings.md
   - docs/specs/providers/google-drive.md
+  - docs/specs/providers/filename-parser.md
   - docs/guidelines/testing.md
 related_tests:
   - src/app/ServiceProvider.test.tsx
@@ -83,14 +84,19 @@ erDiagram
 
 ### 3.1 `syncMeta`（同期トークン・端末ローカル制御メタ情報 / `Phase 1`〜）
 
-| カラム名 | 型       | Indexed | 説明                                                                                                               |
-| :------- | :------- | :-----: | :----------------------------------------------------------------------------------------------------------------- |
-| `key`    | `string` | **PK**  | `'driveStartPageToken'` / `'lastDriveSyncAt'` / `'lastAppDataSyncAt'` / `'defaultReaderSettingsJson'` 等の識別キー |
-| `value`  | `string` |    -    | JSON 文字列またはトークン文字列                                                                                    |
+| カラム名 | 型       | Indexed | 説明                                                                                                                               |
+| :------- | :------- | :-----: | :--------------------------------------------------------------------------------------------------------------------------------- |
+| `key`    | `string` | **PK**  | `'driveStartPageToken'` / `'lastDriveSyncAt'` / `'syncedRootFolderIds'` / `'lastAppDataSyncAt'` / `'defaultReaderSettingsJson'` 等 |
+| `value`  | `string` |    -    | JSON 文字列またはトークン文字列                                                                                                    |
 
 - **`'defaultReaderSettingsJson'` 保存・正規化契約（`ReaderSettingsRepository` / `v0.1`〜）**:
   - 保存形式は `{ version: 1, shader: ShaderCorrectionParams }` の JSON 文字列とする（将来の `v0.4` 拡張を見据えたバージョン付き構造）。
   - 取得時に未保存の場合は `DEFAULT_SHADER_CORRECTION_PARAMS`（`{ sharpness: 0, whitePoint: 1, blackPoint: 0, gamma: 1 }`）を返す。JSON パース失敗、ルート値が非プレーンオブジェクト（`null`・プリミティブ・配列）、または自前の `shader` プロパティ（`Object.prototype.hasOwnProperty.call` 判定）が存在するのに非プレーンオブジェクト（`null`・プリミティブ・配列）である場合は、破損レコードとして `syncMeta` から該当キーを削除して初期値へフォールバックし、プレーンオブジェクト内の部分欠落・範囲外数値は `normalizeShaderCorrectionParams` で許容範囲へクランプ・正規化する。
+- **Google Drive 同期メタ契約（`DriveSyncMetaRepository` / `src/storage/repositories/driveSyncMetaRepository.ts` / `v0.2 [2/4]`〜）**:
+  - `'driveStartPageToken'`: 非空トークン文字列（未保存・空白のみの場合は `null`）。
+  - `'lastDriveSyncAt'`: 有限 UNIX ms 数値の文字列表現（非数値・破損時はキーを削除して `null` へフォールバック）。
+  - `'syncedRootFolderIds'`: 同期完了済みの `driveSyncRoots.folderId` 配列の JSON 文字列（JSON 破損・非配列・空要素混入時はキーを削除して `[]` へフォールバックし、次回同期で安全にフルスキャンを誘発する）。
+  - 内部 Promise キューで FIFO 直列実行し、`saveSyncState({ startPageToken, lastDriveSyncAt, syncedRootFolderIds })` は 3 キーを単一 `rw` トランザクションで原子保存する。
 
 ### 3.2 `zipIndexCache`（ZIP Central Directory 解析済み目次キャッシュ / `v0.1`〜）
 
@@ -168,6 +174,11 @@ erDiagram
 | `updatedAt`              | `number`                                                         |     Yes     | **ユーザー論理更新日時（UNIX ms、LWW 同期用）**                                   |
 | `deletedAt`              | `number \| null`                                                 |     Yes     | 論理削除日時（UNIX ms、Tombstone）                                                |
 
+- **`SeriesRepository` 契約（`src/storage/repositories/seriesRepository.ts` / `v0.2 [2/4]`〜）**:
+  - **FIFO 直列化 ＆ 破損レコード保護**: 内部 Promise キューで全メソッド（`getById`, `listActive`, `findOrCreateByParsedTitle`, `mergeAuthorsIfUnlocked`, `updateLastReadAt`）を FIFO 直列実行する。読み取り時に不正レコード（空 `id`・空 `title`・非有限日時・不正 `publicationStatus` 等）を検出した場合は除外・削除する。
+  - **名寄せと LWW `updatedAt` 保護**: `findOrCreateByParsedTitle({ title, titleReading, authors })` は `deletedAt === null` の既存 `series` 群から [filename-parser.md](providers/filename-parser.md#31-normalizeseriestitlekeytitle-string-stringシリーズ自動名寄せキー) の `normalizeSeriesTitleKey(record.title) === normalizeSeriesTitleKey(title)` に一致するレコードを探索し、存在すれば既存 `series` をそのまま返す（未ロック `metadataLocked === false` かつ新規著者がある場合は `authors` を重複排除マージするが、**`updatedAt` は更新しない**）。存在しない場合のみ UUID v4（注入可能 `idGenerator`）で初期レコード（`publisher: ""`, `label: ""`, `tags: []`, `synopsis: ""`, `publicationStatus: "unknown"`, `knownTotalVolumes: null`, `externalIds: {}`, `metadataLocked: false`, `representativeVolumeId: null`, `readerPresetJson: null`, `lastReadAt: null`, `addedAt: now`, `updatedAt: now`, `deletedAt: null`）を作成して返す。
+  - **空シリーズ（有効巻 0 冊）の本棚非表示**: 有効な表示巻が 0 冊になった `series` レコード自体は DB から物理削除せず保持し、本棚一覧参照時は `VolumesRepository` 側の有効巻（有効ルート所属 かつ `isTrashed === 0`）を 1 冊以上持つ `series` のみを表示対象として抽出する。
+
 ### 3.6 `volumes`（巻・Google Drive アーカイブ参照 / `v0.2`〜）
 
 | カラム名            | 型                                                |     Indexed      | 説明                                                                     |
@@ -191,6 +202,12 @@ erDiagram
 | `isTrashed`         | `0 \| 1`                                          |       Yes        | Drive 側ゴミ箱移動・削除・または対象ルートフォルダ外移動の検知フラグ     |
 | `addedAt`           | `number`                                          |       Yes        | 初回同期取り込み日時（UNIX ms）                                          |
 | `updatedAt`         | `number`                                          |       Yes        | ユーザーの巻番号・所属シリーズ・表紙設定変更日時（UNIX ms、LWW 同期用）  |
+
+- **`VolumesRepository` 契約（`src/storage/repositories/volumesRepository.ts` / `v0.2 [2/4]`〜）**:
+  - **FIFO 直列化 ＆ 有効ルートクエリフィルタ**: 内部 Promise キューで全メソッド（`getById`, `getByDriveFileId`, `listBySeriesId`, `listVisibleByEnabledRoots`, `listByRootFolderIds`, `upsertFromDriveSync`, `markTrashedByDriveFileIds`）を FIFO 直列実行する。
+  - **巻表示ソート順（決定論的）**: `listBySeriesId` / `listVisibleByEnabledRoots` では `volumeNumber` 昇順（`null` は末尾）→ 同一 `volumeNumber` 時は単巻優先・`volumeLabel` 昇順 → `rawFileName` 昇順 → `id` 昇順の決定論ソートで返却する。
+  - **有効ルート所属フィルタと既存データ保護**: `SCR-04` でルートフォルダが一時無効化（`enabled: 0`）または論理削除（`deletedAt !== null`）された場合も、既存 `volumes` レコードや `coverBlob` は破壊せず保持し、`listVisibleByEnabledRoots(enabledRootIds)` 側で **`enabledRootIds.has(volume.rootFolderId) && volume.isTrashed === 0`** を満たす巻のみを本棚表示対象として返す。
+  - **同期反映時の LWW `updatedAt` 保護 ＆ MD5 変化リセット**: `upsertFromDriveSync` で既存 `driveFileId` を更新する際は **`updatedAt` を一切変更せず維持** する。また `prev.md5Checksum !== next.md5Checksum || prev.fileSize !== next.fileSize` を検知した場合は戻り値に `invalidatedCacheKey: "gdrive:${driveFileId}:${prev.md5Checksum ?? prev.fileSize}"` を含めるとともに `coverBlob = null`, `coverStatus = "pending"`, `coverUpdatedAt = null` へリセットする。新規作成時のみ `addedAt = updatedAt = now`, `coverBlob = null`, `coverStatus = "pending"`, `coverCropMode = "auto"`, `coverPageIndex = 0`, `coverUpdatedAt = null`, `isTrashed = 0` で初期化する。
 
 ### 3.7 `collections` / `seriesCollections` / `bookmarks`（`v0.3`〜`v0.4`）
 
