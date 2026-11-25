@@ -86,7 +86,7 @@ function compareStringsAsc(a: string, b: string): number {
   return 0;
 }
 
-function compareSeriesAsc(a: SeriesRecord, b: SeriesRecord): number {
+export function compareSeriesAsc(a: SeriesRecord, b: SeriesRecord): number {
   if (a.addedAt !== b.addedAt) {
     return a.addedAt - b.addedAt;
   }

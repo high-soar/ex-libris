@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { db, resetTestDb } from "../db";
 import type { SeriesRecord } from "../types";
-import { DexieSeriesRepository, isValidSeriesRecord } from "./seriesRepository";
+import {
+  DexieSeriesRepository,
+  compareSeriesAsc,
+  isValidSeriesRecord,
+} from "./seriesRepository";
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -182,11 +186,11 @@ describe("DexieSeriesRepository", () => {
       }),
     ]);
 
-    expect((await repo.listActive()).map((s) => s.id)).toEqual([
-      "s-0",
-      "s-a",
-      "s-b",
-    ]);
+    const active = await repo.listActive();
+    expect(active.map((s) => s.id)).toEqual(["s-0", "s-a", "s-b"]);
+    expect(compareSeriesAsc(active[1]!, active[2]!)).toBe(-1);
+    expect(compareSeriesAsc(active[2]!, active[1]!)).toBe(1);
+    expect(compareSeriesAsc(active[1]!, active[1]!)).toBe(0);
 
     expect(await repo.getById("  ")).toBeNull();
     expect(await repo.getById("missing")).toBeNull();
