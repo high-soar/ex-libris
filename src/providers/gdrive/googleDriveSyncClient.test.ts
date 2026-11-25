@@ -218,13 +218,30 @@ describe("GoogleDriveSyncClient", () => {
             id: "f1",
             name: "a.cbz",
             mimeType: "application/zip",
-            size: -5,
+            size: "",
           },
         ],
       }),
     );
     await expect(client.listItemsInParents(["root-a"])).rejects.toMatchObject({
       code: "NETWORK_ERROR",
+    });
+
+    // modifiedTime 省略時は 0 へフォールバックすること
+    fetchFn.mockResolvedValueOnce(
+      createJsonResponse({
+        files: [
+          {
+            id: "f-no-mtime",
+            name: "a.cbz",
+            mimeType: "application/zip",
+            size: "10",
+          },
+        ],
+      }),
+    );
+    await expect(client.listItemsInParents(["root-a"])).resolves.toMatchObject({
+      files: [{ id: "f-no-mtime", modifiedTime: 0 }],
     });
   });
 
@@ -388,14 +405,17 @@ describe("GoogleDriveSyncClient", () => {
       code: "NETWORK_ERROR",
     });
 
-    // 中間ページ（nextPageToken あり、newStartPageToken なし）
+    // 中間ページ（nextPageToken あり、newStartPageToken なし、signal オプション透過）
+    const controller = new AbortController();
     fetchFn.mockResolvedValueOnce(
       createJsonResponse({
         nextPageToken: "4202",
         changes: [],
       }),
     );
-    await expect(client.listChanges("4201")).resolves.toEqual({
+    await expect(
+      client.listChanges("4201", { signal: controller.signal }),
+    ).resolves.toEqual({
       changes: [],
       nextPageToken: "4202",
       newStartPageToken: null,

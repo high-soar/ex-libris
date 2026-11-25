@@ -322,6 +322,19 @@ describe("DefaultDriveSyncEngine", () => {
       },
       false,
     );
+    mockClient.upsertItem(
+      {
+        id: "grandchild-of-trashed",
+        name: "孫フォルダ",
+        mimeType: GOOGLE_DRIVE_FOLDER_MIME_TYPE,
+        parents: ["child-of-trashed"],
+        size: null,
+        md5Checksum: null,
+        modifiedTime: 3000,
+        trashed: false,
+      },
+      false,
+    );
     // 循環祖先フォルダ
     mockClient.upsertItem(
       {
@@ -440,6 +453,16 @@ describe("DefaultDriveSyncEngine", () => {
       name: "ゴミ箱祖先.cbz",
       mimeType: "application/zip",
       parents: ["child-of-trashed"],
+      size: 500,
+      md5Checksum: null,
+      modifiedTime: 5200,
+      trashed: false,
+    });
+    mockClient.upsertItem({
+      id: "under-grandchild-trashed",
+      name: "ゴミ箱孫.cbz",
+      mimeType: "application/zip",
+      parents: ["grandchild-of-trashed"],
       size: 500,
       md5Checksum: null,
       modifiedTime: 5200,
@@ -737,6 +760,26 @@ describe("DefaultDriveSyncEngine", () => {
     });
     const sizeChangeResult = await ctx.engine.sync();
     expect(sizeChangeResult.invalidatedZipCaches).toBe(1);
+
+    // フルスキャン時の MD5 変化でも invalidatedZipCaches が加算されること
+    mockClient.upsertItem(
+      {
+        id: "mock-file-vol1",
+        name: vol1After.rawFileName,
+        mimeType: "application/zip",
+        parents: ["mock-folder-action"],
+        size: 99_999_999,
+        md5Checksum: "md5-op-01-v3",
+        modifiedTime: clock + 2000,
+        trashed: false,
+      },
+      false,
+    );
+    const fullInvalidationResult = await ctx.engine.sync({
+      forceFullScan: true,
+    });
+    expect(fullInvalidationResult.mode).toBe("full");
+    expect(fullInvalidationResult.invalidatedZipCaches).toBe(1);
   });
 
   it("内部排他ロックで多重sync()を直列化し、途中失敗やAbortError時はdriveStartPageTokenを一切進めないこと (AC-GD-13)", async () => {
@@ -907,5 +950,17 @@ describe("DefaultDriveSyncEngine", () => {
     expect(inc.trashedVolumes).toBe(1);
     expect((await ctx.volumesRepo.getByDriveFileId("v-1"))?.isTrashed).toBe(1);
     expect(await ctx.volumesRepo.getByDriveFileId("v-2")).toBeNull();
+
+    // now 省略時の既定 Date.now フォールバック
+    const defaultClockEngine = new DefaultDriveSyncEngine({
+      driveSyncClient: customClient,
+      driveSyncRootsRepo: ctx.driveSyncRootsRepo,
+      driveSyncMetaRepo: ctx.driveSyncMetaRepo,
+      seriesRepo: ctx.seriesRepo,
+      volumesRepo: ctx.volumesRepo,
+      zipIndexCacheRepo: ctx.zipIndexCacheRepo,
+    });
+    const resDefaultClock = await defaultClockEngine.sync();
+    expect(Number.isFinite(resDefaultClock.syncedAt)).toBe(true);
   });
 });

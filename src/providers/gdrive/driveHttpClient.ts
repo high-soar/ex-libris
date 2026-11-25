@@ -331,7 +331,8 @@ export class DriveHttpClient {
     const treatInvalidPageTokenAsExpired =
       options?.treatInvalidPageTokenAsExpired === true;
 
-    for (let attempt = 0; ; attempt += 1) {
+    let attempt = 0;
+    while (true) {
       const response = await this.fetchWithAuthRetry(url, signal);
       if (response.ok) {
         return this.parseSuccessJson(response, signal);
@@ -345,6 +346,7 @@ export class DriveHttpClient {
         const delayMs = this.baseBackoffMs * 2 ** attempt;
         await this.sleepFn(delayMs, signal);
         throwIfAborted(signal);
+        attempt += 1;
         continue;
       }
       throw error;
