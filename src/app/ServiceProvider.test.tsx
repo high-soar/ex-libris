@@ -14,10 +14,21 @@ import type {
   CoordinatorHostCallbacks,
   CoordinatorWorkerApi,
 } from "../engine/types";
+import { DefaultDriveSyncEngine } from "../providers/gdrive/driveSyncEngine";
 import { GoogleDriveFolderClient } from "../providers/gdrive/googleDriveFolderClient";
+import { GoogleDriveSyncClient } from "../providers/gdrive/googleDriveSyncClient";
 import { MockDriveFolderClient } from "../providers/gdrive/mockDriveFolderClient";
-import type { DriveFolderClient } from "../providers/gdrive/types";
+import { MockDriveSyncClient } from "../providers/gdrive/mockDriveSyncClient";
+import type {
+  DriveFolderClient,
+  DriveSyncClient,
+  DriveSyncEngine,
+} from "../providers/gdrive/types";
 import { db, resetTestDb } from "../storage/db";
+import {
+  DexieDriveSyncMetaRepository,
+  type DriveSyncMetaRepository,
+} from "../storage/repositories/driveSyncMetaRepository";
 import {
   DexieDriveSyncRootsRepository,
   type DriveSyncRootsRepository,
@@ -30,6 +41,14 @@ import {
   DexieReadingProgressRepository,
   type ReadingProgressRepository,
 } from "../storage/repositories/readingProgressRepository";
+import {
+  DexieSeriesRepository,
+  type SeriesRepository,
+} from "../storage/repositories/seriesRepository";
+import {
+  DexieVolumesRepository,
+  type VolumesRepository,
+} from "../storage/repositories/volumesRepository";
 import {
   DexieZipIndexCacheRepository,
   type ZipIndexCacheRepository,
@@ -134,12 +153,24 @@ describe("ServiceProvider", () => {
     expect(captured[0]?.driveFolderClient).toBeInstanceOf(
       MockDriveFolderClient,
     );
+    expect(captured[0]?.seriesRepo).toBeInstanceOf(DexieSeriesRepository);
+    expect(captured[0]?.volumesRepo).toBeInstanceOf(DexieVolumesRepository);
+    expect(captured[0]?.driveSyncMetaRepo).toBeInstanceOf(
+      DexieDriveSyncMetaRepository,
+    );
+    expect(captured[0]?.driveSyncClient).toBeInstanceOf(MockDriveSyncClient);
+    expect(captured[0]?.driveSyncEngine).toBeInstanceOf(DefaultDriveSyncEngine);
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: captured[0]?.appBridge,
       resetTestDb: expect.any(Function),
       mockGoogleAuthAdapter: expect.any(MockGoogleAuthAdapter),
       mockDriveFolderClient: captured[0]?.driveFolderClient,
+      driveSyncEngine: captured[0]?.driveSyncEngine,
+      seriesRepo: captured[0]?.seriesRepo,
+      volumesRepo: captured[0]?.volumesRepo,
+      driveSyncMetaRepo: captured[0]?.driveSyncMetaRepo,
+      mockDriveSyncClient: captured[0]?.driveSyncClient,
     });
 
     // 再レンダー時も同一のサービスインスタンスを維持すること
@@ -165,6 +196,11 @@ describe("ServiceProvider", () => {
       captured[0]?.driveSyncRootsRepo,
     );
     expect(captured[1]?.driveFolderClient).toBe(captured[0]?.driveFolderClient);
+    expect(captured[1]?.seriesRepo).toBe(captured[0]?.seriesRepo);
+    expect(captured[1]?.volumesRepo).toBe(captured[0]?.volumesRepo);
+    expect(captured[1]?.driveSyncMetaRepo).toBe(captured[0]?.driveSyncMetaRepo);
+    expect(captured[1]?.driveSyncClient).toBe(captured[0]?.driveSyncClient);
+    expect(captured[1]?.driveSyncEngine).toBe(captured[0]?.driveSyncEngine);
 
     // 公開モック経由のシード後に createCoordinatorSession() を呼ぶと authBridge 経由でトークンが Worker へ同期されること
     window.__exLibrisServices!.mockGoogleAuthAdapter!.seedLinkedSession({
@@ -262,6 +298,12 @@ describe("ServiceProvider", () => {
     expect(capturedServices?.driveFolderClient).toBeInstanceOf(
       GoogleDriveFolderClient,
     );
+    expect(capturedServices?.driveSyncClient).toBeInstanceOf(
+      GoogleDriveSyncClient,
+    );
+    expect(capturedServices?.driveSyncEngine).toBeInstanceOf(
+      DefaultDriveSyncEngine,
+    );
     expect(capturedServices?.driveSyncRootsRepo).toBeInstanceOf(
       DexieDriveSyncRootsRepository,
     );
@@ -278,6 +320,11 @@ describe("ServiceProvider", () => {
     expect("resetTestDb" in window.__exLibrisServices!).toBe(false);
     expect("mockGoogleAuthAdapter" in window.__exLibrisServices!).toBe(false);
     expect("mockDriveFolderClient" in window.__exLibrisServices!).toBe(false);
+    expect("mockDriveSyncClient" in window.__exLibrisServices!).toBe(false);
+    expect("driveSyncEngine" in window.__exLibrisServices!).toBe(false);
+    expect("seriesRepo" in window.__exLibrisServices!).toBe(false);
+    expect("volumesRepo" in window.__exLibrisServices!).toBe(false);
+    expect("driveSyncMetaRepo" in window.__exLibrisServices!).toBe(false);
   });
 
   it("DI props指定時は注入された各種Bridge・Repository・Clientを使用・更新しモック非該当時はグローバル公開しないこと", () => {
@@ -363,6 +410,77 @@ describe("ServiceProvider", () => {
       })),
     };
     const customFolderClient2 = new MockDriveFolderClient();
+    const customSeriesRepo1: SeriesRepository = {
+      getById: vi.fn(async () => null),
+      listActive: vi.fn(async () => []),
+      findOrCreateByParsedTitle: vi.fn(),
+      mergeAuthorsIfUnlocked: vi.fn(async () => null),
+      updateLastReadAt: vi.fn(async () => null),
+    };
+    const customSeriesRepo2: SeriesRepository = {
+      ...customSeriesRepo1,
+      listActive: vi.fn(async () => []),
+    };
+    const customVolumesRepo1: VolumesRepository = {
+      getById: vi.fn(async () => null),
+      getByDriveFileId: vi.fn(async () => null),
+      listBySeriesId: vi.fn(async () => []),
+      listVisibleByEnabledRoots: vi.fn(async () => []),
+      listByRootFolderIds: vi.fn(async () => []),
+      upsertFromDriveSync: vi.fn(),
+      markTrashedByDriveFileIds: vi.fn(async () => 0),
+    };
+    const customVolumesRepo2: VolumesRepository = {
+      ...customVolumesRepo1,
+      markTrashedByDriveFileIds: vi.fn(async () => 1),
+    };
+    const customSyncMetaRepo1: DriveSyncMetaRepository = {
+      getSyncState: vi.fn(async () => ({
+        startPageToken: null,
+        lastDriveSyncAt: null,
+        syncedRootFolderIds: [],
+      })),
+      saveSyncState: vi.fn(),
+      clearSyncState: vi.fn(async () => {}),
+    };
+    const customSyncMetaRepo2: DriveSyncMetaRepository = {
+      ...customSyncMetaRepo1,
+      clearSyncState: vi.fn(async () => {}),
+    };
+    const customSyncClient1: DriveSyncClient = {
+      getStartPageToken: vi.fn(async () => "1"),
+      listItemsInParents: vi.fn(async () => ({
+        files: [],
+        nextPageToken: null,
+      })),
+      getFileMetadata: vi.fn(async () => null),
+      listChanges: vi.fn(async () => ({
+        changes: [],
+        nextPageToken: null,
+        newStartPageToken: "1",
+      })),
+    };
+    const customSyncClient2 = new MockDriveSyncClient();
+    const customSyncEngine1: DriveSyncEngine = {
+      sync: vi.fn(async () => ({
+        mode: "skipped-no-roots" as const,
+        scannedRoots: 0,
+        upsertedVolumes: 0,
+        trashedVolumes: 0,
+        invalidatedZipCaches: 0,
+        syncedAt: 0,
+      })),
+    };
+    const customSyncEngine2: DriveSyncEngine = {
+      sync: vi.fn(async () => ({
+        mode: "full" as const,
+        scannedRoots: 1,
+        upsertedVolumes: 0,
+        trashedVolumes: 0,
+        invalidatedZipCaches: 0,
+        syncedAt: 1,
+      })),
+    };
 
     const captured: ServiceContextValue[] = [];
 
@@ -376,6 +494,11 @@ describe("ServiceProvider", () => {
         googleAuthBridge={customAuthBridge1}
         driveSyncRootsRepo={customSyncRootsRepo1}
         driveFolderClient={customFolderClient1}
+        seriesRepo={customSeriesRepo1}
+        volumesRepo={customVolumesRepo1}
+        driveSyncMetaRepo={customSyncMetaRepo1}
+        driveSyncClient={customSyncClient1}
+        driveSyncEngine={customSyncEngine1}
       >
         <ServicesProbe onCapture={(s) => captured.push(s)} />
       </ServiceProvider>,
@@ -389,13 +512,23 @@ describe("ServiceProvider", () => {
     expect(captured[0]?.googleAuthBridge).toBe(customAuthBridge1);
     expect(captured[0]?.driveSyncRootsRepo).toBe(customSyncRootsRepo1);
     expect(captured[0]?.driveFolderClient).toBe(customFolderClient1);
+    expect(captured[0]?.seriesRepo).toBe(customSeriesRepo1);
+    expect(captured[0]?.volumesRepo).toBe(customVolumesRepo1);
+    expect(captured[0]?.driveSyncMetaRepo).toBe(customSyncMetaRepo1);
+    expect(captured[0]?.driveSyncClient).toBe(customSyncClient1);
+    expect(captured[0]?.driveSyncEngine).toBe(customSyncEngine1);
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: customBridge1,
       resetTestDb: expect.any(Function),
+      driveSyncEngine: customSyncEngine1,
+      seriesRepo: customSeriesRepo1,
+      volumesRepo: customVolumesRepo1,
+      driveSyncMetaRepo: customSyncMetaRepo1,
     });
     expect("mockGoogleAuthAdapter" in window.__exLibrisServices!).toBe(false);
     expect("mockDriveFolderClient" in window.__exLibrisServices!).toBe(false);
+    expect("mockDriveSyncClient" in window.__exLibrisServices!).toBe(false);
 
     rerender(
       <ServiceProvider
@@ -407,6 +540,11 @@ describe("ServiceProvider", () => {
         googleAuthBridge={customAuthBridge2}
         driveSyncRootsRepo={customSyncRootsRepo2}
         driveFolderClient={customFolderClient2}
+        seriesRepo={customSeriesRepo2}
+        volumesRepo={customVolumesRepo2}
+        driveSyncMetaRepo={customSyncMetaRepo2}
+        driveSyncClient={customSyncClient2}
+        driveSyncEngine={customSyncEngine2}
       >
         <ServicesProbe onCapture={(s) => captured.push(s)} />
       </ServiceProvider>,
@@ -419,16 +557,26 @@ describe("ServiceProvider", () => {
     expect(captured[1]?.googleAuthBridge).toBe(customAuthBridge2);
     expect(captured[1]?.driveSyncRootsRepo).toBe(customSyncRootsRepo2);
     expect(captured[1]?.driveFolderClient).toBe(customFolderClient2);
+    expect(captured[1]?.seriesRepo).toBe(customSeriesRepo2);
+    expect(captured[1]?.volumesRepo).toBe(customVolumesRepo2);
+    expect(captured[1]?.driveSyncMetaRepo).toBe(customSyncMetaRepo2);
+    expect(captured[1]?.driveSyncClient).toBe(customSyncClient2);
+    expect(captured[1]?.driveSyncEngine).toBe(customSyncEngine2);
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: customBridge2,
       resetTestDb: expect.any(Function),
       mockDriveFolderClient: customFolderClient2,
+      driveSyncEngine: customSyncEngine2,
+      seriesRepo: customSeriesRepo2,
+      volumesRepo: customVolumesRepo2,
+      driveSyncMetaRepo: customSyncMetaRepo2,
+      mockDriveSyncClient: customSyncClient2,
     });
     expect("mockGoogleAuthAdapter" in window.__exLibrisServices!).toBe(false);
   });
 
-  it("window.__exLibrisServices.resetTestDbが公開され呼び出しによりsyncMeta等のDBテーブルを初期化できること (R1-17)", async () => {
+  it("window.__exLibrisServices.resetTestDbが公開され呼び出しによりsyncMeta等のDBテーブルとmockDriveSyncClientを初期化できること (R1-17)", async () => {
     render(
       <ServiceProvider>
         <div>ready</div>
@@ -440,12 +588,17 @@ describe("ServiceProvider", () => {
       value: "stale-record",
     });
     expect(await db.syncMeta.count()).toBe(1);
+    const mockSyncResetSpy = vi.spyOn(
+      window.__exLibrisServices!.mockDriveSyncClient!,
+      "reset",
+    );
 
     const resetFn = window.__exLibrisServices?.resetTestDb;
     expect(resetFn).toEqual(expect.any(Function));
     await resetFn!();
 
     expect(await db.syncMeta.count()).toBe(0);
+    expect(mockSyncResetSpy).toHaveBeenCalledTimes(1);
   });
 
   it("shouldExposeResetTestDbがネイティブ実機および通常本番ブラウザではfalse、非ネイティブかつDEV/test/WebDriverではtrueを返すこと (R1-12)", () => {

@@ -9,8 +9,13 @@ import { MockGoogleAuthAdapter } from "../bridges/oauth/mockGoogleAuthAdapter";
 import type { GoogleAuthBridge } from "../bridges/oauth/types";
 import { GoogleDriveFolderClient } from "../providers/gdrive/googleDriveFolderClient";
 import { MockDriveFolderClient } from "../providers/gdrive/mockDriveFolderClient";
-import type { DriveFolderClient } from "../providers/gdrive/types";
+import type {
+  DriveFolderClient,
+  DriveSyncClient,
+  DriveSyncEngine,
+} from "../providers/gdrive/types";
 import { db, resetTestDb } from "../storage/db";
+import type { DriveSyncMetaRepository } from "../storage/repositories/driveSyncMetaRepository";
 import {
   DexieDriveSyncRootsRepository,
   type DriveSyncRootsRepository,
@@ -23,6 +28,8 @@ import {
   DexieReadingProgressRepository,
   type ReadingProgressRepository,
 } from "../storage/repositories/readingProgressRepository";
+import type { SeriesRepository } from "../storage/repositories/seriesRepository";
+import type { VolumesRepository } from "../storage/repositories/volumesRepository";
 import {
   DexieZipIndexCacheRepository,
   type ZipIndexCacheRepository,
@@ -44,6 +51,11 @@ export interface ServiceProviderProps {
   readonly googleAuthBridge?: GoogleAuthBridge;
   readonly driveSyncRootsRepo?: DriveSyncRootsRepository;
   readonly driveFolderClient?: DriveFolderClient;
+  readonly seriesRepo?: SeriesRepository;
+  readonly volumesRepo?: VolumesRepository;
+  readonly driveSyncMetaRepo?: DriveSyncMetaRepository;
+  readonly driveSyncClient?: DriveSyncClient;
+  readonly driveSyncEngine?: DriveSyncEngine;
 }
 
 export interface ResetTestDbExposureOptions {
@@ -328,6 +340,11 @@ export function ServiceProvider({
       googleAuthBridge: resolvedGoogleAuthBridge,
       driveSyncRootsRepo: resolvedDriveSyncRootsRepo,
       driveFolderClient: resolvedDriveFolderClient,
+      seriesRepo: undefined as unknown as SeriesRepository,
+      volumesRepo: undefined as unknown as VolumesRepository,
+      driveSyncMetaRepo: undefined as unknown as DriveSyncMetaRepository,
+      driveSyncClient: undefined as unknown as DriveSyncClient,
+      driveSyncEngine: undefined as unknown as DriveSyncEngine,
     }),
     [
       resolvedAppBridge,
