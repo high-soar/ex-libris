@@ -2,7 +2,7 @@
 type: spec-feature
 title: "ストレージ連携・設定画面仕様書（SCR-04: Settings）"
 description: "SCR-04（/settings）のGoogleアカウント連携、マンガ保管ルートフォルダ管理（アプリ内階層ピッカー＋URL/ID登録・有効化切替・論理削除）、診断ログ閲覧/コピー/クリア、およびTR-03/TR-09・戻る優先度1/2/4仕様の正本"
-status: "Review (#24)"
+status: "Approved (#24)"
 updated: "2026-11-25"
 tags:
   [
@@ -39,6 +39,7 @@ related_tests:
   - src/shared/router/routeMatcher.test.ts
   - test/vrt/vrt.spec.ts
   - test/it/settings-oauth.spec.ts
+  - test/it/drive-sync.spec.ts
 ---
 
 # ストレージ連携・設定画面仕様書（`SCR-04`: Settings）

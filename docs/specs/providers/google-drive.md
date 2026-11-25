@@ -2,7 +2,7 @@
 type: spec-provider
 title: "Google OAuth（Single-Flight）・Google Drive フォルダ参照 ＆ 差分同期プロバイダ仕様書"
 description: "Android ネイティブ GoogleAuthPlugin・Web モック自動フォールバック、Single-Flight トークン管理、機密マスク、Drive ルートフォルダ参照、および指定ルート配下フルスキャン＆changes.list 増分差分同期エンジンの正本"
-status: "Review (#24)"
+status: "Approved (#24)"
 updated: "2026-11-25"
 tags:
   [
@@ -44,6 +44,7 @@ related_tests:
   - src/providers/gdrive/googleDriveSyncClient.test.ts
   - src/providers/gdrive/mockDriveSyncClient.test.ts
   - src/providers/gdrive/driveSyncEngine.test.ts
+  - test/it/drive-sync.spec.ts
 ---
 
 # Google OAuth（Single-Flight）・Google Drive フォルダ参照 ＆ 差分同期プロバイダ仕様書
