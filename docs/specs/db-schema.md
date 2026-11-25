@@ -25,6 +25,9 @@ related_tests:
   - src/storage/repositories/readingProgressRepository.test.ts
   - src/storage/repositories/readerSettingsRepository.test.ts
   - src/storage/repositories/driveSyncRootsRepository.test.ts
+  - src/storage/repositories/driveSyncMetaRepository.test.ts
+  - src/storage/repositories/seriesRepository.test.ts
+  - src/storage/repositories/volumesRepository.test.ts
   - src/engine/zip/zipIndexValidation.test.ts
   - src/features/bookshelf/BookshelfPage.test.tsx
   - src/features/reader/ReaderPage.test.tsx
