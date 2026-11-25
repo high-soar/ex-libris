@@ -42,54 +42,392 @@ export interface DexieVolumesRepositoryOptions {
   readonly idGenerator?: () => string;
 }
 
-export function isValidVolumeRecord(_record: VolumeRecord): boolean {
-  throw new Error("Not implemented");
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isBlobLike(value: unknown): value is Blob {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function compareStringsAsc(a: string, b: string): number {
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return 0;
+}
+
+export function isValidVolumeRecord(record: VolumeRecord): boolean {
+  return (
+    isNonEmptyString(record.id) &&
+    isNonEmptyString(record.seriesId) &&
+    (record.volumeNumber === null ||
+      (Number.isFinite(record.volumeNumber) && record.volumeNumber >= 0)) &&
+    typeof record.volumeLabel === "string" &&
+    isNonEmptyString(record.rawFileName) &&
+    isNonEmptyString(record.driveFileId) &&
+    (record.parentFolderId === null ||
+      isNonEmptyString(record.parentFolderId)) &&
+    isNonEmptyString(record.rootFolderId) &&
+    Number.isSafeInteger(record.fileSize) &&
+    record.fileSize >= 0 &&
+    (record.md5Checksum === null || isNonEmptyString(record.md5Checksum)) &&
+    Number.isFinite(record.driveModifiedTime) &&
+    (record.coverBlob === null || isBlobLike(record.coverBlob)) &&
+    (record.coverStatus === "pending" ||
+      record.coverStatus === "ready" ||
+      record.coverStatus === "error") &&
+    (record.coverCropMode === "auto" ||
+      record.coverCropMode === "full" ||
+      record.coverCropMode === "left-half" ||
+      record.coverCropMode === "right-half") &&
+    Number.isSafeInteger(record.coverPageIndex) &&
+    record.coverPageIndex >= 0 &&
+    (record.coverUpdatedAt === null ||
+      Number.isFinite(record.coverUpdatedAt)) &&
+    (record.isTrashed === 0 || record.isTrashed === 1) &&
+    Number.isFinite(record.addedAt) &&
+    Number.isFinite(record.updatedAt)
+  );
 }
 
 export function compareVolumesForDisplay(
-  _a: VolumeRecord,
-  _b: VolumeRecord,
+  a: VolumeRecord,
+  b: VolumeRecord,
 ): number {
-  throw new Error("Not implemented");
+  if (a.volumeNumber !== b.volumeNumber) {
+    if (a.volumeNumber === null) {
+      return 1;
+    }
+    if (b.volumeNumber === null) {
+      return -1;
+    }
+    return a.volumeNumber - b.volumeNumber;
+  }
+
+  const aOmnibus = a.volumeLabel.includes("合本");
+  const bOmnibus = b.volumeLabel.includes("合本");
+  if (aOmnibus !== bOmnibus) {
+    return aOmnibus ? 1 : -1;
+  }
+
+  const labelDiff = compareStringsAsc(a.volumeLabel, b.volumeLabel);
+  if (labelDiff !== 0) {
+    return labelDiff;
+  }
+
+  const fileDiff = compareStringsAsc(a.rawFileName, b.rawFileName);
+  if (fileDiff !== 0) {
+    return fileDiff;
+  }
+
+  return compareStringsAsc(a.id, b.id);
+}
+
+function normalizeNullableString(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 export class DexieVolumesRepository implements VolumesRepository {
+  private readonly database: ExLibrisDatabase;
+  private readonly now: () => number;
+  private readonly idGenerator: () => string;
+  private queue: Promise<void> = Promise.resolve();
+
   constructor(
-    _database: ExLibrisDatabase = db,
-    _options: DexieVolumesRepositoryOptions = {},
-  ) {}
-
-  getById(_id: string): Promise<VolumeRecord | null> {
-    return Promise.reject(new Error("Not implemented"));
+    database: ExLibrisDatabase = db,
+    options: DexieVolumesRepositoryOptions = {},
+  ) {
+    this.database = database;
+    this.now = options.now ?? Date.now;
+    this.idGenerator = options.idGenerator ?? (() => crypto.randomUUID());
   }
 
-  getByDriveFileId(_driveFileId: string): Promise<VolumeRecord | null> {
-    return Promise.reject(new Error("Not implemented"));
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(operation);
+    this.queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
-  listBySeriesId(_seriesId: string): Promise<readonly VolumeRecord[]> {
-    return Promise.reject(new Error("Not implemented"));
+  private async filterAndPurgeCorrupt(
+    records: readonly VolumeRecord[],
+  ): Promise<VolumeRecord[]> {
+    const corruptKeys: string[] = [];
+    const valid: VolumeRecord[] = [];
+    for (const record of records) {
+      if (!isValidVolumeRecord(record)) {
+        corruptKeys.push(record.id);
+        continue;
+      }
+      valid.push(record);
+    }
+    if (corruptKeys.length > 0) {
+      await this.database.volumes.bulkDelete(corruptKeys);
+    }
+    return valid;
+  }
+
+  getById(id: string): Promise<VolumeRecord | null> {
+    return this.enqueue(async () => {
+      const normalizedId = id.trim();
+      if (normalizedId.length === 0) {
+        return null;
+      }
+      const existing = await this.database.volumes.get(normalizedId);
+      if (!existing) {
+        return null;
+      }
+      if (!isValidVolumeRecord(existing)) {
+        await this.database.volumes.delete(normalizedId);
+        return null;
+      }
+      return existing;
+    });
+  }
+
+  getByDriveFileId(driveFileId: string): Promise<VolumeRecord | null> {
+    return this.enqueue(async () => {
+      const normalizedId = driveFileId.trim();
+      if (normalizedId.length === 0) {
+        return null;
+      }
+      const existing = await this.database.volumes
+        .where("driveFileId")
+        .equals(normalizedId)
+        .first();
+      if (!existing) {
+        return null;
+      }
+      if (!isValidVolumeRecord(existing)) {
+        await this.database.volumes.delete(existing.id);
+        return null;
+      }
+      return existing;
+    });
+  }
+
+  listBySeriesId(seriesId: string): Promise<readonly VolumeRecord[]> {
+    return this.enqueue(async () => {
+      const normalizedId = seriesId.trim();
+      if (normalizedId.length === 0) {
+        return [];
+      }
+      const records = await this.database.volumes
+        .where("seriesId")
+        .equals(normalizedId)
+        .toArray();
+      const valid = await this.filterAndPurgeCorrupt(records);
+      return valid
+        .filter((record) => record.isTrashed === 0)
+        .sort(compareVolumesForDisplay);
+    });
   }
 
   listVisibleByEnabledRoots(
-    _enabledRootIds: ReadonlySet<string>,
+    enabledRootIds: ReadonlySet<string>,
   ): Promise<readonly VolumeRecord[]> {
-    return Promise.reject(new Error("Not implemented"));
+    return this.enqueue(async () => {
+      if (enabledRootIds.size === 0) {
+        return [];
+      }
+      const records = await this.database.volumes.toArray();
+      const valid = await this.filterAndPurgeCorrupt(records);
+      return valid
+        .filter(
+          (record) =>
+            enabledRootIds.has(record.rootFolderId) && record.isTrashed === 0,
+        )
+        .sort(compareVolumesForDisplay);
+    });
   }
 
   listByRootFolderIds(
-    _rootFolderIds: ReadonlySet<string>,
+    rootFolderIds: ReadonlySet<string>,
   ): Promise<readonly VolumeRecord[]> {
-    return Promise.reject(new Error("Not implemented"));
+    return this.enqueue(async () => {
+      if (rootFolderIds.size === 0) {
+        return [];
+      }
+      const records = await this.database.volumes.toArray();
+      const valid = await this.filterAndPurgeCorrupt(records);
+      return valid
+        .filter((record) => rootFolderIds.has(record.rootFolderId))
+        .sort(compareVolumesForDisplay);
+    });
   }
 
   upsertFromDriveSync(
-    _input: UpsertVolumeFromDriveSyncInput,
+    input: UpsertVolumeFromDriveSyncInput,
   ): Promise<UpsertVolumeFromDriveSyncResult> {
-    return Promise.reject(new Error("Not implemented"));
+    return this.enqueue(async () => {
+      const seriesId = input.seriesId.trim();
+      const rawFileName = input.rawFileName.trim();
+      const driveFileId = input.driveFileId.trim();
+      const rootFolderId = input.rootFolderId.trim();
+      if (
+        seriesId.length === 0 ||
+        rawFileName.length === 0 ||
+        driveFileId.length === 0 ||
+        rootFolderId.length === 0
+      ) {
+        throw new Error(
+          "seriesId, rawFileName, driveFileId, and rootFolderId must not be empty",
+        );
+      }
+      if (
+        input.volumeNumber !== null &&
+        (!Number.isFinite(input.volumeNumber) || input.volumeNumber < 0)
+      ) {
+        throw new Error(
+          "volumeNumber must be null or a non-negative finite number",
+        );
+      }
+      if (!Number.isSafeInteger(input.fileSize) || input.fileSize < 0) {
+        throw new Error("fileSize must be a non-negative safe integer");
+      }
+      if (!Number.isFinite(input.driveModifiedTime)) {
+        throw new Error("driveModifiedTime must be a finite number");
+      }
+
+      const parentFolderId = normalizeNullableString(input.parentFolderId);
+      const md5Checksum = normalizeNullableString(input.md5Checksum);
+      const isTrashed: 0 | 1 = input.isTrashed ?? 0;
+
+      return this.database.transaction(
+        "rw",
+        this.database.volumes,
+        async () => {
+          const existingRaw = await this.database.volumes
+            .where("driveFileId")
+            .equals(driveFileId)
+            .first();
+          let existing: VolumeRecord | null = null;
+          if (existingRaw) {
+            if (isValidVolumeRecord(existingRaw)) {
+              existing = existingRaw;
+            } else {
+              await this.database.volumes.delete(existingRaw.id);
+            }
+          }
+
+          if (existing !== null) {
+            const binaryChanged =
+              existing.md5Checksum !== md5Checksum ||
+              existing.fileSize !== input.fileSize;
+            const invalidatedCacheKey = binaryChanged
+              ? `gdrive:${driveFileId}:${existing.md5Checksum ?? existing.fileSize}`
+              : null;
+
+            const updated: VolumeRecord = {
+              ...existing,
+              seriesId,
+              volumeNumber: input.volumeNumber,
+              volumeLabel: input.volumeLabel,
+              rawFileName,
+              driveFileId,
+              parentFolderId,
+              rootFolderId,
+              fileSize: input.fileSize,
+              md5Checksum,
+              driveModifiedTime: input.driveModifiedTime,
+              coverBlob: binaryChanged ? null : existing.coverBlob,
+              coverStatus: binaryChanged ? "pending" : existing.coverStatus,
+              coverUpdatedAt: binaryChanged ? null : existing.coverUpdatedAt,
+              isTrashed,
+            };
+            await this.database.volumes.put(updated);
+            return {
+              volume: updated,
+              created: false,
+              invalidatedCacheKey,
+            };
+          }
+
+          const timestamp = this.now();
+          const created: VolumeRecord = {
+            id: this.idGenerator(),
+            seriesId,
+            volumeNumber: input.volumeNumber,
+            volumeLabel: input.volumeLabel,
+            rawFileName,
+            driveFileId,
+            parentFolderId,
+            rootFolderId,
+            fileSize: input.fileSize,
+            md5Checksum,
+            driveModifiedTime: input.driveModifiedTime,
+            coverBlob: null,
+            coverStatus: "pending",
+            coverCropMode: "auto",
+            coverPageIndex: 0,
+            coverUpdatedAt: null,
+            isTrashed,
+            addedAt: timestamp,
+            updatedAt: timestamp,
+          };
+          await this.database.volumes.put(created);
+          return {
+            volume: created,
+            created: true,
+            invalidatedCacheKey: null,
+          };
+        },
+      );
+    });
   }
 
-  markTrashedByDriveFileIds(_driveFileIds: readonly string[]): Promise<number> {
-    return Promise.reject(new Error("Not implemented"));
+  markTrashedByDriveFileIds(driveFileIds: readonly string[]): Promise<number> {
+    return this.enqueue(async () => {
+      const uniqueIds = new Set<string>();
+      for (const rawId of driveFileIds) {
+        const trimmed = rawId.trim();
+        if (trimmed.length > 0) {
+          uniqueIds.add(trimmed);
+        }
+      }
+      if (uniqueIds.size === 0) {
+        return 0;
+      }
+
+      return this.database.transaction(
+        "rw",
+        this.database.volumes,
+        async () => {
+          let updatedCount = 0;
+          for (const driveFileId of uniqueIds) {
+            const existing = await this.database.volumes
+              .where("driveFileId")
+              .equals(driveFileId)
+              .first();
+            if (!existing) {
+              continue;
+            }
+            if (!isValidVolumeRecord(existing)) {
+              await this.database.volumes.delete(existing.id);
+              continue;
+            }
+            if (existing.isTrashed === 1) {
+              continue;
+            }
+            await this.database.volumes.put({
+              ...existing,
+              isTrashed: 1,
+            });
+            updatedCount += 1;
+          }
+          return updatedCount;
+        },
+      );
+    });
   }
 }
