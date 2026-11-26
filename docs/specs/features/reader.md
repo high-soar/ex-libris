@@ -78,22 +78,22 @@ related_tests:
        1. `VolumesRepository.getById(volumeId)` を参照する。`null`（未存在または破損除外）の場合は致命的エラー **`VOLUME_NOT_FOUND`** とする。
        2. `DriveSyncRootsRepository.listActive()` から有効ルート（`enabled === 1`）を照合し、`volume.isTrashed === 1` または対象 `volume.rootFolderId` が有効ルートに含まれない場合は致命的エラー **`VOLUME_UNAVAILABLE`** とする（なお `volume.seriesId` は戻り先フォールバック用に保持する）。
        3. `GoogleAuthBridge.getCachedSession() ?? (await GoogleAuthBridge.getSession())` で認証セッションを確認する。`null`（未連携）の場合は致命的エラー **`AUTH_REQUIRED`** とする。
-       4. `SeriesRepository.getById(volume.seriesId)` を参照し（取得失敗・`null` 時はフォールバック）、上部 HUD 表示タイトルを **`series !== null && volume.volumeLabel.trim().length > 0 ? "${series.title} ${volume.volumeLabel}" : (series?.title ?? volume.rawFileName)`** と決定する。
+       4. `SeriesRepository.getById(volume.seriesId)` を参照する（既存契約により Tombstone も返却されるため `const activeSeries = rawSeries !== null && rawSeries.deletedAt === null ? rawSeries : null` と判定し、取得失敗・`null`・論理削除済み時はフォールバック）。上部 HUD 表示タイトルを **`activeSeries !== null && volume.volumeLabel.trim().length > 0 ? "${activeSeries.title} ${volume.volumeLabel}" : (activeSeries?.title ?? volume.rawFileName)`** と決定する。
      - 構築する `ArchiveSourceDescriptor` は `{ kind: "gdrive", volumeId: volume.id, driveFileId: volume.driveFileId, fileSize: volume.fileSize, md5Checksum: volume.md5Checksum, indexCacheKey: "gdrive:${volume.driveFileId}:${volume.md5Checksum ?? volume.fileSize}", progressTargetKey: "vol:${volume.id}" }` とする。
 2. **優先度 2（画質補正シート閉鎖）と起点別リーダー終了・完全リソース解放（優先度 3: `TR-07` / `TR-08`）**:
    - **優先度 2 戻る制御**: 致命的エラーが発生しておらず画質補正ボトムシート（`ReaderShaderSheet`）が開いている状態（`activeFatalError === null && isShaderSheetOpen`）で Android ハードウェア戻るボタン（`AppBridge` `backButton`）、キーボード `Escape` キー、またはシート外バックドロップタップが発生した場合は、**終了遷移を発火せず `isShaderSheetOpen = false` のみを実行してフルスクリーン閲覧状態へ戻る**。
    - **優先度 3 リーダー終了（`TR-07` / `TR-08`）**: 上部 HUD の「戻る」ボタン、エラー画面の戻るボタン、ボトムシート非表示時（または致命的エラー表示中）の `Escape` キー／Android ハードウェア戻るボタン、またはブラウザ戻る（`popstate`）によるルート離脱で発動し、以下の順序でリソースを確定解放して遷移元へ戻る：
-     1. 有効閲覧中であれば現在のページ進捗と `spreadPageOffset` を `ReadingProgressRepository.put(...)`（および `gdrive` 巻の場合は `SeriesRepository.updateLastReadAt(volume.seriesId, now)`）へ即時フラッシュ発行（Repository 内の FIFO 直列化により、遷移先 `SCR-01` / `SCR-02` の一覧取得より先に確実にコミットされる）
+     1. 有効閲覧中であれば同一時刻 `const now = Date.now()` を採番し、現在のページ進捗・`spreadPageOffset` の `ReadingProgressRepository.put(...)`（および `gdrive` 巻の場合は **`SeriesRepository.updateLastReadAt(volume.seriesId, now)` を `put` の完了を待たず同一同期ティック内で並列に呼び出し**）を即時フラッシュ発行する（双方の独立した Repository FIFO キューへ同一ティック内で先行投入することで、直後にマウントされる `SCR-01` / `SCR-02` の `seriesRepo.listActive()` / `readingProgressRepo.listByVolumeIds()` より先に確実にコミットされる）
      2. 進行中 `requestEpoch` を無効化（`l1Cache.setMinActiveEpoch` / `coordinator.api.cancelEpochBelow`）＋ `coordinator.api.closeArchive()` 呼び出し（Worker 内 `L2ByteCache` 全破棄含む）
      3. `L1PageCache.clear()` により保持中の全 `ImageBitmap.close()` ＋ `rendererHandleRef.current?.clearAllTextures()` による `WebGLRendererCore` 全テクスチャ（複数タイル含む）`gl.deleteTexture()` 実行
      4. `coordinator.dispose()` 実行（Comlink プロキシ解放 ＆ Coordinator Worker 終了）
      5. ローカル閲覧時はオンメモリ `File` セッションを `null` へクリア（`clearSession()`）
      6. **起点に応じた戻りナビゲーション（`popstate` 発火時は現在履歴を維持）**:
-        - `/read/local` の場合：常に **`TR-08`**（`/` からの履歴があれば `window.history.back()`、なければ `router.replace("/")`）を実行する。
-        - `/read/volume/:volumeId` の場合：`window.history.state` に保持された `readerOrigin`（`"bookshelf" | "series-detail"`）および `seriesId` に従う：
-          - `readerOrigin === "bookshelf"`（`TR-02b` 起点）：**`TR-08`** として `/` へ戻る（`exLibrisCanGoBackFrom === "/"` 時は `window.history.back()`、それ以外は `router.replace("/")`）。
-          - `readerOrigin === "series-detail"`（`TR-04` 起点）：**`TR-07`** として `/series/:seriesId` へ戻る（`exLibrisCanGoBackFrom` が `/series/...` の場合は `window.history.back()`、それ以外は `targetSeriesId` が判明していれば `router.replace(buildSeriesDetailPath(targetSeriesId))`、不明なら `router.replace("/")`）。
-          - `readerOrigin` 不在時（URL 直接入力等）：解決済み `volume.seriesId` が存在すれば `router.replace(buildSeriesDetailPath(volume.seriesId))`（`TR-07` フォールバック）、未存在（`VOLUME_NOT_FOUND` 等）であれば `router.replace("/")`（`TR-08` フォールバック）を実行する。
+        - `/read/local` の場合：常に **`TR-08`**（`router.back()` により `/` からの履歴があれば `window.history.back()`、なければ `router.replace("/")`）を実行する。
+        - `/read/volume/:volumeId` の場合：`useRouter()` が公開する `readerOriginState`（描画時の `ReaderErrorView.backLabel` 判定にも共用）および `router.exitReader(fallbackSeriesId)` に従う：
+          - `readerOrigin === "bookshelf"`（`TR-02b` 起点）：**`TR-08`** として `/` へ戻る（`canGoBackFrom === "/"` 時は `window.history.back()`、それ以外は `router.replace("/")`）。
+          - `readerOrigin === "series-detail"`（`TR-04` 起点）：**`TR-07`** として `/series/:seriesId` へ戻る（`canGoBackFrom` が `/series/...` の場合は `window.history.back()`、それ以外は `targetSeriesId = readerOriginState.seriesId ?? fallbackSeriesId` が判明していれば `router.replace(buildSeriesDetailPath(targetSeriesId))`、不明なら `router.replace("/")`）。
+          - `readerOrigin` 不在時（URL 直接入力等）：解決済み `fallbackSeriesId`（`volume.seriesId`）が存在すれば `router.replace(buildSeriesDetailPath(fallbackSeriesId))`（`TR-07` フォールバック）、未存在（`VOLUME_NOT_FOUND` 等）であれば `router.replace("/")`（`TR-08` フォールバック）を実行する。
         - `<ReaderCanvas>` アンマウント時のクリーンアップで `WebGLRendererCore.dispose()` を実行する。
 3. **`zipIndexCache` 0 RTT オープン・自己修復フォールバック・`readingProgress` 自動レジューム・共通画質補正デフォルト復元**:
    - アーカイブオープン時（`initialSnapshot === undefined` 時）：
@@ -111,9 +111,9 @@ related_tests:
 4. **`readingProgress` ＆ `series.lastReadAt` 永続化トリガーと寸法確定ベースの `readStatus` 判定**:
    - `initialSnapshot === undefined && activeSource !== null && !isOpening && totalPages > 0 && archiveError === null && webglFatalError === null` の条件下でのみ進捗を保存する（破損・空アーカイブ・未存在巻等の異常時は一切書き込まない）。
    - **寸法未確定時の早期 `completed` 誤判定防止**: `computeViewportSlotLayout` は未デコードの隣接ページを暫定的に縦長と仮定して 2 スロット `[N, N+1]` を返すため、`persistCurrentProgress` では見開き第 2 スロット（`N + 1`）は **`N` と `N + 1` の双方が `knownDimensions` 上で非横長（`width <= height`）と確定している場合のみ** 表示済みに含める（`moveToPage` 直後やデコード完了前の離脱で寸法未確定の間は `currentPageIndex` 単独基準とする）。この確定表示最大ページ `confirmedMaxDisplayedPageIndex >= totalPages - 1` であれば `readStatus = "completed"`、それより手前であれば `readStatus = "reading"` とする。
-   - **ローカル一時 ZIP vs Drive 永続巻の保存先**:
+   - **ローカル一時 ZIP vs Drive 永続巻の保存先（同一同期ティック FIFO キュー先行投入）**:
      - `source.kind === "local-session"`: `targetKey: "local:${rawFileName}:${fileSize}", volumeId: null` で `ReadingProgressRepository.put(...)` へ保存する。
-     - `source.kind === "gdrive"`: `targetKey: "vol:${volume.id}", volumeId: volume.id` で `ReadingProgressRepository.put(...)` へ保存し、続けて **`SeriesRepository.updateLastReadAt(volume.seriesId, Date.now())`** を呼び出して所属シリーズの最新読書日時を更新する（`SeriesRepository.updateLastReadAt` は LWW 原則に従い `series.updatedAt` を一切変更しない。いずれかの失敗時は `diagnosticLogger.warn("reader", ...)` のみ記録し閲覧を継続する）。
+     - `source.kind === "gdrive"`: 同一時刻 `const now = Date.now()` を採番し、`ReadingProgressRepository.put({ targetKey: "vol:${volume.id}", volumeId: volume.id, ... })` と **`SeriesRepository.updateLastReadAt(volume.seriesId, now)` の双方を同一同期ティック内で即座に呼び出して各 Repository の内部 FIFO キューへ先行投入する**（`put` の完了を待ってから `updateLastReadAt` を呼ぶ逐次チェーンを禁止し、`TR-08` / `TR-07` 直後の `seriesRepo.listActive()` による古い `lastReadAt` 読み取り競合を根絶する。`SeriesRepository.updateLastReadAt` は LWW 原則に従い `series.updatedAt` を一切変更しない。いずれかの失敗時は個別に `diagnosticLogger.warn("reader", ...)` のみ記録し閲覧を継続する）。
    - 保存発火タイミング：①`loadPageWindow` 完了時（初回オープン・めくり・シーク・見開き／向き変化後の寸法確定時）、②`moveToPage`（前後めくり・シーク確定）および `handleToggleSpreadPageOffset` 直後、③`TR-07` / `TR-08` 終了・`popstate` 離脱・`window` `"pagehide"`・`document` `"visibilitychange"`（`document.visibilityState === "hidden"`）発生時。
 5. **Fast-Path・L1 近傍バッチ・10MB Warm Prefetch 連携（単ページ／見開き共用）**:
    - 有効表示モード（`effectiveSpreadMode`）・`spreadPageOffset`・セッション内既知寸法（`knownDimensions`）から現在の取得候補 `visibleTargets`（単ページ確定時は `[N]`、見開きペア候補時は `[N, N+1]`）を決定し、保護ウィンドウ `protectedPages`（単ページ時 `[N-1, N, N+1, N+2]` 最大 4 枚、見開き時 `[first-1, first, last, last+1, last+2]` 最大 5 枚＝`L1_MAX_PAGES`）、近傍先読み `neighbors`（単ページ時 `[N+1, N+2, N-1]`、見開き時 `[last+1, last+2, first-1]`）、および閲覧優先順 `prefetchTargets`（進行方向 `[last+1 .. last+20]` ＋ 逆方向 `[first-1, first-2]`、`0 <= idx < totalPages`）を算出する。

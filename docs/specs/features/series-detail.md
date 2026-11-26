@@ -55,19 +55,20 @@ related_tests:
 2. **上部ヘッダー領域（`SeriesDetailHeader`）**:
    - 左側: **「本棚へ戻る」ボタン**（`data-testid="series-detail-back-button"`, `TR-05` 実行）＋ ヘッダータイトル（作品取得済み時は `series.title` の 1 行省略表示、読込中・未存在時は「シリーズ詳細」）。
    - 右側: アプリバージョンバッジ（`v${APP_VERSION}`）。
-3. **データ解決条件（100% ローカル IndexedDB 完結 / `NFR-03`）**:
+3. **データ解決条件と初回読込中ローディング境界（100% ローカル IndexedDB 完結 / `NFR-03`）**:
+   - 初回非同期 IndexedDB 取得が完了するまでの間（`!isSettled`、`initialSnapshot?.kind === "loading"` を含む）はエンプティ案内を誤表示せず、控えめなローディング表示（`data-testid="series-detail-loading"`）のみを描画する。
    - マウント時および共有同期ストア（`driveSyncStateStore.completedSyncCount`）の更新時に、ネットワーク通信を一切行わず以下の手順で表示データを解決する：
-     1. `SeriesRepository.getById(seriesId)` で対象シリーズ（`deletedAt === null`）を取得する。
+     1. `SeriesRepository.getById(seriesId)` を呼び出す。同メソッドは既存契約通り Tombstone レコード（`deletedAt !== null`）もそのまま返却するため、呼び出し側／`buildSeriesDetailViewModel` で **`const activeSeries = rawSeries !== null && rawSeries.deletedAt === null ? rawSeries : null`** と判定し、論理削除済みシリーズは未存在（`null`）として扱う。
      2. `DriveSyncRootsRepository.listActive()` から有効ルート集合 `enabledRootIds`（`enabled === 1`）を構築し、`VolumesRepository.listBySeriesId(seriesId)` の結果から **`enabledRootIds.has(volume.rootFolderId) && volume.isTrashed === 0`** を満たす有効巻配列 `visibleVolumes`（`VolumesRepository` 決定論ソート済み）を抽出する。
-     3. `visibleVolumes.length > 0` の場合、`ReadingProgressRepository.listByVolumeIds(new Set(visibleVolumes.map(v => v.id)))` で全所属巻の読書進捗マップを単一クエリで一括取得する。
-   - IndexedDB 読み取りで例外が発生した場合は `diagnosticLogger.warn("series-detail", ...)` へ記録し、UI をクラッシュさせず安全な案内状態へフォールバックする。
-4. **作品サマリカード（`SeriesSummaryCard`：`series !== null && visibleVolumes.length > 0` 時）**:
+     3. `activeSeries !== null && visibleVolumes.length > 0` の場合、`ReadingProgressRepository.listByVolumeIds(new Set(visibleVolumes.map(v => v.id)))` で全所属巻の読書進捗マップを単一クエリで一括取得する。
+   - IndexedDB 読み取りで例外が発生した場合は `diagnosticLogger.warn("series-detail", ...)` へ記録し、`isSettled = true` として安全な案内状態へフォールバックする。
+4. **作品サマリカード（`SeriesSummaryCard`：`isSettled && activeSeries !== null && visibleVolumes.length > 0` 時）**:
    - **代表表紙サムネイル（`CoverThumbnail`）**:
-     - `series.representativeVolumeId` が `visibleVolumes` 内に存在する場合はその巻、存在しないまたは `null` の場合は `visibleVolumes[0]`（巻順先頭巻）を代表表紙巻とする。
+     - `activeSeries.representativeVolumeId` が `visibleVolumes` 内に存在する場合はその巻、存在しないまたは `null` の場合は `visibleVolumes[0]`（巻順先頭巻）を代表表紙巻とする。
      - `coverStatus === "ready" && coverBlob !== null` の場合は `URL.createObjectURL(coverBlob)` による表紙画像を表示し、コンポーネントアンマウントまたは `coverBlob` 変化時に必ず `URL.revokeObjectURL` を呼び出してメモリリークを防止する。未抽出（`pending` / `error` / `null`）時は作品タイトル頭文字・巻数を含むダーク調タイポグラフィプレースホルダを表示する。
    - **作品メタ情報**:
      - 作品タイトル（`data-testid="series-detail-title"`）
-     - 著者名一覧（`series.authors.length > 0` 時にカンマ区切りまたはバッジ表示、空配列時は非表示）
+     - 著者名一覧（`activeSeries.authors.length > 0` 時にカンマ区切りまたはバッジ表示、空配列時は非表示）
      - 所持巻数・読了サマリバッジ（`data-testid="series-detail-progress-summary"`：全 `visibleVolumes.length` 巻、および読了巻数 `${completedCount} / ${visibleVolumes.length} 冊読了`）
    - **プライマリ CTA（クイック起動ボタン：`data-testid="series-detail-primary-read-button"`, `TR-04`）**:
      - [bookshelf.md §1.5](bookshelf.md#1-画面責務とレイアウト構成v01--v02-34) と同一の決定論ルール（`resolveQuickLaunchVolume`）で対象巻を決定する：
@@ -82,8 +83,8 @@ related_tests:
      - 元ファイル名（`volume.rawFileName`、1 行省略）および人間可読ファイルサイズ（`formatByteSize(volume.fileSize)`）
      - 読書ステータスバッジ（`data-testid="volume-read-status"`：進捗未保存または `"unread"` は `未読`、`"reading"` は `読書中`、`"completed"` は `読了`）
      - ページ進捗テキストおよびプログレスバー（進捗レコードが存在する場合のみ `${currentPageIndex + 1} / ${totalPageCount} ページ` と、`readStatus === "completed"` 時は `100%`、それ以外は `Math.round(((currentPageIndex + 1) / totalPageCount) * 100)%` の進捗バーを表示）
-6. **未存在・表示可能巻 0 件時のエンプティ案内（`SeriesDetailEmptyState`：`data-testid="series-detail-empty"`）**:
-   - 指定された `seriesId` が DB に存在しない・論理削除済み（`deletedAt !== null`）・または有効な同期ルート配下に非ゴミ箱巻が 1 冊も存在しない（`visibleVolumes.length === 0`：全巻ゴミ箱移動や `SCR-04` でのルート一時無効化時を含む）場合は、例外や無言リダイレクトを起こさず以下を表示する：
+6. **未存在・表示可能巻 0 件時のエンプティ案内（`SeriesDetailEmptyState`：`data-testid="series-detail-empty"`、`isSettled && (activeSeries === null || visibleVolumes.length === 0)` 時）**:
+   - 初回読込完了後（`isSettled === true`）に、指定された `seriesId` が DB に存在しない・論理削除済み（`activeSeries === null`）・または有効な同期ルート配下に非ゴミ箱巻が 1 冊も存在しない（`visibleVolumes.length === 0`：全巻ゴミ箱移動や `SCR-04` でのルート一時無効化時を含む）場合は、例外や無言リダイレクトを起こさず以下を表示する：
      - 案内見出し「シリーズを表示できません」と説明文「指定されたシリーズが見つからないか、有効な同期フォルダ内に表示できる巻がありません。」
      - **「本棚へ戻る」ボタン**（`data-testid="series-detail-empty-back-button"`, `TR-05` 実行）
 
@@ -92,11 +93,11 @@ related_tests:
 ## 2. 画面遷移（`TR-01` / `TR-04` / `TR-05` / `TR-07`）・スクロール復元・戻る優先度制御
 
 1. **`TR-01`（`SCR-01` → `SCR-02`）と `TR-05`（`SCR-02` → `SCR-01`）**:
-   - `SCR-01` でシリーズカードを選択した際、`bookshelfUiStateStore` に `SCR-01` の現在ソート順と `scrollY` が保持された状態で `/series/:seriesId` へ遷移する（`TR-01`）。
+   - `SCR-01` でシリーズカードを選択した際、`bookshelfUiStateStore` に `SCR-01` の現在ソート順と `scrollY` を保持しつつ、過去の未消費 `seriesDetailScroll` を `clearSeriesDetailScroll()` でクリアした上で `/series/:seriesId` へ遷移する（`TR-01`）。
    - `SCR-02` でヘッダー「本棚へ戻る」ボタン、エンプティ案内「本棚へ戻る」ボタン、ブラウザ戻る（`popstate`）、または Android ハードウェア戻るボタン（優先度 4：`router.back()`）を実行した際、`/`（`SCR-01`）へ復帰し、保持されていた `SCR-01` のソート順・スクロール位置を復元する（`TR-05`）。直接 URL アクセス等で `/` からの履歴が無い場合も `router.back()` 内の安全フォールバック（`replace("/")`）により確実に `SCR-01` へ戻る。
 2. **`TR-04`（`SCR-02` → `SCR-03`）と `TR-07`（`SCR-03` → `SCR-02`）における `SCR-02` スクロール位置復元**:
    - 長巻シリーズで途中巻を閲覧して戻った際に一覧先頭へ巻き戻らないよう、サマリ CTA または巻行タップで `/read/volume/:volumeId` へ遷移する直前に `bookshelfUiStateStore.saveSeriesDetailScroll(seriesId, window.scrollY)` を記録し、`router.navigate(buildReaderVolumePath(volumeId), { readerOrigin: "series-detail", seriesId })` を呼び出す（`TR-04`）。
-   - `SCR-03` から `TR-07` で `/series/:seriesId` へ戻った際、`SeriesDetailPage` は非同期 DB 読込が完了した時点（`isSettled === true`）で `bookshelfUiStateStore` の `seriesDetailScroll` が同一 `seriesId` かつ `scrollY > 0` であれば `window.scrollTo(0, savedScrollY)` を実行し、`clearSeriesDetailScroll()` で消費クリアする。
+   - `SCR-03` から `TR-07` で `/series/:seriesId` へ戻った際、`SeriesDetailPage` は非同期 DB 読込が完了した時点（`isSettled === true`）で `bookshelfUiStateStore` の `seriesDetailScroll` を確認し、同一 `seriesId` かつ `scrollY > 0` であれば `window.scrollTo(0, savedScrollY)` を実行する。また `seriesId` 不一致や `scrollY <= 0` の場合を含め、`seriesDetailScroll !== null` であればその時点で必ず `clearSeriesDetailScroll()` を呼び出して未消費状態を残留させない。
 
 ---
 

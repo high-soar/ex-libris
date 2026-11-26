@@ -88,7 +88,7 @@ related_tests:
      - **手動同期アクションボタン**:
        - **「今すぐ同期（差分）」ボタン**（`data-testid="settings-sync-incremental-button"`）：`DriveSyncEngine.sync({ forceFullScan: false })` を実行する（初回トークン未保持時や新規ルート追加時はエンジン側で自動フルスキャン、2 回目以降は `changes.list` 増分同期）。
        - **「強制フルスキャン」ボタン**（`data-testid="settings-sync-full-button"`）：トラブルシュート用に `DriveSyncEngine.sync({ forceFullScan: true })` を実行し、有効ルート配下の全フォルダ木を再走査する。
-       - **活性条件**: 両ボタンとも **`authState.kind === "authenticated" && enabledRootCount > 0 && syncPhase !== "syncing" && !isBackBlocked`** のときのみ活性とし、未連携時・有効ルート 0 件時・同期実行中・OAuth/ルート保存中は `disabled`（未連携または有効ルート 0 件時は理由の補足案内を表示）とする。
+       - **活性条件**: 両ボタンとも **`authStatus === "connected" && enabledRootCount > 0 && syncPhase !== "syncing" && !isBackBlocked`**（`SettingsPageInitialSnapshot` 上は `authState.status === "connected"`）のときのみ活性とし、未連携時・有効ルート 0 件時・同期実行中・OAuth/ルート保存中は `disabled`（未連携または有効ルート 0 件時は理由の補足案内を表示）とする。
 6. **モーダル：アプリ内 Drive フォルダ階層選択（`DriveFolderPickerModal`）**:
    - `isOpen === false` 時は `null` を返す（Storybook の閉鎖状態ストーリーのみ `tags: ["skip-vrt"]` を許可）。
    - `isOpen === true` 時は背面メインコンテンツを `inert` 化し、`role="dialog"`, `aria-modal="true"`, `aria-label="Google Drive フォルダを選択"` でモーダルを表示する。

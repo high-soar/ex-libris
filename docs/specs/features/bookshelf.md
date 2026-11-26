@@ -79,14 +79,18 @@ related_tests:
      - **① 未連携状態（`"unauthenticated"`）**: Google Drive ストリーミング連携の案内と **「設定を開いて連携する」ボタン**（`data-testid="drive-setup-banner-cta"`, `TR-03`）を表示する（過去に同期済みのローカル蔵書が IndexedDB に残っている場合も、オフライン蔵書閲覧を維持しつつ上部に本バナーを表示する）。
      - **② 連携済み・有効ルートフォルダ 0 件状態（`"no-roots"`）**: 連携中メールアドレスと「マンガ保管ルートフォルダが未設定です」の案内および **「フォルダを設定する」ボタン**（`data-testid="drive-setup-banner-cta"`, `TR-03`）を表示する。
      - **③ 準備完了状態（`"ready"`：連携済み かつ 有効ルートフォルダ 1 件以上）**: バナーを非表示（`null`）とする。
-4. **仮想本棚データ解決とメイン領域の 3 分岐レイアウト（`NFR-03` ローカル IndexedDB 完結）**:
+4. **仮想本棚データ解決・初回ローディング境界・メイン領域の 3 分岐レイアウト（`NFR-03` ローカル IndexedDB 完結）**:
    - マウント時および共有同期ストア（`driveSyncStateStore.completedSyncCount`）の更新時に、ネットワーク通信ゼロで `DriveSyncRootsRepository.listActive()`（`enabled === 1` の集合 `enabledRootIds`）→ `VolumesRepository.listVisibleByEnabledRoots(enabledRootIds)` → `SeriesRepository.listActive()` → `ReadingProgressRepository.listByVolumeIds(...)` を結合し、有効巻を 1 冊以上持つシリーズ一覧 `visibleSeries` を構築する。
-   - `<main>` 領域全体は常時 Web ドラッグ＆ドロップ対応ドロップゾーンとし、対応外拡張子（`.zip` / `.cbz` 以外）が選択またはドロップされた場合は遷移せず、`diagnosticLogger.warn("bookshelf", ...)` へ記録した上でインライン警告メッセージ（`role="alert"`, `data-testid="local-zip-error"`）を表示する（`LocalArchiveEmptyState` 非表示時も `<main>` 上部に同 `data-testid="local-zip-error"` アラートを表示する）。
-   - **分岐 A：有効な Drive シリーズが 1 件以上存在する場合（`visibleSeries.length > 0`）**:
+   - **初回読込中ローディング境界（エンプティ画面チラつき防止）**: `initialSnapshot === undefined` での通常マウント直後、初回 IndexedDB 本棚読込または Drive 連携状態解決が未完了の間（`!isShelfDataSettled || driveSetupState.kind === "loading"`）は `DriveSyncEmptyState` や `LocalArchiveEmptyState` を先行表示せず、控えめなローディング表示（`data-testid="bookshelf-loading"`）を描画し、解決完了後に以下の 3 分岐へ遷移する（`initialSnapshot` 指定時や `initialDriveSetupState` のみ指定時のテスト・Storybook 決定論注入もサポートする）。
+   - **全分岐共通の Web D&D フィードバック ＆ アラート表示**:
+     - `<main data-drag-active={String(isDragActive)}>` 領域全体は常時 Web ドラッグ＆ドロップ対応ドロップゾーンとし、ファイルドラッグ中（`isDragActive === true`）は分岐 A / B / C いずれにおいても視覚的ハイライト枠（および分岐 B / C では各エンプティカードのドラッグ強調）を表示する。
+     - 対応外拡張子（`.zip` / `.cbz` 以外）が選択またはドロップされた場合は遷移せず、`diagnosticLogger.warn("bookshelf", ...)` へ記録した上でインライン警告メッセージ（`role="alert"`, `data-testid="local-zip-error"`）を表示する（`LocalArchiveEmptyState` 非表示の分岐 A / B でも `<main>` 上部に同 `data-testid="local-zip-error"` アラートを表示する）。
+     - 手動同期が失敗して `driveSyncStateStore.errorMessage !== null` となった場合の同期エラーアラート（`role="alert"`, `data-testid="bookshelf-sync-error"`）も、分岐 A では `BookshelfToolbar` 内、分岐 B・分岐 C（同期中の `401 UNAUTHORIZED` 等で `driveSetupState.kind` が `"ready"` → `"unauthenticated"` へ遷移した場合を含む）では `<main>` 上部またはカード内に継続表示し、認証失効に伴う画面分岐変化でエラー通知が消失しないようにする。
+   - **分岐 A：有効な Drive シリーズが 1 件以上存在する場合（`isShelfDataSettled && visibleSeries.length > 0`）**:
      - `LocalArchiveEmptyState`（大きな初期空本棚カード）は非表示（折りたたみ）とし、**`BookshelfToolbar` ＋ `SeriesGridSection`** をメイン表示する（下部に `local:*` 履歴が 1 件以上あれば `RecentLocalHistorySection` を並置する）。
-   - **分岐 B：有効な Drive シリーズが 0 件 かつ Drive 準備完了状態（`visibleSeries.length === 0 && driveSetupState.kind === "ready"`）**:
-     - **`DriveSyncEmptyState`**（`data-testid="drive-sync-empty-state"`）を表示する：「マンガ保管フォルダが設定されています。同期を実行して本棚を作成してください」の案内、プライマリ **「今すぐ同期」ボタン**（`data-testid="empty-state-sync-drive-button"`、同期中はスピナー＆`disabled`）、同期エラー時のインラインアラート（`role="alert"`, `data-testid="bookshelf-sync-error"`）、およびサブ導線の **「ローカル ZIP を開く（.zip / .cbz）」ボタン**（`data-testid="open-local-zip-button"`）を配置する（下部に `local:*` 履歴が 1 件以上あれば `RecentLocalHistorySection` を表示する）。
-   - **分岐 C：有効な Drive シリーズが 0 件 かつ 未連携／ルート未設定／初期確認中（`visibleSeries.length === 0 && driveSetupState.kind !== "ready"`）**:
+   - **分岐 B：有効な Drive シリーズが 0 件 かつ Drive 準備完了状態（`isShelfDataSettled && visibleSeries.length === 0 && driveSetupState.kind === "ready"`）**:
+     - **`DriveSyncEmptyState`**（`data-testid="drive-sync-empty-state"`）を表示する：「マンガ保管フォルダが設定されています。同期を実行して本棚を作成してください」の案内、プライマリ **「今すぐ同期」ボタン**（`data-testid="empty-state-sync-drive-button"`、同期中はスピナー＆`disabled`）、およびサブ導線の **「ローカル ZIP を開く（.zip / .cbz）」ボタン**（`data-testid="open-local-zip-button"`）を配置する（下部に `local:*` 履歴が 1 件以上あれば `RecentLocalHistorySection` を表示する）。
+   - **分岐 C：有効な Drive シリーズが 0 件 かつ 未連携／ルート未設定（`isShelfDataSettled && visibleSeries.length === 0 && driveSetupState.kind !== "ready" && driveSetupState.kind !== "loading"`）**:
      - 従来通り `LocalArchiveEmptyState`（`data-testid="bookshelf-empty"`、目立つ **「ローカル ZIP を開く（.zip / .cbz）」ボタン** `data-testid="open-local-zip-button"` 付き）＋ `RecentLocalHistorySection`（1 件以上時）を表示する。
 5. **本棚ツールバー・4軸基本ソート・シリーズカードグリッド（`BookshelfToolbar` / `SeriesGridSection` / `SeriesCard`）**:
    - **`BookshelfToolbar`（`data-testid="bookshelf-toolbar"`）**:
@@ -100,7 +104,7 @@ related_tests:
    - **`SeriesCard`（`data-testid="series-card"`, `data-series-id={item.seriesId}`）**:
      - **代表表紙サムネイル（`CoverThumbnail`）**: `series.representativeVolumeId` が所属有効巻内に存在する場合はその巻、なければ所属有効巻の先頭巻（`visibleVolumes[0]`）を採用する。`coverStatus === "ready" && coverBlob !== null` の場合は `URL.createObjectURL(coverBlob)` 画像を表示し（アンマウント・Blob 変化時に `URL.revokeObjectURL` 必須）、それ以外はタイトル・巻数バッジ付きのプレースホルダを表示する。
      - **カード情報**: 作品タイトル、著者名（存在時 1 行省略）、所持巻数バッジ（`全 ${volumeCount} 巻`）、およびシリーズ読書ステータスバッジ（`data-testid="series-read-status"`：全有効巻未読＝`未読`、全有効巻読了＝`読了`、それ以外＝`読書中 (${completedCount}/${volumeCount})`）。
-     - **カード本体タップ（`data-testid="series-card-open-detail"` → `TR-01`）**: 所持巻数が 1 冊か複数冊かを問わず、現在の `window.scrollY` を `bookshelfUiStateStore` に保存して `/series/:seriesId`（`SCR-02`）へ遷移する。
+     - **カード本体タップ（`data-testid="series-card-open-detail"` → `TR-01`）**: 所持巻数が 1 冊か複数冊かを問わず、現在の `window.scrollY` を `bookshelfUiStateStore` に保存し、`clearSeriesDetailScroll()` で過去の未消費詳細スクロール状態をクリアした上で `/series/:seriesId`（`SCR-02`）へ遷移する。
      - **カード上のクイック起動ボタン（`data-testid="series-card-quick-read"` → `TR-02b`）**: クリックバブリングを抑止（`stopPropagation`）し、全シリーズカードに配置する。対象巻は以下の決定論的優先順位（`resolveQuickLaunchVolume`）で選び、`window.scrollY` を保存した上で起点 `readerOrigin: "bookshelf"` として `/read/volume/:volumeId`（`SCR-03`）を直接開く：
        1. 所属有効巻のうち `readStatus === "reading"` が 1 冊以上ある場合：`lastReadAt` が最大の巻（同値時は巻順先頭）、ラベル **`「続きを読む (${volumeLabel})」`**。
        2. `"reading"` が無く未読了（`"unread"` または進捗未保存）の巻がある場合：巻順先頭の未読了巻、ラベルは既読了巻 0 冊なら **`「読む (${volumeLabel})」`**、1 冊以上なら **`「次を読む (${volumeLabel})」`**。
@@ -125,7 +129,7 @@ related_tests:
    - 有効な `.zip` / `.cbz` `File` が選択されたら、オンメモリセッションストア（`useLocalReaderSessionStore`）へ `{ file, fileName: file.name, fileSize: file.size }` を格納し、直ちに `/read/local` へ遷移（`router.navigate("/read/local")`）する。
    - 遷移先の `ReaderPage` にて `local:${file.name}:${file.size}` をキーに `zipIndexCache`（0 RTT 目次復元）および `readingProgress`（保存済み `currentPageIndex` と `spreadPageOffset` の自動レジューム）を参照・更新する。
 3. **サブ画面・リーダー遷移とソート順・スクロール位置復元（`TR-01` / `TR-02b` / `TR-03` ↔ `TR-05` / `TR-08` / `TR-09`）**:
-   - `SCR-01` からシリーズ詳細（`TR-01`）、クイック起動リーダー（`TR-02b`）、または設定画面（`TR-03`）へ遷移する際、オンメモリ UI 状態ストア（`bookshelfUiStateStore`）に現在の `window.scrollY` を保存する（選択中の `sortOrder` も同ストアで継続保持される）。
+   - `SCR-01` からシリーズ詳細（`TR-01`：あわせて `clearSeriesDetailScroll()` を実行）、クイック起動リーダー（`TR-02b`）、または設定画面（`TR-03`）へ遷移する際、オンメモリ UI 状態ストア（`bookshelfUiStateStore`）に現在の `window.scrollY` を保存する（選択中の `sortOrder` も同ストアで継続保持される）。
    - `SCR-02`（`TR-05`）・`SCR-03`（`TR-08`）・`SCR-04`（`TR-09`）から `/` へ復帰した際、`BookshelfPage` は **Drive 連携状態確認（`isDriveSetupSettled`）・ローカル履歴取得（`isRecentHistorySettled`）・仮想本棚データ取得（`isShelfDataSettled`）の 3 つすべてが完了した時点** で `window.scrollTo(0, savedScrollY)` を実行し、`clearScrollY()` で消費クリアする（グリッド描画完了前の高さ不足によるスクロール位置ロストを防止する）。
 
 ---
@@ -149,7 +153,7 @@ related_tests:
 | `RecentLocalHistorySection` | `src/features/bookshelf/RecentLocalHistorySection.tsx` | 直近ローカル閲覧履歴（最大10件、0件時 `null`、進捗バー、再選択導線、個別削除・一括クリア）                                 |
 
 - **親子分離 UT**: 親 `BookshelfPage` の単体テストでは直下の子コンポーネント（`BookshelfHeader`, `DriveSetupBanner`, `BookshelfToolbar`, `SeriesGridSection`, `DriveSyncEmptyState`, `LocalArchiveEmptyState`, `RecentLocalHistorySection`）をすべて `vi.spyOn(...).mockImplementation(() => null)` で完全分離する。`SeriesGridSection` の単体テストでは `SeriesCard` を、`SeriesCard` の単体テストでは `CoverThumbnail` をそれぞれ `vi.spyOn` で分離する。
-- **Storybook / VRT 決定論性保証**: `BookshelfPage.stories.tsx`（および `App.stories.tsx` のホーム表示ストーリー）では、非同期 IndexedDB / Auth 解決や実時刻による VRT フレークを防ぐため、`initialDriveSetupState`・`initialRecentHistory` に加えてオプショナルな `initialSnapshot?: BookshelfPageInitialSnapshot`（固定 `lastSyncedAt`・シリーズ配列・ソート順・同期状態を同期注入し初期非同期フェッチをスキップする Prop）を設け、1280px / 375px VRT を 100% 決定論的に描画する。
+- **Storybook / VRT 決定論性保証**: `BookshelfPage.stories.tsx`（および `AppProps.initialBookshelfSnapshot` 経由の `App.stories.tsx` ホーム表示ストーリー）では、非同期 IndexedDB / Auth 解決や実時刻による VRT フレークを防ぐため、`initialDriveSetupState`・`initialRecentHistory` に加えてオプショナルな `initialSnapshot?: BookshelfPageInitialSnapshot`（固定 `lastSyncedAt`・シリーズ配列・ソート順・同期状態を同期注入し初期非同期フェッチをスキップする Prop）を設け、1280px / 375px VRT を 100% 決定論的に描画する。
 
 ---
 
