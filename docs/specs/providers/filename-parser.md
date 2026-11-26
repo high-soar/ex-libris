@@ -2,7 +2,7 @@
 type: spec-provider
 title: "自炊ファイル名スマートパーサー仕様書（src/providers/filename/）"
 description: "日本の自炊マンガ・商業誌・同人誌 ZIP/CBZ ファイル名およびサブフォルダ名から作品タイトル・正規化名寄せキー・読み仮名初期値・著者・単巻/小数/合本/上下巻の巻数情報を決定論的に抽出する純粋 TypeScript パーサー仕様の正本"
-status: "Approved (#24)"
+status: "Review (#25)"
 updated: "2026-11-25"
 tags:
   [
@@ -19,6 +19,8 @@ related_specs:
   - docs/specs/architecture.md
   - docs/specs/db-schema.md
   - docs/specs/screen-transitions.md
+  - docs/specs/features/bookshelf.md
+  - docs/specs/features/series-detail.md
   - docs/specs/providers/google-drive.md
   - docs/guidelines/testing.md
 related_tests:

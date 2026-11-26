@@ -2,7 +2,7 @@
 type: spec-db-schema
 title: "Dexie.js（IndexedDB）ローカルDBスキーマ・インデックス定義"
 description: "仮想本棚、指定ルートフォルダ同期、ZIP目次キャッシュ、ローカル一時ZIP共用レジューム、および appDataFolder LWW 端末間同期を支える全9テーブル定義の正本"
-status: "Approved (#24)"
+status: "Review (#25)"
 updated: "2026-11-25"
 tags:
   [database, dexie, indexeddb, schema, bookshelf, lww-sync, reading-progress]
@@ -13,6 +13,7 @@ related_specs:
   - docs/specs/screen-transitions.md
   - docs/specs/engine/zip-streaming.md
   - docs/specs/features/bookshelf.md
+  - docs/specs/features/series-detail.md
   - docs/specs/features/reader.md
   - docs/specs/features/settings.md
   - docs/specs/providers/google-drive.md
@@ -129,7 +130,10 @@ erDiagram
 | `updatedAt`        | `number`                               |   Yes   | LWW 同期調停用タイムスタンプ（UNIX ms）                                            |
 
 - **非同期操作の FIFO 直列化契約（`ReadingProgressRepository`）**:
-  - `TR-08`（`popstate` 同一コミット遷移を含む）で fire-and-forget 発行される `put(...)` と直後の `SCR-01` マウント時 `listRecentLocal(10)` や即座の再オープン時 `get(targetKey)`、および連続ページ送り時の `put(...)` が競合して古い値を返したり順序逆転したりしないよう、Dexie 実装内部で全メソッド（`put` / `delete` / `clearLocal` / `get` / `listRecentLocal`）を Promise キューにより **FIFO 直列実行** する。
+  - `TR-07` / `TR-08`（`popstate` 同一コミット遷移を含む）で fire-and-forget 発行される `put(...)` と直後の `SCR-01` / `SCR-02` マウント時クエリ（`listByVolumeIds` / `listRecentLocal(10)`）や即座の再オープン時 `get(targetKey)`、および連続ページ送り時の `put(...)` が競合して古い値を返したり順序逆転したりしないよう、Dexie 実装内部で全メソッド（`put` / `delete` / `clearLocal` / `get` / `listByVolumeIds` / `listRecentLocal`）を Promise キューにより **FIFO 直列実行** する。
+- **Drive 巻進捗の一括参照契約（`listByVolumeIds` / `NFR-03` N+1 回避）**:
+  - `listByVolumeIds(volumeIds: ReadonlySet<string>): Promise<ReadonlyMap<string, ReadingProgressRecord>>` は、`volumeIds.size === 0` 時は即座に空 `Map` を返し、1 件以上の場合は主キー配列 `vol:${id}` の一括取得（`bulkGet` または `startsWith("vol:")` 走査）を単一トランザクションで実行する。破損レコードを検知した場合は自動削除して除外し、有効レコードのみを `volumeId -> ReadingProgressRecord` の `ReadonlyMap` として返す。
+  - `/read/volume/:volumeId` で `vol:${volumeId}` の進捗を保存する際は、同一同期ティック内で `ReadingProgressRepository.put(...)` と `SeriesRepository.updateLastReadAt(volume.seriesId, lastReadAt)` の双方を即座に各 Repository の FIFO キューへ投入し（`put` の解決待機による `seriesRepo.listActive()` への後着逆転を防止）、`series.updatedAt` は汚染せず `series.lastReadAt` のみを最新化する。
 - **`local:*` 識別子の解析・容量上限・抽出クエリポリシー**:
   - `local:${rawFileName}:${fileSize}` はファイル名自体に `:` が含まれるケースを安全に扱えるよう、接頭辞 `"local:"` と末尾の `lastIndexOf(":")` で `rawFileName`（非空文字列）と `fileSize`（0 以上の安全整数 `/^\d+$/`）へ分離する。
   - ローカル一時 ZIP の進捗レコード（`targetKey` が `"local:"` で始まるもの）の最大保持件数は **100 件**（`LOCAL_READING_PROGRESS_MAX_ENTRIES = 100`）とし、`put` 保存時に `where("targetKey").startsWith("local:")` 件数が上限を超過した場合は `lastReadAt` 昇順（同値時は `targetKey` 昇順）で最古の `local:*` レコードのみを削除する。**`vol:*`（Google Drive 永続巻）レコードは LRU 退避の対象外とし一切削除しない**。
@@ -232,4 +236,4 @@ erDiagram
    - `v0.2` では第 1 弾の `#23` で `version(3)`（`driveSyncRoots`, `series`, `volumes`）の 3 テーブル定義を先行確定させて `DriveSyncRootsRepository`（および `SCR-04` ルートフォルダ管理 UI）を有効化し、続く `#24` で `series` / `volumes` の Repository および Drive スキャン・差分同期を有効化する。以降、`v0.3` で `version(4)`（`collections`, `seriesCollections`）、`v0.4` で `version(5)`（`bookmarks`）を加算的に定義する。
 2. **`resetTestDb()` の不変契約**:
    - `resetTestDb(targetDb = db)` は、その時点で `ExLibrisDatabase` に定義されている **`targetDb.tables` 全件に対して `table.clear()` をトランザクションまたは並列で実行** し、テスト間の状態汚染を完全にゼロにする。
-   - `ServiceProvider` による `window.__exLibrisServices.resetTestDb` への公開は `!Capacitor.isNativePlatform() && (import.meta.env.DEV || import.meta.env.MODE === "test" || navigator.webdriver === true)`（`shouldExposeResetTestDb`）を満たす開発・テスト・E2E（WebDriver）環境のみに限定し、Android ネイティブ実機および通常の本番ブラウザ環境ではプロパティを省略（`undefined`）して誤削除経路を公開しない。
+   - `ServiceProvider` による `window.__exLibrisServices.resetTestDb` への公開は `!Capacitor.isNativePlatform() && (import.meta.env.DEV || import.meta.env.MODE === "test" || navigator.webdriver === true)`（`shouldExposeResetTestDb`）を満たす開発・テスト・E2E（WebDriver）環境のみに限定し（モックアダプタ初期化に加えて `resetBookshelfUiState()` および `resetDriveSyncState()` も同時実行してオンメモリ UI/同期状態も完全初期化する）、Android ネイティブ実機および通常の本番ブラウザ環境ではプロパティを省略（`undefined`）して誤削除経路を公開しない。
