@@ -466,3 +466,44 @@ export const ShaderSheetOpen: Story = {
     />
   ),
 };
+
+const DRIVE_VOLUME_SPECS: readonly StoryPageSpec[] = [
+  {
+    pageIndex: 47,
+    width: 600,
+    height: 900,
+    label: "P.48",
+    accentColor: "#6366f1",
+  },
+  {
+    pageIndex: 48,
+    width: 600,
+    height: 900,
+    label: "P.49",
+    accentColor: "#38bdf8",
+  },
+];
+
+/** Google Drive 巻の HUD 表示状態（作品名＋巻ラベル表示） */
+export const DriveVolumeHudOpen: Story = {
+  name: "Google Drive巻・HUD表示状態",
+  args: {
+    initialSnapshot: {
+      totalPages: 192,
+      currentPageIndex: 47,
+      readingDirection: "rtl",
+      spreadMode: "spread",
+      spreadPageOffset: 0,
+      displayTitle: "ダンジョン飯 第02巻",
+      isOpening: false,
+      isHudOpen: true,
+    },
+  },
+  render: (args) => (
+    <StoryPageWithBitmaps
+      specs={DRIVE_VOLUME_SPECS}
+      snapshot={args.initialSnapshot!}
+      pageProps={args}
+    />
+  ),
+};

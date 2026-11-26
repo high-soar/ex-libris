@@ -18,11 +18,20 @@ import type {
 } from "../../engine/types";
 import { ZipArchiveError, isAbortError } from "../../engine/zip/errors";
 import { matchRoute } from "../../shared/router/routeMatcher";
-import { useRouter } from "../../shared/router/routerContext";
+import {
+  type ReaderOriginState,
+  useRouter,
+} from "../../shared/router/routerContext";
 import type { ReaderSettingsRepository } from "../../storage/repositories/readerSettingsRepository";
 import type { ReadingProgressRepository } from "../../storage/repositories/readingProgressRepository";
+import type { SeriesRepository } from "../../storage/repositories/seriesRepository";
 import type { ZipIndexCacheRepository } from "../../storage/repositories/zipIndexCacheRepository";
-import type { ReadStatus, ReadingProgressRecord } from "../../storage/types";
+import type {
+  ReadStatus,
+  ReadingProgressRecord,
+  SeriesRecord,
+  VolumeRecord,
+} from "../../storage/types";
 import {
   ReaderCanvas,
   type ReaderCanvasHandle,
@@ -87,6 +96,8 @@ export interface ReaderPageInitialSnapshot {
   readonly shaderParams?: ShaderCorrectionParams;
   readonly isShaderSheetOpen?: boolean;
   readonly shaderSaveStatus?: ShaderSaveStatus;
+  readonly displayTitle?: string;
+  readonly errorBackLabel?: string;
 }
 
 export interface ReaderPageProps {
@@ -99,10 +110,25 @@ type LocalArchiveSource = Extract<
   { kind: "local-session" }
 >;
 
+type DriveArchiveSource = Extract<ArchiveSourceDescriptor, { kind: "gdrive" }>;
+
+type ActiveReaderSource =
+  | {
+      readonly kind: "local-session";
+      readonly descriptor: LocalArchiveSource;
+      readonly displayLabel: string;
+    }
+  | {
+      readonly kind: "gdrive";
+      readonly descriptor: DriveArchiveSource;
+      readonly seriesId: string;
+      readonly displayLabel: string;
+    };
+
 interface ReaderRuntime {
   readonly coordinator: CoordinatorSessionHandle;
   readonly l1Cache: L1PageCache;
-  readonly source: LocalArchiveSource;
+  readonly activeSource: ActiveReaderSource;
 }
 
 interface PageErrorDescriptor {
@@ -120,6 +146,9 @@ const NEXT_SPREAD_MODE: Record<SpreadMode, SpreadMode> = {
 };
 
 const PAGE_ERROR_CODE_MAP: Record<ReaderFatalErrorCode, ZipErrorCode> = {
+  VOLUME_NOT_FOUND: "READ_ERROR",
+  VOLUME_UNAVAILABLE: "READ_ERROR",
+  AUTH_REQUIRED: "READ_ERROR",
   CORRUPT_ZIP: "CORRUPT_ZIP",
   EMPTY_ARCHIVE: "EMPTY_ARCHIVE",
   ENCRYPTED_ZIP: "ENCRYPTED_ZIP",
@@ -142,6 +171,47 @@ function buildLocalArchiveSource(
     indexCacheKey: sessionKey,
     progressTargetKey: sessionKey,
   };
+}
+
+function buildDriveArchiveSource(volume: VolumeRecord): DriveArchiveSource {
+  return {
+    kind: "gdrive",
+    volumeId: volume.id,
+    driveFileId: volume.driveFileId,
+    fileSize: volume.fileSize,
+    md5Checksum: volume.md5Checksum,
+    indexCacheKey: `gdrive:${volume.driveFileId}:${volume.md5Checksum ?? volume.fileSize}`,
+    progressTargetKey: `vol:${volume.id}`,
+  };
+}
+
+function formatDriveVolumeTitle(
+  activeSeries: SeriesRecord | null,
+  volume: Pick<VolumeRecord, "volumeLabel" | "rawFileName">,
+): string {
+  if (activeSeries !== null) {
+    const trimmedLabel = volume.volumeLabel.trim();
+    return trimmedLabel.length > 0
+      ? `${activeSeries.title} ${trimmedLabel}`
+      : activeSeries.title;
+  }
+  return volume.rawFileName;
+}
+
+function resolveErrorBackLabel(
+  readerOriginState: ReaderOriginState,
+  fallbackSeriesId: string | null,
+): string {
+  if (readerOriginState.readerOrigin === "bookshelf") {
+    return "ホームへ戻る";
+  }
+  if (readerOriginState.readerOrigin === "series-detail") {
+    const hasSeriesTarget =
+      (readerOriginState.canGoBackFrom?.startsWith("/series/") ?? false) ||
+      (readerOriginState.seriesId ?? fallbackSeriesId) !== null;
+    return hasSeriesTarget ? "シリーズ詳細へ戻る" : "ホームへ戻る";
+  }
+  return fallbackSeriesId !== null ? "シリーズ詳細へ戻る" : "ホームへ戻る";
 }
 
 function collectMissingNeighbors(
@@ -370,6 +440,28 @@ async function readShaderDefaultsSafely(
   }
 }
 
+async function readActiveSeriesSafely(
+  repo: SeriesRepository,
+  seriesId: string,
+  isCurrentAttempt: () => boolean,
+): Promise<SeriesRecord | null> {
+  try {
+    const rawSeries = await repo.getById(seriesId);
+    return rawSeries !== null && rawSeries.deletedAt === null
+      ? rawSeries
+      : null;
+  } catch (seriesError) {
+    if (isCurrentAttempt()) {
+      diagnosticLogger.warn(
+        "reader",
+        "シリーズ情報の取得に失敗しました",
+        `${seriesId}: ${formatErrorMessage(seriesError)}`,
+      );
+    }
+    return null;
+  }
+}
+
 function clampAnchorForPageCount(
   pageIndex: number,
   spreadPageOffset: SpreadPageOffset,
@@ -436,13 +528,24 @@ export function ReaderPage({
     zipIndexCacheRepo,
     readingProgressRepo,
     readerSettingsRepo,
+    volumesRepo,
+    seriesRepo,
+    driveSyncRootsRepo,
+    googleAuthBridge,
   } = useServices();
-  const { replace, back } = useRouter();
+  const { route, readerOriginState, replace, back, exitReader } = useRouter();
   const session = useLocalReaderSessionStore((state) => state.session);
   const clearSession = useLocalReaderSessionStore(
     (state) => state.clearSession,
   );
+  const isVolumeRoute = route.name === "reader-volume";
+  const volumeId = route.name === "reader-volume" ? route.volumeId : null;
+  const hasActiveReaderTarget = isVolumeRoute || session !== null;
 
+  const [displayTitle, setDisplayTitle] = useState<string>(
+    initialSnapshot?.displayTitle ?? session?.fileName ?? "",
+  );
+  const [fallbackSeriesId, setFallbackSeriesId] = useState<string | null>(null);
   const [totalPages, setTotalPages] = useState<number>(
     initialSnapshot?.totalPages ?? 0,
   );
@@ -502,6 +605,7 @@ export function ReaderPage({
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const runtimeRef = useRef<ReaderRuntime | null>(null);
+  const fallbackSeriesIdRef = useRef<string | null>(null);
   const rendererHandleRef = useRef<ReaderCanvasHandle | null>(null);
   const epochRef = useRef(0);
   const isClosingRef = useRef(false);
@@ -527,8 +631,6 @@ export function ReaderPage({
     | null
   >(null);
 
-  const sessionRef = useRef(session);
-  sessionRef.current = session;
   const totalPagesRef = useRef(totalPages);
   totalPagesRef.current = totalPages;
   const currentPageIndexRef = useRef(currentPageIndex);
@@ -570,11 +672,11 @@ export function ReaderPage({
   }, []);
 
   const persistCurrentProgress = useCallback(() => {
-    const currentSession = sessionRef.current;
+    const runtime = runtimeRef.current;
     const total = totalPagesRef.current;
     if (
       initialSnapshot !== undefined ||
-      currentSession === null ||
+      runtime === null ||
       isOpeningRef.current ||
       total <= 0 ||
       archiveErrorRef.current !== null ||
@@ -595,9 +697,40 @@ export function ReaderPage({
     const readStatus: ReadStatus =
       confirmedMax >= total - 1 ? "completed" : "reading";
 
+    const { activeSource } = runtime;
+    if (activeSource.kind === "gdrive") {
+      const now = Date.now();
+      void readingProgressRepo
+        .put({
+          targetKey: activeSource.descriptor.progressTargetKey,
+          volumeId: activeSource.descriptor.volumeId,
+          currentPageIndex: current,
+          totalPageCount: total,
+          readStatus,
+          spreadPageOffset: offset,
+        })
+        .catch((progressError: unknown) => {
+          diagnosticLogger.warn(
+            "reader",
+            "読書進捗の保存に失敗しました",
+            `${activeSource.displayLabel}: ${formatErrorMessage(progressError)}`,
+          );
+        });
+      void seriesRepo
+        .updateLastReadAt(activeSource.seriesId, now)
+        .catch((seriesError: unknown) => {
+          diagnosticLogger.warn(
+            "reader",
+            "シリーズ最終読書日時の更新に失敗しました",
+            `${activeSource.seriesId}: ${formatErrorMessage(seriesError)}`,
+          );
+        });
+      return;
+    }
+
     void readingProgressRepo
       .put({
-        targetKey: `local:${currentSession.fileName}:${currentSession.fileSize}`,
+        targetKey: activeSource.descriptor.progressTargetKey,
         volumeId: null,
         currentPageIndex: current,
         totalPageCount: total,
@@ -608,10 +741,10 @@ export function ReaderPage({
         diagnosticLogger.warn(
           "reader",
           "読書進捗の保存に失敗しました",
-          `${currentSession.fileName}: ${formatErrorMessage(progressError)}`,
+          `${activeSource.displayLabel}: ${formatErrorMessage(progressError)}`,
         );
       });
-  }, [initialSnapshot, readingProgressRepo]);
+  }, [initialSnapshot, readingProgressRepo, seriesRepo]);
 
   const releaseRuntime = useCallback((runtime: ReaderRuntime) => {
     epochRef.current += 1;
@@ -656,9 +789,20 @@ export function ReaderPage({
     isClosingRef.current = true;
     persistCurrentProgress();
     releaseResources();
+    if (isVolumeRoute) {
+      exitReader(fallbackSeriesIdRef.current);
+      return;
+    }
     clearSession();
     back();
-  }, [back, clearSession, persistCurrentProgress, releaseResources]);
+  }, [
+    back,
+    clearSession,
+    exitReader,
+    isVolumeRoute,
+    persistCurrentProgress,
+    releaseResources,
+  ]);
 
   const handleCloseShaderSheet = useCallback(() => {
     isShaderSheetOpenRef.current = false;
@@ -775,10 +919,11 @@ export function ReaderPage({
       isOpeningRef.current = true;
       setIsOpening(true);
 
+      const descriptor = runtime.activeSource.descriptor;
       diagnosticLogger.warn(
         "reader",
         "古いまたは不整合な目次キャッシュを破棄してアーカイブを再解析します",
-        `${runtime.source.indexCacheKey}: ${triggerCode}`,
+        `${descriptor.indexCacheKey}: ${triggerCode}`,
       );
 
       const isRepairActive = () =>
@@ -786,7 +931,7 @@ export function ReaderPage({
 
       await deleteZipIndexCacheSafely(
         zipIndexCacheRepo,
-        runtime.source.indexCacheKey,
+        descriptor.indexCacheKey,
         isRepairActive,
       );
 
@@ -796,7 +941,7 @@ export function ReaderPage({
 
       try {
         const result = await runtime.coordinator.api.openArchive(
-          runtime.source,
+          descriptor,
           null,
           repairEpoch,
         );
@@ -813,12 +958,12 @@ export function ReaderPage({
         diagnosticLogger.info(
           "reader",
           "Central Directory解析でアーカイブを開きました",
-          `${runtime.source.indexCacheKey} (pages=${result.pageCount}, fromIndexCache=${String(result.fromIndexCache)})`,
+          `${descriptor.indexCacheKey} (pages=${result.pageCount}, fromIndexCache=${String(result.fromIndexCache)})`,
         );
 
         persistZipIndexCacheSafely(
           zipIndexCacheRepo,
-          runtime.source.indexCacheKey,
+          descriptor.indexCacheKey,
           result.entries,
         );
 
@@ -845,7 +990,7 @@ export function ReaderPage({
         const extracted = extractReaderError(repairError);
         reportArchiveError(
           extracted,
-          `${extracted.code}: ${runtime.source.rawFileName}`,
+          `${extracted.code}: ${runtime.activeSource.displayLabel}`,
         );
       }
     },
@@ -1111,7 +1256,7 @@ export function ReaderPage({
   );
 
   useEffect(() => {
-    if (session === null || initialSnapshot?.viewportSize !== undefined) {
+    if (!hasActiveReaderTarget || initialSnapshot?.viewportSize !== undefined) {
       return;
     }
     const container = containerRef.current as HTMLDivElement;
@@ -1166,10 +1311,14 @@ export function ReaderPage({
       observer?.disconnect();
       window.removeEventListener("resize", handleWindowResize);
     };
-  }, [initialSnapshot?.viewportSize, resyncCurrentWindow, session]);
+  }, [
+    hasActiveReaderTarget,
+    initialSnapshot?.viewportSize,
+    resyncCurrentWindow,
+  ]);
 
   useEffect(() => {
-    if (session === null) {
+    if (!isVolumeRoute && session === null) {
       if (!isClosingRef.current) {
         replace("/");
       }
@@ -1188,24 +1337,17 @@ export function ReaderPage({
       return;
     }
 
-    const source = buildLocalArchiveSource(session);
-    const coordinator = createCoordinatorSession();
-    const l1Cache = new L1PageCache({
-      onEvictTexture: (evictedPageIndex) => {
-        rendererHandleRef.current?.deletePageTexture(evictedPageIndex);
-      },
-    });
-    const runtime: ReaderRuntime = { coordinator, l1Cache, source };
-    runtimeRef.current = runtime;
-
     const openEpoch = epochRef.current + 1;
     epochRef.current = openEpoch;
-    l1Cache.setMinActiveEpoch(openEpoch);
+    let isCancelled = false;
+    let createdRuntime: ReaderRuntime | null = null;
 
     isOpeningRef.current = true;
     setIsOpening(true);
     archiveErrorRef.current = null;
     setArchiveError(null);
+    fallbackSeriesIdRef.current = null;
+    setFallbackSeriesId(null);
     isShaderSheetOpenRef.current = false;
     setIsShaderSheetOpen(false);
     setShaderSaveStatus("idle");
@@ -1224,29 +1366,41 @@ export function ReaderPage({
     totalPagesRef.current = 0;
     setTotalPages(0);
 
-    const isCurrentRuntime = () => runtimeRef.current === runtime;
-    const isCurrentAttempt = () =>
-      isCurrentRuntime() && epochRef.current === openEpoch;
+    const startArchiveRuntime = async (activeSource: ActiveReaderSource) => {
+      const coordinator = createCoordinatorSession();
+      const l1Cache = new L1PageCache({
+        onEvictTexture: (evictedPageIndex) => {
+          rendererHandleRef.current?.deletePageTexture(evictedPageIndex);
+        },
+      });
+      const runtime: ReaderRuntime = { coordinator, l1Cache, activeSource };
+      createdRuntime = runtime;
+      runtimeRef.current = runtime;
+      l1Cache.setMinActiveEpoch(openEpoch);
 
-    void (async () => {
-      const defaults = await readShaderDefaultsSafely(
-        readerSettingsRepo,
-        isCurrentRuntime,
-      );
-      if (
-        defaults !== null &&
-        isCurrentRuntime() &&
-        !hasUserModifiedShaderRef.current
-      ) {
-        applyShaderParams(defaults);
-      }
-    })();
+      const isCurrentRuntime = () => runtimeRef.current === runtime;
+      const isCurrentAttempt = () =>
+        isCurrentRuntime() && epochRef.current === openEpoch;
 
-    void (async () => {
+      void (async () => {
+        const defaults = await readShaderDefaultsSafely(
+          readerSettingsRepo,
+          isCurrentRuntime,
+        );
+        if (
+          defaults !== null &&
+          isCurrentRuntime() &&
+          !hasUserModifiedShaderRef.current
+        ) {
+          applyShaderParams(defaults);
+        }
+      })();
+
+      const { descriptor } = activeSource;
       try {
         const cachedEntries = await readZipIndexCacheSafely(
           zipIndexCacheRepo,
-          source.indexCacheKey,
+          descriptor.indexCacheKey,
           isCurrentAttempt,
         );
         if (!isCurrentAttempt()) {
@@ -1255,11 +1409,11 @@ export function ReaderPage({
 
         const progressPromise = readReadingProgressSafely(
           readingProgressRepo,
-          source.progressTargetKey,
+          descriptor.progressTargetKey,
           isCurrentAttempt,
         );
         const result = await coordinator.api.openArchive(
-          source,
+          descriptor,
           cachedEntries,
           openEpoch,
         );
@@ -1280,13 +1434,13 @@ export function ReaderPage({
           result.fromIndexCache
             ? "目次キャッシュからアーカイブを開きました (0RTT)"
             : "Central Directory解析でアーカイブを開きました",
-          `${source.indexCacheKey} (pages=${result.pageCount}, fromIndexCache=${String(result.fromIndexCache)})`,
+          `${descriptor.indexCacheKey} (pages=${result.pageCount}, fromIndexCache=${String(result.fromIndexCache)})`,
         );
 
         if (!result.fromIndexCache) {
           persistZipIndexCacheSafely(
             zipIndexCacheRepo,
-            source.indexCacheKey,
+            descriptor.indexCacheKey,
             result.entries,
           );
         }
@@ -1317,16 +1471,126 @@ export function ReaderPage({
           return;
         }
         const extracted = extractReaderError(error);
-        reportArchiveError(extracted, `${extracted.code}: ${session.fileName}`);
+        reportArchiveError(
+          extracted,
+          `${extracted.code}: ${activeSource.displayLabel}`,
+        );
       }
-    })();
+    };
+
+    if (!isVolumeRoute) {
+      const activeSession = session!;
+      setDisplayTitle(activeSession.fileName);
+      void startArchiveRuntime({
+        kind: "local-session",
+        descriptor: buildLocalArchiveSource(activeSession),
+        displayLabel: activeSession.fileName,
+      });
+    } else {
+      const targetVolumeId = volumeId!;
+      setDisplayTitle("");
+      const isPrevalidationActive = () =>
+        !isCancelled &&
+        epochRef.current === openEpoch &&
+        webglFatalErrorRef.current === null;
+
+      void (async () => {
+        try {
+          const volume = await volumesRepo.getById(targetVolumeId);
+          if (!isPrevalidationActive()) {
+            return;
+          }
+          if (volume === null) {
+            reportArchiveError(
+              {
+                code: "VOLUME_NOT_FOUND",
+                message: getReaderErrorMessage("VOLUME_NOT_FOUND"),
+              },
+              `VOLUME_NOT_FOUND: ${targetVolumeId}`,
+            );
+            return;
+          }
+
+          fallbackSeriesIdRef.current = volume.seriesId;
+          setFallbackSeriesId(volume.seriesId);
+
+          const roots = await driveSyncRootsRepo.listActive();
+          if (!isPrevalidationActive()) {
+            return;
+          }
+          const enabledRootIds = new Set(
+            roots
+              .filter((root) => root.enabled === 1)
+              .map((root) => root.folderId),
+          );
+          if (
+            volume.isTrashed === 1 ||
+            !enabledRootIds.has(volume.rootFolderId)
+          ) {
+            reportArchiveError(
+              {
+                code: "VOLUME_UNAVAILABLE",
+                message: getReaderErrorMessage("VOLUME_UNAVAILABLE"),
+              },
+              `VOLUME_UNAVAILABLE: ${volume.id}`,
+            );
+            return;
+          }
+
+          const authSession =
+            googleAuthBridge.getCachedSession() ??
+            (await googleAuthBridge.getSession());
+          if (!isPrevalidationActive()) {
+            return;
+          }
+          if (authSession === null) {
+            reportArchiveError(
+              {
+                code: "AUTH_REQUIRED",
+                message: getReaderErrorMessage("AUTH_REQUIRED"),
+              },
+              `AUTH_REQUIRED: ${volume.id}`,
+            );
+            return;
+          }
+
+          const activeSeries = await readActiveSeriesSafely(
+            seriesRepo,
+            volume.seriesId,
+            isPrevalidationActive,
+          );
+          if (!isPrevalidationActive()) {
+            return;
+          }
+
+          const resolvedTitle = formatDriveVolumeTitle(activeSeries, volume);
+          setDisplayTitle(resolvedTitle);
+
+          await startArchiveRuntime({
+            kind: "gdrive",
+            descriptor: buildDriveArchiveSource(volume),
+            seriesId: volume.seriesId,
+            displayLabel: resolvedTitle,
+          });
+        } catch (error) {
+          if (!isPrevalidationActive()) {
+            return;
+          }
+          const extracted = extractReaderError(error);
+          reportArchiveError(extracted, `${extracted.code}: ${targetVolumeId}`);
+        }
+      })();
+    }
 
     return () => {
-      if (runtimeRef.current === runtime) {
-        releaseRuntime(runtime);
+      isCancelled = true;
+      if (createdRuntime !== null && runtimeRef.current === createdRuntime) {
+        releaseRuntime(createdRuntime);
       }
     };
   }, [
+    isVolumeRoute,
+    volumeId,
     session,
     initialSnapshot,
     applyOpenedArchiveAnchor,
@@ -1335,6 +1599,10 @@ export function ReaderPage({
     zipIndexCacheRepo,
     readingProgressRepo,
     readerSettingsRepo,
+    volumesRepo,
+    seriesRepo,
+    driveSyncRootsRepo,
+    googleAuthBridge,
     loadPageWindow,
     releaseRuntime,
     replace,
@@ -1342,20 +1610,23 @@ export function ReaderPage({
   ]);
 
   useEffect(() => {
-    if (initialSnapshot !== undefined || session === null) {
+    if (initialSnapshot !== undefined || !hasActiveReaderTarget) {
       return;
     }
 
     const cleanupIfLeftReaderRoute = () => {
       const windowPath = `${window.location.pathname}${window.location.search}`;
-      if (
-        matchRoute(windowPath).name !== "reader-local" &&
-        !isClosingRef.current
-      ) {
+      const matched = matchRoute(windowPath);
+      const leftReaderRoute = isVolumeRoute
+        ? matched.name !== "reader-volume" || matched.volumeId !== volumeId
+        : matched.name !== "reader-local";
+      if (leftReaderRoute && !isClosingRef.current) {
         isClosingRef.current = true;
         persistCurrentProgress();
         releaseResources();
-        clearSession();
+        if (!isVolumeRoute) {
+          clearSession();
+        }
       }
     };
 
@@ -1366,14 +1637,16 @@ export function ReaderPage({
     };
   }, [
     clearSession,
+    hasActiveReaderTarget,
     initialSnapshot,
+    isVolumeRoute,
     persistCurrentProgress,
     releaseResources,
-    session,
+    volumeId,
   ]);
 
   useEffect(() => {
-    if (initialSnapshot !== undefined || session === null) {
+    if (initialSnapshot !== undefined || !hasActiveReaderTarget) {
       return;
     }
 
@@ -1392,7 +1665,7 @@ export function ReaderPage({
       window.removeEventListener("pagehide", handlePageHide);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [initialSnapshot, persistCurrentProgress, session]);
+  }, [hasActiveReaderTarget, initialSnapshot, persistCurrentProgress]);
 
   const moveToPage = useCallback(
     (requestedIndex: number) => {
@@ -1669,7 +1942,7 @@ export function ReaderPage({
     [releaseRuntime],
   );
 
-  if (session === null) {
+  if (!hasActiveReaderTarget) {
     return null;
   }
 
@@ -1705,6 +1978,14 @@ export function ReaderPage({
     activeFatalError === null && !showLoading
       ? buildPageErrorDescriptors(renderSlots, currentPageIndex)
       : [];
+  const hudFileName =
+    initialSnapshot?.displayTitle ??
+    (isVolumeRoute ? displayTitle : session!.fileName);
+  const archiveErrorBackLabel =
+    initialSnapshot?.errorBackLabel ??
+    (isVolumeRoute
+      ? resolveErrorBackLabel(readerOriginState, fallbackSeriesId)
+      : undefined);
 
   return (
     <div
@@ -1755,7 +2036,7 @@ export function ReaderPage({
 
         <ReaderHudOverlay
           isOpen={activeFatalError === null && isHudOpen}
-          fileName={session.fileName}
+          fileName={hudFileName}
           currentPageIndex={currentPageIndex}
           totalPages={totalPages}
           onClose={handleClose}
@@ -1791,6 +2072,9 @@ export function ReaderPage({
           mode="archive"
           message={activeFatalError.message}
           errorCode={activeFatalError.code}
+          {...(archiveErrorBackLabel !== undefined
+            ? { backLabel: archiveErrorBackLabel }
+            : {})}
           onBackToHome={handleClose}
         />
       )}

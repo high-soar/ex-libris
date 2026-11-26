@@ -22,6 +22,7 @@ import {
 import type { CoordinatorWorkerApi } from "./engine/types";
 import * as BookshelfPageModule from "./features/bookshelf/BookshelfPage";
 import * as ReaderPageModule from "./features/reader/ReaderPage";
+import * as SeriesDetailPageModule from "./features/series-detail/SeriesDetailPage";
 import * as SettingsPageModule from "./features/settings/SettingsPage";
 import { useRouter } from "./shared/router/routerContext";
 
@@ -31,6 +32,7 @@ const {
   CopyFailedFeedback,
   SettingsRoute,
   ReaderLocalFallback,
+  SeriesDetailRoute,
 } = composeStories(stories);
 
 function flushMicrotasks(): Promise<void> {
@@ -44,6 +46,9 @@ describe("App", () => {
 
   let bookshelfSpy: MockInstance<typeof BookshelfPageModule.BookshelfPage>;
   let readerSpy: MockInstance<typeof ReaderPageModule.ReaderPage>;
+  let seriesDetailSpy: MockInstance<
+    typeof SeriesDetailPageModule.SeriesDetailPage
+  >;
   let settingsSpy: MockInstance<typeof SettingsPageModule.SettingsPage>;
 
   beforeEach(() => {
@@ -56,6 +61,9 @@ describe("App", () => {
       .mockImplementation(() => null as unknown as ReactElement);
     readerSpy = vi
       .spyOn(ReaderPageModule, "ReaderPage")
+      .mockImplementation(() => null);
+    seriesDetailSpy = vi
+      .spyOn(SeriesDetailPageModule, "SeriesDetailPage")
       .mockImplementation(() => null);
     settingsSpy = vi
       .spyOn(SettingsPageModule, "SettingsPage")
@@ -81,6 +89,13 @@ describe("App", () => {
     expect(lastCall).toBeDefined();
     return lastCall![0] as ReaderPageModule.ReaderPageProps;
   };
+
+  const getLatestSeriesDetailProps =
+    (): SeriesDetailPageModule.SeriesDetailPageProps => {
+      const lastCall = seriesDetailSpy.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      return lastCall![0] as SeriesDetailPageModule.SeriesDetailPageProps;
+    };
 
   const getLatestSettingsProps = (): SettingsPageModule.SettingsPageProps => {
     const lastCall = settingsSpy.mock.calls.at(-1);
@@ -156,11 +171,25 @@ describe("App", () => {
 
     bookshelfSpy.mockClear();
     readerSpy.mockClear();
+    seriesDetailSpy.mockClear();
     settingsSpy.mockClear();
-    render(<ReaderLocalFallback />);
+    const { unmount: unmountLocal } = render(<ReaderLocalFallback />);
     expect(readerSpy).toHaveBeenCalledTimes(1);
     expect(getLatestReaderProps()).toEqual({
       onRegisterExit: expect.any(Function),
+    });
+    expect(bookshelfSpy).not.toHaveBeenCalled();
+    unmountLocal();
+
+    bookshelfSpy.mockClear();
+    readerSpy.mockClear();
+    seriesDetailSpy.mockClear();
+    settingsSpy.mockClear();
+    render(<SeriesDetailRoute />);
+    expect(seriesDetailSpy).toHaveBeenCalledTimes(1);
+    expect(getLatestSeriesDetailProps()).toEqual({
+      seriesId: "series-dungeon",
+      initialSnapshot: expect.objectContaining({ kind: "ready" }),
     });
     expect(bookshelfSpy).not.toHaveBeenCalled();
   });
@@ -377,5 +406,74 @@ describe("App", () => {
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
+  });
+
+  it("5ルート(/series/:seriesId・/read/volume/:volumeId)を描画切替し、ハードウェア戻るボタン優先度3(reader-volume)および4(series-detail)を実行すること (AC-SD-05, AC-RD-18)", async () => {
+    const bridge = new MockAppBridge();
+    let triggerNavigate: ((to: string) => void) | null = null;
+    let currentRoutePath = "/";
+
+    bookshelfSpy.mockImplementation(() => {
+      const router = useRouter();
+      triggerNavigate = router.navigate;
+      currentRoutePath = router.route.path;
+      return null as unknown as ReactElement;
+    });
+    seriesDetailSpy.mockImplementation(() => {
+      const router = useRouter();
+      triggerNavigate = router.navigate;
+      currentRoutePath = router.route.path;
+      return null;
+    });
+    readerSpy.mockImplementation(() => {
+      const router = useRouter();
+      triggerNavigate = router.navigate;
+      currentRoutePath = router.route.path;
+      return null;
+    });
+
+    const { unmount } = render(<App initialPath="/" appBridge={bridge} />);
+
+    // SCR-01 -> SCR-02 (/series/s-1)
+    act(() => {
+      triggerNavigate?.("/series/s-1");
+    });
+    expect(currentRoutePath).toBe("/series/s-1");
+    expect(seriesDetailSpy).toHaveBeenCalledTimes(1);
+    expect(getLatestSeriesDetailProps()).toEqual({ seriesId: "s-1" });
+
+    // SCR-02 -> SCR-03 Drive 巻 (/read/volume/v-1)
+    act(() => {
+      triggerNavigate?.("/read/volume/v-1");
+    });
+    expect(currentRoutePath).toBe("/read/volume/v-1");
+    expect(readerSpy).toHaveBeenCalledTimes(1);
+
+    // 優先度 3: reader-volume 表示中の戻るボタンは登録済み exit コールバックを実行
+    const exitSpy = vi.fn();
+    act(() => {
+      getLatestReaderProps().onRegisterExit?.(exitSpy);
+    });
+    await act(async () => {
+      await bridge.triggerBackButton();
+    });
+    expect(exitSpy).toHaveBeenCalledTimes(1);
+    expect(bridge.getMinimizeAppCallCount()).toBe(0);
+
+    // SCR-02 (/series/s-1) へ戻り、優先度 4: ハードウェア戻るで '/' へ復帰 (TR-05)
+    act(() => {
+      triggerNavigate?.("/series/s-1");
+    });
+    expect(currentRoutePath).toBe("/series/s-1");
+    await act(async () => {
+      await bridge.triggerBackButton();
+    });
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(currentRoutePath).toBe("/");
+      });
+    });
+    expect(bridge.getMinimizeAppCallCount()).toBe(0);
+    unmount();
   });
 });
