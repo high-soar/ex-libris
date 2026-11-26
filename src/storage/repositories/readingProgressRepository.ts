@@ -32,6 +32,9 @@ export interface LocalReadingHistoryItem {
 export interface ReadingProgressRepository {
   get(targetKey: string): Promise<ReadingProgressRecord | null>;
   put(input: SaveReadingProgressInput): Promise<void>;
+  listByVolumeIds(
+    volumeIds: ReadonlySet<string>,
+  ): Promise<ReadonlyMap<string, ReadingProgressRecord>>;
   listRecentLocal(limit?: number): Promise<readonly LocalReadingHistoryItem[]>;
   delete(targetKey: string): Promise<void>;
   clearLocal(): Promise<void>;
@@ -225,6 +228,13 @@ export class DexieReadingProgressRepository implements ReadingProgressRepository
         },
       );
     });
+  }
+
+  listByVolumeIds(
+    volumeIds: ReadonlySet<string>,
+  ): Promise<ReadonlyMap<string, ReadingProgressRecord>> {
+    void volumeIds;
+    return Promise.resolve(new Map());
   }
 
   listRecentLocal(

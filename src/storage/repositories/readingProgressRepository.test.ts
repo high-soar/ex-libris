@@ -471,4 +471,106 @@ describe("DexieReadingProgressRepository", () => {
     await expect(failingOp).rejects.toThrow("transient indexeddb failure");
     await expect(followingOp).resolves.toHaveLength(1);
   });
+
+  it("listByVolumeIdsが空集合・空白のみ集合でDBアクセスせず空Mapを返し、有効vol:*一括取得・破損レコード自動削除・FIFO直列化を行うこと (NFR-03)", async () => {
+    let now = 5_000;
+    const repo = new DexieReadingProgressRepository(db, { now: () => now });
+    const txSpy = vi.spyOn(db, "transaction");
+
+    // 1. 空集合・空白のみ集合はトランザクションを開かず空 Map を返す
+    expect((await repo.listByVolumeIds(new Set())).size).toBe(0);
+    expect((await repo.listByVolumeIds(new Set(["", "   "]))).size).toBe(0);
+    expect(txSpy).not.toHaveBeenCalled();
+
+    // 2. 有効 vol:*、未存在 ID、local:*（対象外）、および破損 vol:* を混在させて一括取得
+    now = 5_100;
+    await repo.put({
+      targetKey: "vol:v1",
+      volumeId: "v1",
+      currentPageIndex: 3,
+      totalPageCount: 20,
+      readStatus: "reading",
+      spreadPageOffset: 0,
+    });
+    now = 5_200;
+    await repo.put({
+      targetKey: "vol:v2",
+      volumeId: "v2",
+      currentPageIndex: 19,
+      totalPageCount: 20,
+      readStatus: "completed",
+      spreadPageOffset: 1,
+    });
+    await repo.put(createLocalInput("local.cbz", 100));
+    await db.readingProgress.put({
+      targetKey: "vol:v-corrupt",
+      volumeId: "wrong-id",
+      currentPageIndex: 0,
+      totalPageCount: 10,
+      readStatus: "reading",
+      spreadPageOffset: 0,
+      lastReadAt: 5_300,
+      updatedAt: 5_300,
+    });
+
+    const result = await repo.listByVolumeIds(
+      new Set(["v1", " v2 ", "v-missing", "v-corrupt", ""]),
+    );
+    expect(result.size).toBe(2);
+    expect(result.get("v1")).toMatchObject({
+      targetKey: "vol:v1",
+      volumeId: "v1",
+      currentPageIndex: 3,
+      readStatus: "reading",
+    });
+    expect(result.get("v2")).toMatchObject({
+      targetKey: "vol:v2",
+      volumeId: "v2",
+      currentPageIndex: 19,
+      readStatus: "completed",
+      spreadPageOffset: 1,
+    });
+    expect(result.has("v-missing")).toBe(false);
+    expect(result.has("v-corrupt")).toBe(false);
+    // 破損レコードが DB から自動削除されていること
+    expect(await db.readingProgress.get("vol:v-corrupt")).toBeUndefined();
+
+    // 3. put と直後の listByVolumeIds が FIFO 直列化されること
+    const txGate = createDeferred<void>();
+    const originalTx = db.transaction.bind(db);
+    vi.spyOn(db, "transaction").mockImplementationOnce(((
+      ...args: Parameters<typeof db.transaction>
+    ) =>
+      txGate.promise.then(() =>
+        (originalTx as (...inner: unknown[]) => unknown)(...args),
+      )) as unknown as typeof db.transaction);
+
+    const order: string[] = [];
+    now = 5_400;
+    const putPromise = repo
+      .put({
+        targetKey: "vol:v3",
+        volumeId: "v3",
+        currentPageIndex: 5,
+        totalPageCount: 12,
+        readStatus: "reading",
+        spreadPageOffset: 0,
+      })
+      .then(() => {
+        order.push("put");
+      });
+    const listPromise = repo.listByVolumeIds(new Set(["v3"])).then((map) => {
+      order.push("listByVolumeIds");
+      return map;
+    });
+
+    await Promise.resolve();
+    expect(order).toEqual([]);
+
+    txGate.resolve();
+    await putPromise;
+    const mapAfterPut = await listPromise;
+    expect(order).toEqual(["put", "listByVolumeIds"]);
+    expect(mapAfterPut.get("v3")?.currentPageIndex).toBe(5);
+  });
 });
