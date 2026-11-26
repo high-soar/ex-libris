@@ -1691,4 +1691,51 @@ describe("BookshelfPage", () => {
     });
     expect(diagnosticLogger.getEntries()).toEqual([]);
   });
+
+  it("initialSnapshot指定時にrecentHistoryを省略してもlistRecentLocalを呼ばず同期確定してスクロール復元すること (AC-BS-06, AC-BS-10)", async () => {
+    const scrollToSpy = vi
+      .spyOn(window, "scrollTo")
+      .mockImplementation(() => {});
+    useBookshelfUiStateStore.getState().saveScrollY(210);
+
+    const progressRepo = createMockReadingProgressRepo();
+    const { unmount } = await renderAndFlush(
+      <ServiceProvider readingProgressRepo={progressRepo}>
+        <RouterProvider initialPath="/">
+          <BookshelfPage
+            initialSnapshot={{
+              driveSetupState: { kind: "ready" },
+              seriesItems: [],
+            }}
+          />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+
+    expect(progressRepo.listRecentLocal).not.toHaveBeenCalled();
+    expect(getLatestRecentHistoryProps().items).toEqual([]);
+    expect(scrollToSpy).toHaveBeenCalledWith(0, 210);
+    expect(useBookshelfUiStateStore.getState().scrollY).toBe(0);
+    unmount();
+
+    // initialSnapshot.recentHistory 省略かつ initialRecentHistory 指定時はフォールバック値を採用すること
+    const fallbackItem = createSampleHistoryItem({
+      targetKey: "local:fallback.cbz:2048",
+    });
+    await renderAndFlush(
+      <ServiceProvider readingProgressRepo={progressRepo}>
+        <RouterProvider initialPath="/">
+          <BookshelfPage
+            initialRecentHistory={[fallbackItem]}
+            initialSnapshot={{
+              driveSetupState: { kind: "ready" },
+              seriesItems: [],
+            }}
+          />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    expect(progressRepo.listRecentLocal).not.toHaveBeenCalled();
+    expect(getLatestRecentHistoryProps().items).toEqual([fallbackItem]);
+  });
 });

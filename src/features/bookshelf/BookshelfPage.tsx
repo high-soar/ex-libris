@@ -73,6 +73,8 @@ const LOCAL_ARCHIVE_INPUT_ACCEPT =
 const UNSUPPORTED_EXTENSION_MESSAGE =
   "対応形式は .zip または .cbz ファイルのみです";
 
+const EMPTY_RECENT_HISTORY: readonly LocalReadingHistoryItem[] = [];
+
 function isSupportedArchiveFile(fileName: string): boolean {
   const lower = fileName.toLowerCase();
   return lower.endsWith(".zip") || lower.endsWith(".cbz");
@@ -134,8 +136,11 @@ export function BookshelfPage({
   const hasSnapshot = initialSnapshot !== undefined;
   const resolvedInitialDriveSetup =
     initialSnapshot?.driveSetupState ?? initialDriveSetupState;
-  const resolvedInitialRecentHistory =
-    initialSnapshot?.recentHistory ?? initialRecentHistory;
+  const resolvedInitialRecentHistory = hasSnapshot
+    ? (initialSnapshot.recentHistory ??
+      initialRecentHistory ??
+      EMPTY_RECENT_HISTORY)
+    : initialRecentHistory;
 
   const [copyStatus, setCopyStatus] = useState<CopyStatus>(
     initialSnapshot?.copyStatus ?? initialCopyStatus,
