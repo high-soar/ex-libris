@@ -7,11 +7,14 @@ import {
 
 describe("bookshelfUiStateStore", () => {
   beforeEach(() => {
-    useBookshelfUiStateStore.setState({ scrollY: 0 });
+    resetBookshelfUiState();
   });
 
-  it("初期状態ではscrollYが0であること", () => {
-    expect(useBookshelfUiStateStore.getState().scrollY).toBe(0);
+  it("初期状態ではscrollY=0・sortOrder='lastReadDesc'・seriesDetailScroll=nullであること", () => {
+    const state = useBookshelfUiStateStore.getState();
+    expect(state.scrollY).toBe(0);
+    expect(state.sortOrder).toBe("lastReadDesc");
+    expect(state.seriesDetailScroll).toBeNull();
   });
 
   it("saveScrollYで正のスクロール位置を保存・更新し、非正数や非有限値は0へ正規化すること (TR-03, TR-09)", () => {
@@ -44,17 +47,65 @@ describe("bookshelfUiStateStore", () => {
     expect(result.current.scrollY).toBe(0);
   });
 
-  it("clearScrollYおよびresetBookshelfUiStateでscrollYが0へ初期化されること (TR-09)", () => {
-    useBookshelfUiStateStore.getState().saveScrollY(360);
-    expect(useBookshelfUiStateStore.getState().scrollY).toBe(360);
+  it("setSortOrder・saveSeriesDetailScroll・clearSeriesDetailScroll・resetBookshelfUiStateが正しく動作すること (AC-BS-10, AC-SD-03)", () => {
+    const { result } = renderHook(() => useBookshelfUiStateStore());
 
-    useBookshelfUiStateStore.getState().clearScrollY();
-    expect(useBookshelfUiStateStore.getState().scrollY).toBe(0);
+    act(() => {
+      result.current.setSortOrder("titleAsc");
+    });
+    expect(result.current.sortOrder).toBe("titleAsc");
 
-    useBookshelfUiStateStore.getState().saveScrollY(480);
-    expect(useBookshelfUiStateStore.getState().scrollY).toBe(480);
+    act(() => {
+      result.current.saveSeriesDetailScroll("series-1", 420);
+    });
+    expect(result.current.seriesDetailScroll).toEqual({
+      seriesId: "series-1",
+      scrollY: 420,
+    });
 
-    resetBookshelfUiState();
-    expect(useBookshelfUiStateStore.getState().scrollY).toBe(0);
+    // 非正の scrollY は 0 へ正規化、空白のみ seriesId は null へ正規化
+    act(() => {
+      result.current.saveSeriesDetailScroll("series-2", -30);
+    });
+    expect(result.current.seriesDetailScroll).toEqual({
+      seriesId: "series-2",
+      scrollY: 0,
+    });
+
+    act(() => {
+      result.current.saveSeriesDetailScroll("   ", 200);
+    });
+    expect(result.current.seriesDetailScroll).toBeNull();
+
+    act(() => {
+      result.current.saveSeriesDetailScroll("series-3", 180);
+    });
+    act(() => {
+      result.current.clearSeriesDetailScroll();
+    });
+    expect(result.current.seriesDetailScroll).toBeNull();
+
+    // clearScrollY / resetBookshelfUiState
+    act(() => {
+      result.current.saveScrollY(360);
+      result.current.setSortOrder("volumeCountDesc");
+      result.current.saveSeriesDetailScroll("series-4", 510);
+    });
+
+    act(() => {
+      result.current.clearScrollY();
+    });
+    expect(result.current.scrollY).toBe(0);
+    expect(result.current.sortOrder).toBe("volumeCountDesc");
+
+    act(() => {
+      result.current.saveScrollY(480);
+    });
+    act(() => {
+      resetBookshelfUiState();
+    });
+    expect(result.current.scrollY).toBe(0);
+    expect(result.current.sortOrder).toBe("lastReadDesc");
+    expect(result.current.seriesDetailScroll).toBeNull();
   });
 });

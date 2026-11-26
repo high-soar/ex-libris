@@ -24,6 +24,8 @@ import type {
   DriveSyncClient,
   DriveSyncEngine,
 } from "../providers/gdrive/types";
+import { useBookshelfUiStateStore } from "../features/bookshelf/bookshelfUiStateStore";
+import { useDriveSyncStateStore } from "../shared/sync/driveSyncStateStore";
 import { db, resetTestDb } from "../storage/db";
 import {
   DexieDriveSyncMetaRepository,
@@ -578,7 +580,7 @@ describe("ServiceProvider", () => {
     expect("mockGoogleAuthAdapter" in window.__exLibrisServices!).toBe(false);
   });
 
-  it("window.__exLibrisServices.resetTestDbが公開され呼び出しによりsyncMeta等のDBテーブルとmockDriveSyncClientを初期化できること (R1-17)", async () => {
+  it("window.__exLibrisServices.resetTestDbが公開され呼び出しによりsyncMeta等のDBテーブル・mockDriveSyncClient・UI/同期ストアを初期化できること (R1-17)", async () => {
     render(
       <ServiceProvider>
         <div>ready</div>
@@ -588,6 +590,17 @@ describe("ServiceProvider", () => {
     await db.syncMeta.put({
       key: "itPollutionGuard",
       value: "stale-record",
+    });
+    useBookshelfUiStateStore.setState({
+      scrollY: 320,
+      sortOrder: "titleAsc",
+      seriesDetailScroll: { seriesId: "s-stale", scrollY: 150 },
+    });
+    useDriveSyncStateStore.setState({
+      phase: "completed",
+      lastSyncedAt: 1_700_000_000_000,
+      isLastSyncedAtLoaded: true,
+      completedSyncCount: 3,
     });
     expect(await db.syncMeta.count()).toBe(1);
     const mockSyncResetSpy = vi.spyOn(
@@ -601,6 +614,17 @@ describe("ServiceProvider", () => {
 
     expect(await db.syncMeta.count()).toBe(0);
     expect(mockSyncResetSpy).toHaveBeenCalledTimes(1);
+    expect(useBookshelfUiStateStore.getState()).toMatchObject({
+      scrollY: 0,
+      sortOrder: "lastReadDesc",
+      seriesDetailScroll: null,
+    });
+    expect(useDriveSyncStateStore.getState()).toMatchObject({
+      phase: "idle",
+      lastSyncedAt: null,
+      isLastSyncedAtLoaded: false,
+      completedSyncCount: 0,
+    });
   });
 
   it("shouldExposeResetTestDbがネイティブ実機および通常本番ブラウザではfalse、非ネイティブかつDEV/test/WebDriverではtrueを返すこと (R1-12)", () => {
