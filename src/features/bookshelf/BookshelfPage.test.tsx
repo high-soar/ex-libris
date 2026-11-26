@@ -18,19 +18,35 @@ import type {
 } from "../../bridges/oauth/types";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
 import { RouterProvider } from "../../shared/router/RouterProvider";
+import {
+  resetDriveSyncState,
+  useDriveSyncStateStore,
+} from "../../shared/sync/driveSyncStateStore";
 import { resetTestDb } from "../../storage/db";
+import type { DriveSyncMetaRepository } from "../../storage/repositories/driveSyncMetaRepository";
 import type { DriveSyncRootsRepository } from "../../storage/repositories/driveSyncRootsRepository";
 import {
   type LocalReadingHistoryItem,
   RECENT_LOCAL_HISTORY_DEFAULT_LIMIT,
   type ReadingProgressRepository,
 } from "../../storage/repositories/readingProgressRepository";
+import type { SeriesRepository } from "../../storage/repositories/seriesRepository";
+import type { VolumesRepository } from "../../storage/repositories/volumesRepository";
+import type {
+  DriveSyncRootRecord,
+  SeriesRecord,
+  VolumeRecord,
+} from "../../storage/types";
+import type { DriveSyncEngine } from "../../providers/gdrive/types";
 import * as BookshelfHeaderModule from "./BookshelfHeader";
 import { BookshelfPage, type BookshelfPageProps } from "./BookshelfPage";
 import * as stories from "./BookshelfPage.stories";
+import * as BookshelfToolbarModule from "./BookshelfToolbar";
 import * as DriveSetupBannerModule from "./DriveSetupBanner";
+import * as DriveSyncEmptyStateModule from "./DriveSyncEmptyState";
 import * as LocalArchiveEmptyStateModule from "./LocalArchiveEmptyState";
 import * as RecentLocalHistorySectionModule from "./RecentLocalHistorySection";
+import * as SeriesGridSectionModule from "./SeriesGridSection";
 import {
   resetBookshelfUiState,
   useBookshelfUiStateStore,
@@ -39,6 +55,8 @@ import { useLocalReaderSessionStore } from "../reader/localReaderSessionStore";
 
 const {
   Default,
+  WithSeriesGrid,
+  OfflineCachedSeries,
   Unauthenticated,
   NoDriveRoots,
   DragActive,
@@ -81,6 +99,59 @@ function createSampleHistoryItem(
     readStatus: "reading",
     spreadPageOffset: 0,
     lastReadAt: 1_730_000_000_000,
+    ...overrides,
+  };
+}
+
+function createSampleSeriesRecord(
+  overrides: Partial<SeriesRecord> = {},
+): SeriesRecord {
+  return {
+    id: "series-1",
+    title: "葬送のフリーレン",
+    titleReading: "そうそうのふりーれん",
+    authors: ["山田鐘人"],
+    publisher: "",
+    label: "",
+    tags: [],
+    synopsis: "",
+    publicationStatus: "unknown",
+    knownTotalVolumes: null,
+    externalIds: {},
+    metadataLocked: false,
+    representativeVolumeId: null,
+    readerPresetJson: null,
+    lastReadAt: null,
+    addedAt: 1_730_000_000_000,
+    updatedAt: 1_730_000_000_000,
+    deletedAt: null,
+    ...overrides,
+  };
+}
+
+function createSampleVolumeRecord(
+  overrides: Partial<VolumeRecord> = {},
+): VolumeRecord {
+  return {
+    id: "vol-1",
+    seriesId: "series-1",
+    volumeNumber: 1,
+    volumeLabel: "第1巻",
+    rawFileName: "葬送のフリーレン 01.cbz",
+    driveFileId: "drive-vol-1",
+    parentFolderId: "folder-1",
+    rootFolderId: "root-1",
+    fileSize: 30_000_000,
+    md5Checksum: "md5-1",
+    driveModifiedTime: 1_730_000_000_000,
+    coverBlob: null,
+    coverStatus: "pending",
+    coverCropMode: "auto",
+    coverPageIndex: 0,
+    coverUpdatedAt: null,
+    isTrashed: 0,
+    addedAt: 1_730_000_000_000,
+    updatedAt: 1_730_000_000_000,
     ...overrides,
   };
 }
@@ -139,6 +210,65 @@ function createMockDriveSyncRootsRepo(
   };
 }
 
+function createMockSeriesRepo(
+  overrides: Partial<SeriesRepository> = {},
+): SeriesRepository {
+  return {
+    getById: vi.fn(async () => null),
+    listActive: vi.fn(async () => []),
+    findOrCreateByParsedTitle: vi.fn(),
+    mergeAuthorsIfUnlocked: vi.fn(async () => null),
+    updateLastReadAt: vi.fn(async () => null),
+    ...overrides,
+  };
+}
+
+function createMockVolumesRepo(
+  overrides: Partial<VolumesRepository> = {},
+): VolumesRepository {
+  return {
+    getById: vi.fn(async () => null),
+    getByDriveFileId: vi.fn(async () => null),
+    listBySeriesId: vi.fn(async () => []),
+    listVisibleByEnabledRoots: vi.fn(async () => []),
+    listByRootFolderIds: vi.fn(async () => []),
+    upsertFromDriveSync: vi.fn(),
+    markTrashedByDriveFileIds: vi.fn(async () => 0),
+    ...overrides,
+  };
+}
+
+function createMockDriveSyncMetaRepo(
+  overrides: Partial<DriveSyncMetaRepository> = {},
+): DriveSyncMetaRepository {
+  return {
+    getSyncState: vi.fn(async () => ({
+      startPageToken: null,
+      lastDriveSyncAt: null,
+      syncedRootFolderIds: [],
+    })),
+    saveSyncState: vi.fn(async (state) => state),
+    clearSyncState: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
+function createMockDriveSyncEngine(
+  overrides: Partial<DriveSyncEngine> = {},
+): DriveSyncEngine {
+  return {
+    sync: vi.fn(async () => ({
+      mode: "incremental" as const,
+      scannedRoots: 1,
+      upsertedVolumes: 2,
+      trashedVolumes: 0,
+      invalidatedZipCaches: 0,
+      syncedAt: Date.UTC(2026, 10, 25, 12, 30, 0),
+    })),
+    ...overrides,
+  };
+}
+
 describe("BookshelfPage", () => {
   const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
     navigator,
@@ -149,6 +279,13 @@ describe("BookshelfPage", () => {
   let headerSpy: MockInstance<typeof BookshelfHeaderModule.BookshelfHeader>;
   let driveBannerSpy: MockInstance<
     typeof DriveSetupBannerModule.DriveSetupBanner
+  >;
+  let toolbarSpy: MockInstance<typeof BookshelfToolbarModule.BookshelfToolbar>;
+  let seriesGridSpy: MockInstance<
+    typeof SeriesGridSectionModule.SeriesGridSection
+  >;
+  let driveEmptySpy: MockInstance<
+    typeof DriveSyncEmptyStateModule.DriveSyncEmptyState
   >;
   let emptyStateSpy: MockInstance<
     typeof LocalArchiveEmptyStateModule.LocalArchiveEmptyState
@@ -162,6 +299,7 @@ describe("BookshelfPage", () => {
     diagnosticLogger.clear();
     useLocalReaderSessionStore.setState({ session: null });
     resetBookshelfUiState();
+    resetDriveSyncState();
     window.history.replaceState(null, "", "/");
 
     headerSpy = vi
@@ -169,6 +307,15 @@ describe("BookshelfPage", () => {
       .mockImplementation(() => null);
     driveBannerSpy = vi
       .spyOn(DriveSetupBannerModule, "DriveSetupBanner")
+      .mockImplementation(() => null);
+    toolbarSpy = vi
+      .spyOn(BookshelfToolbarModule, "BookshelfToolbar")
+      .mockImplementation(() => null);
+    seriesGridSpy = vi
+      .spyOn(SeriesGridSectionModule, "SeriesGridSection")
+      .mockImplementation(() => null);
+    driveEmptySpy = vi
+      .spyOn(DriveSyncEmptyStateModule, "DriveSyncEmptyState")
       .mockImplementation(() => null);
     emptyStateSpy = vi
       .spyOn(LocalArchiveEmptyStateModule, "LocalArchiveEmptyState")
@@ -182,6 +329,7 @@ describe("BookshelfPage", () => {
     vi.restoreAllMocks();
     await resetTestDb();
     resetBookshelfUiState();
+    resetDriveSyncState();
     window.history.replaceState(null, "", originalUrl || "/");
     if (originalClipboardDescriptor) {
       Object.defineProperty(
@@ -206,6 +354,27 @@ describe("BookshelfPage", () => {
       const lastCall = driveBannerSpy.mock.calls.at(-1);
       expect(lastCall).toBeDefined();
       return lastCall![0] as DriveSetupBannerModule.DriveSetupBannerProps;
+    };
+
+  const getLatestToolbarProps =
+    (): BookshelfToolbarModule.BookshelfToolbarProps => {
+      const lastCall = toolbarSpy.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      return lastCall![0] as BookshelfToolbarModule.BookshelfToolbarProps;
+    };
+
+  const getLatestSeriesGridProps =
+    (): SeriesGridSectionModule.SeriesGridSectionProps => {
+      const lastCall = seriesGridSpy.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      return lastCall![0] as SeriesGridSectionModule.SeriesGridSectionProps;
+    };
+
+  const getLatestDriveEmptyProps =
+    (): DriveSyncEmptyStateModule.DriveSyncEmptyStateProps => {
+      const lastCall = driveEmptySpy.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      return lastCall![0] as DriveSyncEmptyStateModule.DriveSyncEmptyStateProps;
     };
 
   const getLatestEmptyStateProps =
@@ -246,21 +415,32 @@ describe("BookshelfPage", () => {
   it("全ストーリーを描画し直下の子コンポーネントへ初期Propsを正しく渡すこと", async () => {
     const { unmount: unmountDefault } = await renderAndFlush(<Default />);
     expect(screen.getByRole("main")).toHaveClass("flex-col", "gap-6");
+    expect(screen.getByRole("main")).toHaveAttribute(
+      "data-drag-active",
+      "false",
+    );
     expect(getLatestHeaderProps()).toEqual({
       copyStatus: "idle",
+      canSync: true,
+      isSyncing: false,
       onCopyDiagnostics: expect.any(Function),
       onOpenLocalZip: expect.any(Function),
       onOpenSettings: expect.any(Function),
+      onSyncDrive: expect.any(Function),
     });
     expect(getLatestDriveBannerProps()).toEqual({
       state: { kind: "ready" },
       onOpenSettings: expect.any(Function),
     });
-    expect(getLatestEmptyStateProps()).toEqual({
+    expect(getLatestDriveEmptyProps()).toEqual({
+      isSyncing: false,
       isDragActive: false,
-      errorMessage: null,
+      onSyncDrive: expect.any(Function),
       onOpenLocalZip: expect.any(Function),
     });
+    expect(emptyStateSpy).not.toHaveBeenCalled();
+    expect(toolbarSpy).not.toHaveBeenCalled();
+    expect(seriesGridSpy).not.toHaveBeenCalled();
     expect(getLatestRecentHistoryProps()).toEqual({
       items: [],
       onReopenLocalFile: expect.any(Function),
@@ -269,11 +449,40 @@ describe("BookshelfPage", () => {
     });
     unmountDefault();
 
+    const { unmount: unmountGrid } = await renderAndFlush(<WithSeriesGrid />);
+    expect(getLatestToolbarProps()).toEqual(
+      expect.objectContaining({
+        seriesCount: 3,
+        totalVolumeCount: 32,
+        sortOrder: "lastReadDesc",
+        syncErrorMessage: null,
+      }),
+    );
+    expect(getLatestSeriesGridProps().items).toHaveLength(3);
+    unmountGrid();
+
+    const { unmount: unmountOffline } = await renderAndFlush(
+      <OfflineCachedSeries />,
+    );
+    expect(getLatestDriveBannerProps().state).toEqual({
+      kind: "unauthenticated",
+    });
+    expect(getLatestToolbarProps().syncErrorMessage).toContain(
+      "認証が切れました",
+    );
+    expect(getLatestSeriesGridProps().items).toHaveLength(3);
+    unmountOffline();
+
     const { unmount: unmountUnauth } = await renderAndFlush(
       <Unauthenticated />,
     );
     expect(getLatestDriveBannerProps().state).toEqual({
       kind: "unauthenticated",
+    });
+    expect(getLatestEmptyStateProps()).toEqual({
+      isDragActive: false,
+      errorMessage: null,
+      onOpenLocalZip: expect.any(Function),
     });
     unmountUnauth();
 
@@ -286,6 +495,10 @@ describe("BookshelfPage", () => {
 
     const { unmount: unmountDrag } = await renderAndFlush(<DragActive />);
     expect(getLatestEmptyStateProps().isDragActive).toBe(true);
+    expect(screen.getByRole("main")).toHaveAttribute(
+      "data-drag-active",
+      "true",
+    );
     unmountDrag();
 
     const { unmount: unmountError } = await renderAndFlush(
@@ -305,7 +518,7 @@ describe("BookshelfPage", () => {
   });
 
   it("ヘッダーおよび空本棚カードのonOpenLocalZipからSAF互換input要素のclickが呼ばれること (AC-BS-01)", async () => {
-    await renderAndFlush(<Default />);
+    await renderAndFlush(<Unauthenticated />);
 
     const input = screen.getByTestId(
       "local-zip-file-input",
@@ -379,7 +592,7 @@ describe("BookshelfPage", () => {
   });
 
   it("非対応拡張子のファイル選択時は遷移せずエラーメッセージ設定と警告ログ記録を行うこと (AC-BS-03)", async () => {
-    await renderAndFlush(<Default />);
+    await renderAndFlush(<Unauthenticated />);
     const input = screen.getByTestId("local-zip-file-input");
 
     const pdfFile = new File(["pdf"], "document.pdf", {
@@ -404,7 +617,7 @@ describe("BookshelfPage", () => {
   });
 
   it("ドラッグ＆ドロップ操作でisDragActive制御・関連ターゲット判定・ファイル検証を行うこと (AC-BS-02, AC-BS-03, AC-BS-04)", async () => {
-    await renderAndFlush(<Default />);
+    await renderAndFlush(<Unauthenticated />);
     const main = screen.getByRole("main");
     const innerInput = screen.getByTestId("local-zip-file-input");
 
@@ -1129,6 +1342,351 @@ describe("BookshelfPage", () => {
     unmountCount2();
     await act(async () => {
       countReject.reject(new Error("late count err"));
+      await flushMicrotasks();
+    });
+    expect(diagnosticLogger.getEntries()).toEqual([]);
+  });
+
+  it("初回読込完了前は bookshelf-loading を表示してエンプティ画面を誤表示せず、3系統完了後にスクロール復元すること (AC-BS-09, AC-BS-10)", async () => {
+    const scrollToSpy = vi
+      .spyOn(window, "scrollTo")
+      .mockImplementation(() => {});
+    useBookshelfUiStateStore.getState().saveScrollY(320);
+
+    const rootsDeferred = createDeferred<readonly DriveSyncRootRecord[]>();
+    const rootsRepo = createMockDriveSyncRootsRepo({
+      listActive: vi.fn(() => rootsDeferred.promise),
+    });
+
+    const { unmount } = render(
+      <ServiceProvider
+        readingProgressRepo={createMockReadingProgressRepo()}
+        googleAuthBridge={createMockGoogleAuthBridge()}
+        driveSyncRootsRepo={rootsRepo}
+        seriesRepo={createMockSeriesRepo()}
+        volumesRepo={createMockVolumesRepo()}
+        driveSyncMetaRepo={createMockDriveSyncMetaRepo()}
+      >
+        <RouterProvider initialPath="/">
+          <BookshelfPage initialRecentHistory={[]} />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+
+    expect(screen.getByTestId("bookshelf-loading")).toBeInTheDocument();
+    expect(driveEmptySpy).not.toHaveBeenCalled();
+    expect(emptyStateSpy).not.toHaveBeenCalled();
+    expect(seriesGridSpy).not.toHaveBeenCalled();
+    expect(useBookshelfUiStateStore.getState().scrollY).toBe(320);
+
+    await act(async () => {
+      rootsDeferred.resolve([]);
+      await flushMicrotasks();
+    });
+
+    expect(screen.queryByTestId("bookshelf-loading")).toBeNull();
+    expect(emptyStateSpy).toHaveBeenCalled();
+    expect(scrollToSpy).toHaveBeenLastCalledWith(0, 320);
+    expect(useBookshelfUiStateStore.getState().scrollY).toBe(0);
+    unmount();
+  });
+
+  it("IndexedDBからDrive蔵書を読込・4軸ソート・TR-01詳細遷移・TR-02bクイック起動・手動同期＆完了再読込を行うこと (AC-BS-08, AC-BS-09, AC-BS-10, AC-BS-11)", async () => {
+    Object.defineProperty(window, "scrollY", {
+      configurable: true,
+      value: 160,
+    });
+    useBookshelfUiStateStore
+      .getState()
+      .saveSeriesDetailScroll("old-series", 99);
+
+    const root1: DriveSyncRootRecord = {
+      folderId: "root-1",
+      folderName: "Comics",
+      enabled: 1,
+      addedAt: 1_730_000_000_000,
+      updatedAt: 1_730_000_000_000,
+      deletedAt: null,
+    };
+    const rootDisabled: DriveSyncRootRecord = {
+      folderId: "root-disabled",
+      folderName: "Disabled",
+      enabled: 0,
+      addedAt: 1_730_000_000_000,
+      updatedAt: 1_730_000_000_000,
+      deletedAt: null,
+    };
+    const seriesA = createSampleSeriesRecord({
+      id: "series-a",
+      title: "あいうえお",
+      titleReading: "あいうえお",
+      lastReadAt: 1_730_100_000_000,
+    });
+    const seriesB = createSampleSeriesRecord({
+      id: "series-b",
+      title: "かきくけこ",
+      titleReading: "かきくけこ",
+      lastReadAt: 1_730_200_000_000,
+    });
+    const volA = createSampleVolumeRecord({
+      id: "vol-a1",
+      seriesId: "series-a",
+      rootFolderId: "root-1",
+    });
+    const volB = createSampleVolumeRecord({
+      id: "vol-b1",
+      seriesId: "series-b",
+      rootFolderId: "root-1",
+    });
+
+    const rootsRepo = createMockDriveSyncRootsRepo({
+      listActive: vi.fn(async () => [root1, rootDisabled]),
+      countEnabled: vi.fn(async () => 1),
+    });
+    const seriesRepo = createMockSeriesRepo({
+      listActive: vi.fn(async () => [seriesA, seriesB]),
+    });
+    const volumesRepo = createMockVolumesRepo({
+      listVisibleByEnabledRoots: vi.fn(async () => [volA, volB]),
+    });
+    const progressRepo = createMockReadingProgressRepo();
+    const syncMetaRepo = createMockDriveSyncMetaRepo({
+      getSyncState: vi.fn(async () => ({
+        startPageToken: "tok-1",
+        lastDriveSyncAt: Date.UTC(2026, 10, 25, 10, 0, 0),
+        syncedRootFolderIds: ["root-1"],
+      })),
+    });
+    const syncEngine = createMockDriveSyncEngine();
+    const authBridge = createMockGoogleAuthBridge({
+      getCachedSession: vi.fn(() => ({
+        email: "reader@example.com",
+        accessToken: "ya29.ok",
+        expiresAt: Date.now() + 3_600_000,
+      })),
+    });
+
+    const { unmount } = await renderAndFlush(
+      <ServiceProvider
+        readingProgressRepo={progressRepo}
+        googleAuthBridge={authBridge}
+        driveSyncRootsRepo={rootsRepo}
+        seriesRepo={seriesRepo}
+        volumesRepo={volumesRepo}
+        driveSyncMetaRepo={syncMetaRepo}
+        driveSyncEngine={syncEngine}
+      >
+        <RouterProvider initialPath="/">
+          <BookshelfPage initialRecentHistory={[]} />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+
+    expect(syncMetaRepo.getSyncState).toHaveBeenCalledTimes(1);
+    expect(volumesRepo.listVisibleByEnabledRoots).toHaveBeenCalledWith(
+      new Set(["root-1"]),
+    );
+    expect(progressRepo.listByVolumeIds).toHaveBeenCalledWith(
+      new Set(["vol-a1", "vol-b1"]),
+    );
+    // 初期ソート（lastReadDesc）では series-b が先頭
+    expect(getLatestSeriesGridProps().items.map((i) => i.seriesId)).toEqual([
+      "series-b",
+      "series-a",
+    ]);
+
+    // 4軸ソート切替（titleAsc）で即座に再並び替え＆ストア保持
+    act(() => {
+      getLatestToolbarProps().onChangeSortOrder("titleAsc");
+    });
+    expect(useBookshelfUiStateStore.getState().sortOrder).toBe("titleAsc");
+    expect(getLatestSeriesGridProps().items.map((i) => i.seriesId)).toEqual([
+      "series-a",
+      "series-b",
+    ]);
+
+    // ヘッダー手動同期ボタン -> DriveSyncEngine.sync 実行＆完了後に蔵書再読込
+    await act(async () => {
+      getLatestHeaderProps().onSyncDrive?.();
+      await flushMicrotasks();
+    });
+    expect(syncEngine.sync).toHaveBeenCalledWith({ forceFullScan: false });
+    expect(volumesRepo.listVisibleByEnabledRoots).toHaveBeenCalledTimes(2);
+
+    // TR-01: シリーズ詳細遷移で scrollY 保存・clearSeriesDetailScroll・/series/:seriesId 遷移
+    act(() => {
+      getLatestSeriesGridProps().onOpenDetail("series-a");
+    });
+    expect(useBookshelfUiStateStore.getState().scrollY).toBe(160);
+    expect(useBookshelfUiStateStore.getState().seriesDetailScroll).toBeNull();
+    expect(window.location.pathname).toBe("/series/series-a");
+
+    // TR-02b: クイック起動で scrollY 保存・readerOrigin="bookshelf" 付き /read/volume/:volumeId 遷移
+    act(() => {
+      getLatestSeriesGridProps().onQuickRead("series-b", "vol-b1");
+    });
+    expect(window.location.pathname).toBe("/read/volume/vol-b1");
+    expect(window.history.state).toEqual(
+      expect.objectContaining({
+        readerOrigin: "bookshelf",
+        seriesId: "series-b",
+      }),
+    );
+
+    unmount();
+    Object.defineProperty(window, "scrollY", {
+      configurable: true,
+      value: 0,
+    });
+  });
+
+  it("分岐A・分岐B・分岐C横断で不正拡張子アラートと同期エラーアラートを重複なく表示し、蔵書読込失敗・アンマウント競合時も安全に処理すること (AC-BS-03, AC-BS-08)", async () => {
+    // 1. 分岐 B（DriveSyncEmptyState）で同期エラー・不正拡張子エラーが <main> 上部に表示されること
+    const syncEngine = createMockDriveSyncEngine();
+    useDriveSyncStateStore.setState({
+      phase: "error",
+      errorMessage: "ネットワークエラーにより Google Drive 同期に失敗しました",
+    });
+
+    const { unmount: unmountB } = await renderAndFlush(
+      <ServiceProvider driveSyncEngine={syncEngine}>
+        <RouterProvider initialPath="/">
+          <BookshelfPage
+            initialDriveSetupState={{ kind: "ready" }}
+            initialRecentHistory={[]}
+          />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+
+    expect(screen.getByTestId("bookshelf-sync-error")).toHaveTextContent(
+      "ネットワークエラーにより Google Drive 同期に失敗しました",
+    );
+
+    // DriveSyncEmptyState の onSyncDrive 発火で runDriveSync が呼ばれること
+    await act(async () => {
+      getLatestDriveEmptyProps().onSyncDrive();
+      await flushMicrotasks();
+    });
+    expect(syncEngine.sync).toHaveBeenCalledTimes(1);
+
+    // 分岐 B で非対応ファイル選択 -> <main> 上部に local-zip-error 表示
+    const inputB = screen.getByTestId("local-zip-file-input");
+    fireEvent.change(inputB, {
+      target: {
+        files: [new File(["x"], "bad.txt", { type: "text/plain" })],
+      },
+    });
+    expect(screen.getByTestId("local-zip-error")).toHaveTextContent(
+      "対応形式は .zip または .cbz ファイルのみです",
+    );
+    unmountB();
+
+    // 2. 分岐 C（unauthenticated）でも同期エラーアラートが消えずに表示されること（401失効後）
+    useDriveSyncStateStore.setState({
+      phase: "error",
+      errorMessage: "Google アカウントの認証が切れました",
+    });
+    const { unmount: unmountC } = await renderAndFlush(
+      <ServiceProvider>
+        <RouterProvider initialPath="/">
+          <BookshelfPage
+            initialDriveSetupState={{ kind: "unauthenticated" }}
+            initialRecentHistory={[]}
+          />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    expect(screen.getByTestId("bookshelf-sync-error")).toHaveTextContent(
+      "Google アカウントの認証が切れました",
+    );
+    // 未連携状態で onSyncDrive を呼んでも安全にノーオペ
+    act(() => {
+      getLatestHeaderProps().onSyncDrive?.();
+    });
+    unmountC();
+
+    // 3. 分岐 A（WithSeriesGrid）で非対応ファイル選択 -> <main> 上部に local-zip-error 表示（Toolbar 側 sync-error と重複しない）
+    const { unmount: unmountA } = await renderAndFlush(<WithSeriesGrid />);
+    const inputA = screen.getByTestId("local-zip-file-input");
+    fireEvent.change(inputA, {
+      target: {
+        files: [new File(["x"], "bad.pdf", { type: "application/pdf" })],
+      },
+    });
+    expect(screen.getByTestId("local-zip-error")).toHaveTextContent(
+      "対応形式は .zip または .cbz ファイルのみです",
+    );
+    expect(screen.queryByTestId("bookshelf-sync-error")).toBeNull();
+    unmountA();
+
+    // 4. IndexedDB 蔵書読込失敗時（Error / 非Error）は warn ログ記録してローディング解除、アンマウント後解決は無視
+    diagnosticLogger.clear();
+    const failRootsRepo = createMockDriveSyncRootsRepo({
+      listActive: vi.fn(async () => {
+        throw new Error("shelf db fail");
+      }),
+    });
+    const { unmount: unmountFail } = await renderAndFlush(
+      <ServiceProvider driveSyncRootsRepo={failRootsRepo}>
+        <RouterProvider initialPath="/">
+          <BookshelfPage
+            initialDriveSetupState={{ kind: "unauthenticated" }}
+            initialRecentHistory={[]}
+          />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    expect(screen.queryByTestId("bookshelf-loading")).toBeNull();
+    expect(diagnosticLogger.getEntries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "warn",
+          scope: "bookshelf",
+          detail: "shelf db fail",
+        }),
+      ]),
+    );
+    unmountFail();
+
+    diagnosticLogger.clear();
+    const lateResolve = createDeferred<readonly DriveSyncRootRecord[]>();
+    const lateReject = createDeferred<readonly DriveSyncRootRecord[]>();
+    const raceRoots1 = createMockDriveSyncRootsRepo({
+      listActive: vi.fn(() => lateResolve.promise),
+    });
+    const { unmount: unmountRace1 } = render(
+      <ServiceProvider driveSyncRootsRepo={raceRoots1}>
+        <RouterProvider initialPath="/">
+          <BookshelfPage
+            initialDriveSetupState={{ kind: "unauthenticated" }}
+            initialRecentHistory={[]}
+          />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    unmountRace1();
+    await act(async () => {
+      lateResolve.resolve([]);
+      await flushMicrotasks();
+    });
+
+    const raceRoots2 = createMockDriveSyncRootsRepo({
+      listActive: vi.fn(() => lateReject.promise),
+    });
+    const { unmount: unmountRace2 } = render(
+      <ServiceProvider driveSyncRootsRepo={raceRoots2}>
+        <RouterProvider initialPath="/">
+          <BookshelfPage
+            initialDriveSetupState={{ kind: "unauthenticated" }}
+            initialRecentHistory={[]}
+          />
+        </RouterProvider>
+      </ServiceProvider>,
+    );
+    unmountRace2();
+    await act(async () => {
+      lateReject.reject("late shelf reject");
       await flushMicrotasks();
     });
     expect(diagnosticLogger.getEntries()).toEqual([]);

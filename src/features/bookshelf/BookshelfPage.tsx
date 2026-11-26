@@ -25,12 +25,34 @@ import { LocalArchiveEmptyState } from "./LocalArchiveEmptyState";
 import { RecentLocalHistorySection } from "./RecentLocalHistorySection";
 import { useBookshelfUiStateStore } from "./bookshelfUiStateStore";
 
+import type { DriveSyncResult } from "../../providers/gdrive/types";
+import type { DriveSyncUiPhase } from "../../shared/sync/driveSyncStateStore";
+import type {
+  BookshelfSeriesCardItem,
+  BookshelfSortOrder,
+} from "./bookshelfViewModel";
+
+export interface BookshelfPageInitialSnapshot {
+  readonly driveSetupState: DriveSetupBannerState;
+  readonly seriesItems: readonly BookshelfSeriesCardItem[];
+  readonly sortOrder?: BookshelfSortOrder;
+  readonly syncPhase?: DriveSyncUiPhase;
+  readonly lastSyncedAt?: number | null;
+  readonly lastSyncResult?: DriveSyncResult | null;
+  readonly syncErrorMessage?: string | null;
+  readonly recentHistory?: readonly LocalReadingHistoryItem[];
+  readonly copyStatus?: CopyStatus;
+  readonly errorMessage?: string | null;
+  readonly isDragActive?: boolean;
+}
+
 export interface BookshelfPageProps {
   readonly initialCopyStatus?: CopyStatus;
   readonly initialErrorMessage?: string | null;
   readonly initialDragActive?: boolean;
   readonly initialRecentHistory?: readonly LocalReadingHistoryItem[];
   readonly initialDriveSetupState?: DriveSetupBannerState;
+  readonly initialSnapshot?: BookshelfPageInitialSnapshot;
 }
 
 const LOCAL_ARCHIVE_INPUT_ACCEPT =
