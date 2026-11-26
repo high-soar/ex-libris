@@ -59,6 +59,7 @@ related_tests:
   - src/storage/repositories/readerSettingsRepository.test.ts
   - test/vrt/vrt.spec.ts
   - test/it/local-reader.spec.ts
+  - test/it/bookshelf-drive-reader.spec.ts
 ---
 
 # WebGL2 ストリーミングリーダー画面仕様書（`SCR-03`: Reader）

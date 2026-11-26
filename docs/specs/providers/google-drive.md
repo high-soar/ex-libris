@@ -46,7 +46,9 @@ related_tests:
   - src/providers/gdrive/googleDriveSyncClient.test.ts
   - src/providers/gdrive/mockDriveSyncClient.test.ts
   - src/providers/gdrive/driveSyncEngine.test.ts
+  - src/shared/sync/driveSyncStateStore.test.ts
   - test/it/drive-sync.spec.ts
+  - test/it/bookshelf-drive-reader.spec.ts
 ---
 
 # Google OAuth（Single-Flight）・Google Drive フォルダ参照 ＆ 差分同期プロバイダ仕様書

@@ -2,8 +2,8 @@
 type: spec-delta
 title: "Issue #25 差分仕様: 仮想本棚ホーム（SCR-01）・シリーズ詳細（SCR-02）・Drive 巻リーダー統合"
 description: "手動Drive同期トリガー（SCR-01/SCR-04共有）、4軸基本ソート対応シリーズカードグリッド・クイック起動（TR-02b）、シリーズ詳細画面（SCR-02: /series/:seriesId）、およびDrive巻リーダー統合（SCR-03: /read/volume/:volumeId, TR-07/TR-08）を定義する差分仕様"
-status: "Review (#25)"
-updated: "2026-11-25"
+status: "Completed (Archived)"
+updated: "2026-11-26"
 issue: "#25"
 tags:
   [
@@ -43,15 +43,30 @@ related_tests:
   - src/app/serviceContext.test.ts
   - src/features/bookshelf/BookshelfHeader.test.tsx
   - src/features/bookshelf/BookshelfPage.test.tsx
+  - src/features/bookshelf/BookshelfToolbar.test.tsx
+  - src/features/bookshelf/DriveSyncEmptyState.test.tsx
+  - src/features/bookshelf/SeriesCard.test.tsx
+  - src/features/bookshelf/SeriesGridSection.test.tsx
   - src/features/bookshelf/bookshelfUiStateStore.test.ts
+  - src/features/bookshelf/bookshelfViewModel.test.ts
   - src/features/reader/ReaderErrorView.test.tsx
   - src/features/reader/ReaderHudOverlay.test.tsx
   - src/features/reader/ReaderPage.test.tsx
   - src/features/reader/readerErrors.test.ts
+  - src/features/series-detail/SeriesDetailEmptyState.test.tsx
+  - src/features/series-detail/SeriesDetailHeader.test.tsx
+  - src/features/series-detail/SeriesDetailPage.test.tsx
+  - src/features/series-detail/SeriesSummaryCard.test.tsx
+  - src/features/series-detail/SeriesVolumeListSection.test.tsx
+  - src/features/settings/DriveSyncExecutionSection.test.tsx
+  - src/features/settings/DriveSyncRootsSection.test.tsx
+  - src/features/settings/GoogleAccountSection.test.tsx
   - src/features/settings/SettingsPage.test.tsx
   - src/shared/router/RouterProvider.test.tsx
   - src/shared/router/routeMatcher.test.ts
   - src/shared/router/routerContext.test.ts
+  - src/shared/sync/driveSyncStateStore.test.ts
+  - src/shared/ui/CoverThumbnail.test.tsx
   - src/storage/repositories/readingProgressRepository.test.ts
   - src/storage/repositories/seriesRepository.test.ts
   - src/storage/repositories/volumesRepository.test.ts
@@ -60,6 +75,7 @@ related_tests:
   - test/it/local-reader.spec.ts
   - test/it/settings-oauth.spec.ts
   - test/it/drive-sync.spec.ts
+  - test/it/bookshelf-drive-reader.spec.ts
 ---
 
 # Issue #25 差分仕様: 仮想本棚ホーム（`SCR-01`）・シリーズ詳細（`SCR-02`）・Drive 巻リーダー統合
@@ -86,7 +102,7 @@ related_tests:
    - **「最終読書順（初期値 `"lastReadDesc"`：未読 `lastReadAt === null` は後ろに回し追加順）」「追加順（`"addedDesc"`）」「タイトル順（`"titleAsc"`）」「巻数順（`"volumeCountDesc"`）」** の 4 軸を提供する。
    - 選択中のソート順は `bookshelfUiStateStore`（オンメモリ）で保持し、`SCR-02` / `SCR-03` / `SCR-04` との往復遷移（`TR-05` / `TR-08` / `TR-09`）時にスクロール位置とともに復元する。
 5. **`SCR-02` シリーズ詳細（`/series/:seriesId`）の新設・スクロール復元・異常系（Q5）**:
-   - 新規正本 [series-detail.md](../features/series-detail.md) を作成し、「上部ヘッダー ＋ 作品サマリカード（代表表紙・タイトル・著者・所持巻数/読了数・続きを読むプライマリ CTA）＋ 所属有効巻一覧（単巻/合本バッジ・元ファイル名・サイズ・ステータス・ページ進捗バー）」で構成する。
+   - 新規正本 [series-detail.md](../../features/series-detail.md) を作成し、「上部ヘッダー ＋ 作品サマリカード（代表表紙・タイトル・著者・所持巻数/読了数・続きを読むプライマリ CTA）＋ 所属有効巻一覧（単巻/合本バッジ・元ファイル名・サイズ・ステータス・ページ進捗バー）」で構成する。
    - `SCR-02` ↔ `SCR-03`（`TR-04` / `TR-07`）往復時の `SCR-02` スクロール位置復元を備え、未存在 `seriesId`・論理削除済み・または有効巻 0 件（全巻ゴミ箱化／ルート一時無効化中）へのアクセス時は例外を起こさず案内ビュー（`SeriesDetailEmptyState`）＋「本棚へ戻る」（`TR-05`）を表示する。
 6. **`SCR-03` Drive 巻リーダー統合（`/read/volume/:volumeId`）（Q6）**:
    - `window.history.state` で起点（`readerOrigin: "bookshelf" | "series-detail"`, `seriesId`）を保持し、終了時は `bookshelf` 起点なら `TR-08`（`/`）、`series-detail` 起点なら `TR-07`（`/series/:seriesId`）へ戻す（直接 URL アクセス等で起点不在時は実在巻なら所属 `/series/:seriesId`、未存在巻なら `/` へ `replace` フォールバック）。
@@ -95,7 +111,7 @@ related_tests:
 7. **Android 実機検証区分・Sub-issue 分割計画（Q7）および `v0.3` 大規模本棚 UX 方針**:
    - **Android 実機検証**: **区分 A（`親 Issue #25 完了前`）** とし、`HO-10`（Drive Range ストリーミング閲覧・TTFP・0 RTT 再オープン・レジューム・戻る優先度）および `HO-12`（実 Drive ルート同期・`changes.list` 差分追従・ファイル名パース）をクラウドビルド `app-debug.apk` で一体実証してから `#26` へ進む。
    - **実装分割**: **3 MK（MK-1: ルーティング・一括進捗取得・共有同期ストア・集約純関数 / MK-2: `SCR-01` 本棚拡張 ＆ `SCR-04` 同期 UI / MK-3: `SCR-02` シリーズ詳細 ＆ `SCR-03` Drive リーダー統合）＋ Step 4 IT（`SCN-05`）** の 4 分割とする。
-   - **`v0.3` ロードマップ明記**: `v0.2` は MVP としてフラットグリッド＋4軸ソートとし、1,000 シリーズ規模でのブラウジングアクセス性向上（五十音インデックスジャンプ、作者／レーベル別グルーピング表示切替、Virtual Grid 等）は `v0.3` で詳細検討・実装する方針を [requirements.md](../requirements.md) および [screen-transitions.md](../screen-transitions.md) へ反映する。
+   - **`v0.3` ロードマップ明記**: `v0.2` は MVP としてフラットグリッド＋4軸ソートとし、1,000 シリーズ規模でのブラウジングアクセス性向上（五十音インデックスジャンプ、作者／レーベル別グルーピング表示切替、Virtual Grid 等）は `v0.3` で詳細検討・実装する方針を [requirements.md](../../requirements.md) および [screen-transitions.md](../../screen-transitions.md) へ反映する。
 
 ### 1.2 対象外スコープ
 
@@ -107,19 +123,19 @@ related_tests:
 
 ## 2. 新規作成・変更対象の App 全体正本一覧
 
-|   種別   | 正本ファイル                                                     | 変更概要                                                                                                                                                                   |
-| :------: | :--------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **新規** | [series-detail.md](../features/series-detail.md)                 | `SCR-02`（`/series/:seriesId`）の作品サマリ・クイック起動・単巻/合本巻一覧・進捗バー・未存在/0件案内・スクロール復元・`AC-SD-01`〜`06` を新設                              |
-| **更新** | [bookshelf.md](../features/bookshelf.md)                         | `SCR-01` 手動同期ボタン・3分岐メイン構成・`BookshelfToolbar`（4軸ソート）・`SeriesCard`（`TR-01`/`TR-02b`）・決定的 VRT 契約・`AC-BS-08`〜`12` を追加                      |
-| **更新** | [reader.md](../features/reader.md)                               | `/read/volume/:volumeId` 事前検証・`gdrive` ソース構築・`vol:*` ＆ `series.lastReadAt` 保存・HUD「作品名 巻ラベル」・`TR-07`/`TR-08` 起点戻り・`AC-RD-16`〜`19` を追加     |
-| **更新** | [settings.md](../features/settings.md)                           | `DriveSyncExecutionSection`（今すぐ同期・強制フルスキャン・結果サマリ・同期中排他保護・`TR-09` 非ブロック継続）および `AC-ST-08` を追加                                    |
-| **更新** | [db-schema.md](../db-schema.md)                                  | `ReadingProgressRepository.listByVolumeIds` 一括取得契約、`vol:*` 保存時の `series.lastReadAt` 更新、および `resetTestDb` での UI/同期ストア初期化を追記                   |
-| **更新** | [screen-transitions.md](../screen-transitions.md)                | `SCR-01`〜`SCR-04`・`TR-01`〜`TR-10`（`readerOrigin` 履歴保持・直接 URL フォールバック・`#26` プリエンプション段階注記）・戻る優先度 3/4・結合シナリオ **`SCN-05`** を更新 |
-| **更新** | [architecture.md](../architecture.md)                            | Layer 3（`listByVolumeIds`）および Layer 4（5ルート Router・`driveSyncStateStore`・`CoverThumbnail`・`series-detail`）の責務境界を同期                                     |
-| **更新** | [requirements.md](../requirements.md)                            | `SCR-03` 生 WebGL2 vs 本棚表紙 `ObjectURL` 境界明確化、`v0.2` 4軸ソート更新、および **`v0.3` 大量蔵書（1,000シリーズ級）本棚アクセス UX 強化計画** を反映                  |
-| **更新** | [google-drive.md](../providers/google-drive.md)                  | `related_specs` へ `series-detail.md` / `reader.md` を双方向同期                                                                                                           |
-| **更新** | [filename-parser.md](../providers/filename-parser.md)            | `related_specs` へ `bookshelf.md` / `series-detail.md` を双方向同期                                                                                                        |
-| **更新** | [bug-and-handover-log.md](../../quality/bug-and-handover-log.md) | 区分 A 実機検証合意に基づき **`HO-10`・`HO-12`** の完了ゲートを `親 Issue #25 完了前` に統一し検証観点を詳細化                                                             |
+|   種別   | 正本ファイル                                                        | 変更概要                                                                                                                                                                   |
+| :------: | :------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **新規** | [series-detail.md](../../features/series-detail.md)                 | `SCR-02`（`/series/:seriesId`）の作品サマリ・クイック起動・単巻/合本巻一覧・進捗バー・未存在/0件案内・スクロール復元・`AC-SD-01`〜`06` を新設                              |
+| **更新** | [bookshelf.md](../../features/bookshelf.md)                         | `SCR-01` 手動同期ボタン・3分岐メイン構成・`BookshelfToolbar`（4軸ソート）・`SeriesCard`（`TR-01`/`TR-02b`）・決定的 VRT 契約・`AC-BS-08`〜`12` を追加                      |
+| **更新** | [reader.md](../../features/reader.md)                               | `/read/volume/:volumeId` 事前検証・`gdrive` ソース構築・`vol:*` ＆ `series.lastReadAt` 保存・HUD「作品名 巻ラベル」・`TR-07`/`TR-08` 起点戻り・`AC-RD-16`〜`19` を追加     |
+| **更新** | [settings.md](../../features/settings.md)                           | `DriveSyncExecutionSection`（今すぐ同期・強制フルスキャン・結果サマリ・同期中排他保護・`TR-09` 非ブロック継続）および `AC-ST-08` を追加                                    |
+| **更新** | [db-schema.md](../../db-schema.md)                                  | `ReadingProgressRepository.listByVolumeIds` 一括取得契約、`vol:*` 保存時の `series.lastReadAt` 更新、および `resetTestDb` での UI/同期ストア初期化を追記                   |
+| **更新** | [screen-transitions.md](../../screen-transitions.md)                | `SCR-01`〜`SCR-04`・`TR-01`〜`TR-10`（`readerOrigin` 履歴保持・直接 URL フォールバック・`#26` プリエンプション段階注記）・戻る優先度 3/4・結合シナリオ **`SCN-05`** を更新 |
+| **更新** | [architecture.md](../../architecture.md)                            | Layer 3（`listByVolumeIds`）および Layer 4（5ルート Router・`driveSyncStateStore`・`CoverThumbnail`・`series-detail`）の責務境界を同期                                     |
+| **更新** | [requirements.md](../../requirements.md)                            | `SCR-03` 生 WebGL2 vs 本棚表紙 `ObjectURL` 境界明確化、`v0.2` 4軸ソート更新、および **`v0.3` 大量蔵書（1,000シリーズ級）本棚アクセス UX 強化計画** を反映                  |
+| **更新** | [google-drive.md](../../providers/google-drive.md)                  | `related_specs` へ `series-detail.md` / `reader.md` を双方向同期                                                                                                           |
+| **更新** | [filename-parser.md](../../providers/filename-parser.md)            | `related_specs` へ `bookshelf.md` / `series-detail.md` を双方向同期                                                                                                        |
+| **更新** | [bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) | 区分 A 実機検証合意に基づき **`HO-10`・`HO-12`** の完了ゲートを `親 Issue #25 完了前` に統一し検証観点を詳細化                                                             |
 
 ---
 
@@ -215,7 +231,7 @@ related_tests:
 
 ### 5.2 Android 実機検証計画（区分 A：`親 Issue #25 完了前` / `HO-10`・`HO-12`）
 
-- **実施粒度判定（[workflow.md §2.2](../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 A（親 Issue `#25` 完了前に実施）**
+- **実施粒度判定（[workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット)）**: **区分 A（親 Issue `#25` 完了前に実施）**
   - **根拠**: 実 Google Drive API と Android WebView Worker を用いた HTTP `Range` ストリーミング閲覧・L1 `ImageBitmap.close()` VRAM 解放・ハードウェア戻るボタン優先度制御（`SCR-01`〜`SCR-04` 横断）を含み、実機確認項目が 3 項目以上（下記 5 項目）発生するため、`#26`（表紙自動抽出キュー）へ進む前に実機で基盤動作を確定させる。
 - **実機確認予定項目（Step 4 Gate 1〜6 完了時に `app-debug.apk` リンクとともに詳細試験項目表を提示）**:
   1. **`HO-12-1`（手動フルスキャン・シリーズ束ね）**: `SCR-04` または `SCR-01` から実 Google Drive 保管フォルダの同期を実行し、サブフォルダ配下の `.zip` / `.cbz`（単巻・合本・サブフォルダ補完）が本棚カードグリッドと `SCR-02` 巻一覧へ正しく束ね表示されること。

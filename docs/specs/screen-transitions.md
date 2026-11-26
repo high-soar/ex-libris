@@ -26,21 +26,35 @@ related_tests:
   - src/bridges/app/mockAppBridge.test.ts
   - src/features/bookshelf/BookshelfHeader.test.tsx
   - src/features/bookshelf/BookshelfPage.test.tsx
+  - src/features/bookshelf/BookshelfToolbar.test.tsx
   - src/features/bookshelf/DriveSetupBanner.test.tsx
+  - src/features/bookshelf/DriveSyncEmptyState.test.tsx
   - src/features/bookshelf/RecentLocalHistorySection.test.tsx
+  - src/features/bookshelf/SeriesCard.test.tsx
+  - src/features/bookshelf/SeriesGridSection.test.tsx
   - src/features/bookshelf/bookshelfUiStateStore.test.ts
+  - src/features/bookshelf/bookshelfViewModel.test.ts
   - src/features/reader/spreadLayout.test.ts
   - src/features/reader/ReaderErrorView.test.tsx
   - src/features/reader/ReaderHudOverlay.test.tsx
   - src/features/reader/ReaderShaderSheet.test.tsx
   - src/features/reader/ReaderPage.test.tsx
   - src/features/reader/localReaderSessionStore.test.ts
+  - src/features/reader/readerErrors.test.ts
+  - src/features/series-detail/SeriesDetailEmptyState.test.tsx
+  - src/features/series-detail/SeriesDetailHeader.test.tsx
+  - src/features/series-detail/SeriesDetailPage.test.tsx
+  - src/features/series-detail/SeriesSummaryCard.test.tsx
+  - src/features/series-detail/SeriesVolumeListSection.test.tsx
   - src/features/settings/DriveFolderPickerModal.test.tsx
+  - src/features/settings/DriveSyncExecutionSection.test.tsx
   - src/features/settings/SettingsHeader.test.tsx
   - src/features/settings/SettingsPage.test.tsx
   - src/shared/router/RouterProvider.test.tsx
   - src/shared/router/routeMatcher.test.ts
   - src/shared/router/routerContext.test.ts
+  - src/shared/sync/driveSyncStateStore.test.ts
+  - src/shared/ui/CoverThumbnail.test.tsx
   - src/storage/repositories/readingProgressRepository.test.ts
   - src/storage/repositories/readerSettingsRepository.test.ts
   - src/webgl/ReaderCanvas.test.tsx
@@ -49,6 +63,7 @@ related_tests:
   - test/it/local-reader.spec.ts
   - test/it/settings-oauth.spec.ts
   - test/it/drive-sync.spec.ts
+  - test/it/bookshelf-drive-reader.spec.ts
 ---
 
 # ExLibris 主要画面一覧（`SCR-xx`）と画面遷移（`TR-xx`）

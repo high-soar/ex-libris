@@ -32,8 +32,10 @@ related_tests:
   - src/engine/zip/zipIndexValidation.test.ts
   - src/features/bookshelf/BookshelfPage.test.tsx
   - src/features/reader/ReaderPage.test.tsx
+  - src/features/series-detail/SeriesDetailPage.test.tsx
   - test/it/local-reader.spec.ts
   - test/it/drive-sync.spec.ts
+  - test/it/bookshelf-drive-reader.spec.ts
 ---
 
 # ExLibris Dexie.js（IndexedDB）ローカルDBスキーマ定義
