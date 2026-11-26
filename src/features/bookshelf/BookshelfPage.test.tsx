@@ -1,6 +1,6 @@
 import { composeStories } from "@storybook/react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { StrictMode, type ReactElement } from "react";
+import { StrictMode, type ReactElement, useRef } from "react";
 import {
   afterEach,
   beforeEach,
@@ -10,7 +10,10 @@ import {
   type MockInstance,
   vi,
 } from "vitest";
-import { ServiceProvider } from "../../app/ServiceProvider";
+import {
+  ServiceProvider,
+  type ServiceProviderProps,
+} from "../../app/ServiceProvider";
 import type {
   AuthSessionListener,
   GoogleAuthBridge,
@@ -269,6 +272,49 @@ function createMockDriveSyncEngine(
   };
 }
 
+function TestServiceProvider({ children, ...props }: ServiceProviderProps) {
+  const defaultsRef = useRef<{
+    readingProgressRepo: ReadingProgressRepository;
+    googleAuthBridge: GoogleAuthBridge;
+    driveSyncRootsRepo: DriveSyncRootsRepository;
+    seriesRepo: SeriesRepository;
+    volumesRepo: VolumesRepository;
+    driveSyncMetaRepo: DriveSyncMetaRepository;
+    driveSyncEngine: DriveSyncEngine;
+  } | null>(null);
+  if (defaultsRef.current === null) {
+    defaultsRef.current = {
+      readingProgressRepo: createMockReadingProgressRepo(),
+      googleAuthBridge: createMockGoogleAuthBridge(),
+      driveSyncRootsRepo: createMockDriveSyncRootsRepo(),
+      seriesRepo: createMockSeriesRepo(),
+      volumesRepo: createMockVolumesRepo(),
+      driveSyncMetaRepo: createMockDriveSyncMetaRepo(),
+      driveSyncEngine: createMockDriveSyncEngine(),
+    };
+  }
+  const defaults = defaultsRef.current;
+
+  return (
+    <ServiceProvider
+      readingProgressRepo={
+        props.readingProgressRepo ?? defaults.readingProgressRepo
+      }
+      googleAuthBridge={props.googleAuthBridge ?? defaults.googleAuthBridge}
+      driveSyncRootsRepo={
+        props.driveSyncRootsRepo ?? defaults.driveSyncRootsRepo
+      }
+      seriesRepo={props.seriesRepo ?? defaults.seriesRepo}
+      volumesRepo={props.volumesRepo ?? defaults.volumesRepo}
+      driveSyncMetaRepo={props.driveSyncMetaRepo ?? defaults.driveSyncMetaRepo}
+      driveSyncEngine={props.driveSyncEngine ?? defaults.driveSyncEngine}
+      {...props}
+    >
+      {children}
+    </ServiceProvider>
+  );
+}
+
 describe("BookshelfPage", () => {
   const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
     navigator,
@@ -404,11 +450,11 @@ describe("BookshelfPage", () => {
     props: BookshelfPageProps = {},
   ) {
     return renderAndFlush(
-      <ServiceProvider readingProgressRepo={readingProgressRepo}>
+      <TestServiceProvider readingProgressRepo={readingProgressRepo}>
         <RouterProvider initialPath="/">
           <BookshelfPage {...props} />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
   }
 
@@ -833,11 +879,11 @@ describe("BookshelfPage", () => {
       listRecentLocal: vi.fn(() => staleResolve.promise),
     });
     const { unmount: unmountStale1 } = render(
-      <ServiceProvider readingProgressRepo={repoStale1}>
+      <TestServiceProvider readingProgressRepo={repoStale1}>
         <RouterProvider initialPath="/">
           <BookshelfPage />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     unmountStale1();
     await act(async () => {
@@ -851,11 +897,11 @@ describe("BookshelfPage", () => {
       listRecentLocal: vi.fn(() => staleReject.promise),
     });
     const { unmount: unmountStale2 } = render(
-      <ServiceProvider readingProgressRepo={repoStale2}>
+      <TestServiceProvider readingProgressRepo={repoStale2}>
         <RouterProvider initialPath="/">
           <BookshelfPage />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     unmountStale2();
     await act(async () => {
@@ -1015,11 +1061,13 @@ describe("BookshelfPage", () => {
     });
 
     const { unmount: unmount1 } = await renderAndFlush(
-      <ServiceProvider readingProgressRepo={createMockReadingProgressRepo()}>
+      <TestServiceProvider
+        readingProgressRepo={createMockReadingProgressRepo()}
+      >
         <RouterProvider initialPath="/">
           <BookshelfPage initialDriveSetupState={{ kind: "unauthenticated" }} />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
 
     // 1. ヘッダー設定ボタン -> scrollY 保存 + /settings 遷移
@@ -1037,11 +1085,13 @@ describe("BookshelfPage", () => {
       value: 240,
     });
     const { unmount: unmount2 } = await renderAndFlush(
-      <ServiceProvider readingProgressRepo={createMockReadingProgressRepo()}>
+      <TestServiceProvider
+        readingProgressRepo={createMockReadingProgressRepo()}
+      >
         <RouterProvider initialPath="/">
           <BookshelfPage initialDriveSetupState={{ kind: "unauthenticated" }} />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     act(() => {
       getLatestDriveBannerProps().onOpenSettings();
@@ -1064,7 +1114,7 @@ describe("BookshelfPage", () => {
 
     const { unmount: unmount3 } = render(
       <StrictMode>
-        <ServiceProvider
+        <TestServiceProvider
           readingProgressRepo={delayedProgressRepo}
           googleAuthBridge={authBridge}
           driveSyncRootsRepo={createMockDriveSyncRootsRepo()}
@@ -1072,7 +1122,7 @@ describe("BookshelfPage", () => {
           <RouterProvider initialPath="/">
             <BookshelfPage />
           </RouterProvider>
-        </ServiceProvider>
+        </TestServiceProvider>
       </StrictMode>,
     );
 
@@ -1085,8 +1135,10 @@ describe("BookshelfPage", () => {
       await flushMicrotasks();
     });
 
-    expect(scrollToSpy).toHaveBeenLastCalledWith(0, 240);
-    expect(useBookshelfUiStateStore.getState().scrollY).toBe(0);
+    await vi.waitFor(() => {
+      expect(scrollToSpy).toHaveBeenLastCalledWith(0, 240);
+      expect(useBookshelfUiStateStore.getState().scrollY).toBe(0);
+    });
     unmount3();
 
     // 4. ローカルファイル選択時 (TR-02a) に残留 scrollY をクリアすること
@@ -1124,7 +1176,7 @@ describe("BookshelfPage", () => {
       countEnabled: vi.fn(async () => 2),
     });
     const { unmount: unmountCached } = await renderAndFlush(
-      <ServiceProvider
+      <TestServiceProvider
         readingProgressRepo={progressRepo}
         googleAuthBridge={cachedAuth}
         driveSyncRootsRepo={rootsReadyRepo}
@@ -1132,7 +1184,7 @@ describe("BookshelfPage", () => {
         <RouterProvider initialPath="/">
           <BookshelfPage initialRecentHistory={[]} />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     expect(cachedAuth.getSession).not.toHaveBeenCalled();
     expect(getLatestDriveBannerProps().state).toEqual({ kind: "ready" });
@@ -1171,7 +1223,7 @@ describe("BookshelfPage", () => {
       getSession: vi.fn(async () => sessionA),
     });
     const { unmount: unmountCountErr } = await renderAndFlush(
-      <ServiceProvider
+      <TestServiceProvider
         readingProgressRepo={progressRepo}
         googleAuthBridge={asyncAuth}
         driveSyncRootsRepo={failingRootsRepo}
@@ -1179,7 +1231,7 @@ describe("BookshelfPage", () => {
         <RouterProvider initialPath="/">
           <BookshelfPage initialRecentHistory={[]} />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     expect(getLatestDriveBannerProps().state).toEqual({
       kind: "no-roots",
@@ -1205,7 +1257,7 @@ describe("BookshelfPage", () => {
       }),
     });
     await renderAndFlush(
-      <ServiceProvider
+      <TestServiceProvider
         readingProgressRepo={progressRepo}
         googleAuthBridge={failingAuth}
         driveSyncRootsRepo={createMockDriveSyncRootsRepo()}
@@ -1213,7 +1265,7 @@ describe("BookshelfPage", () => {
         <RouterProvider initialPath="/">
           <BookshelfPage initialRecentHistory={[]} />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     expect(getLatestDriveBannerProps().state).toEqual({
       kind: "unauthenticated",
@@ -1243,7 +1295,7 @@ describe("BookshelfPage", () => {
       getSession: vi.fn(() => getSessionResolve.promise),
     });
     const { unmount: unmountRace1 } = render(
-      <ServiceProvider
+      <TestServiceProvider
         readingProgressRepo={progressRepo}
         googleAuthBridge={raceAuth1}
         driveSyncRootsRepo={createMockDriveSyncRootsRepo()}
@@ -1251,7 +1303,7 @@ describe("BookshelfPage", () => {
         <RouterProvider initialPath="/">
           <BookshelfPage initialRecentHistory={[]} />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     act(() => {
       raceAuth1.emitSession(null);
@@ -1273,7 +1325,7 @@ describe("BookshelfPage", () => {
       getSession: vi.fn(() => getSessionReject.promise),
     });
     const { unmount: unmountRace2 } = render(
-      <ServiceProvider
+      <TestServiceProvider
         readingProgressRepo={progressRepo}
         googleAuthBridge={raceAuth2}
         driveSyncRootsRepo={createMockDriveSyncRootsRepo()}
@@ -1281,7 +1333,7 @@ describe("BookshelfPage", () => {
         <RouterProvider initialPath="/">
           <BookshelfPage initialRecentHistory={[]} />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     unmountRace2();
     await act(async () => {
@@ -1299,7 +1351,7 @@ describe("BookshelfPage", () => {
       countEnabled: vi.fn(() => countResolve.promise),
     });
     const { unmount: unmountCount1 } = render(
-      <ServiceProvider
+      <TestServiceProvider
         readingProgressRepo={progressRepo}
         googleAuthBridge={countAuth1}
         driveSyncRootsRepo={countRoots1}
@@ -1307,7 +1359,7 @@ describe("BookshelfPage", () => {
         <RouterProvider initialPath="/">
           <BookshelfPage initialRecentHistory={[]} />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     act(() => {
       countAuth1.emitSession(null);
@@ -1329,7 +1381,7 @@ describe("BookshelfPage", () => {
       countEnabled: vi.fn(() => countReject.promise),
     });
     const { unmount: unmountCount2 } = render(
-      <ServiceProvider
+      <TestServiceProvider
         readingProgressRepo={progressRepo}
         googleAuthBridge={countAuth2}
         driveSyncRootsRepo={countRoots2}
@@ -1337,7 +1389,7 @@ describe("BookshelfPage", () => {
         <RouterProvider initialPath="/">
           <BookshelfPage initialRecentHistory={[]} />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     unmountCount2();
     await act(async () => {
@@ -1359,7 +1411,7 @@ describe("BookshelfPage", () => {
     });
 
     const { unmount } = render(
-      <ServiceProvider
+      <TestServiceProvider
         readingProgressRepo={createMockReadingProgressRepo()}
         googleAuthBridge={createMockGoogleAuthBridge()}
         driveSyncRootsRepo={rootsRepo}
@@ -1370,7 +1422,7 @@ describe("BookshelfPage", () => {
         <RouterProvider initialPath="/">
           <BookshelfPage initialRecentHistory={[]} />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
 
     expect(screen.getByTestId("bookshelf-loading")).toBeInTheDocument();
@@ -1467,7 +1519,7 @@ describe("BookshelfPage", () => {
     });
 
     const { unmount } = await renderAndFlush(
-      <ServiceProvider
+      <TestServiceProvider
         readingProgressRepo={progressRepo}
         googleAuthBridge={authBridge}
         driveSyncRootsRepo={rootsRepo}
@@ -1479,7 +1531,7 @@ describe("BookshelfPage", () => {
         <RouterProvider initialPath="/">
           <BookshelfPage initialRecentHistory={[]} />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
 
     expect(syncMetaRepo.getSyncState).toHaveBeenCalledTimes(1);
@@ -1549,14 +1601,14 @@ describe("BookshelfPage", () => {
     });
 
     const { unmount: unmountB } = await renderAndFlush(
-      <ServiceProvider driveSyncEngine={syncEngine}>
+      <TestServiceProvider driveSyncEngine={syncEngine}>
         <RouterProvider initialPath="/">
           <BookshelfPage
             initialDriveSetupState={{ kind: "ready" }}
             initialRecentHistory={[]}
           />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
 
     expect(screen.getByTestId("bookshelf-sync-error")).toHaveTextContent(
@@ -1588,14 +1640,14 @@ describe("BookshelfPage", () => {
       errorMessage: "Google アカウントの認証が切れました",
     });
     const { unmount: unmountC } = await renderAndFlush(
-      <ServiceProvider>
+      <TestServiceProvider>
         <RouterProvider initialPath="/">
           <BookshelfPage
             initialDriveSetupState={{ kind: "unauthenticated" }}
             initialRecentHistory={[]}
           />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     expect(screen.getByTestId("bookshelf-sync-error")).toHaveTextContent(
       "Google アカウントの認証が切れました",
@@ -1628,14 +1680,14 @@ describe("BookshelfPage", () => {
       }),
     });
     const { unmount: unmountFail } = await renderAndFlush(
-      <ServiceProvider driveSyncRootsRepo={failRootsRepo}>
+      <TestServiceProvider driveSyncRootsRepo={failRootsRepo}>
         <RouterProvider initialPath="/">
           <BookshelfPage
             initialDriveSetupState={{ kind: "unauthenticated" }}
             initialRecentHistory={[]}
           />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     expect(screen.queryByTestId("bookshelf-loading")).toBeNull();
     expect(diagnosticLogger.getEntries()).toEqual(
@@ -1656,14 +1708,14 @@ describe("BookshelfPage", () => {
       listActive: vi.fn(() => lateResolve.promise),
     });
     const { unmount: unmountRace1 } = render(
-      <ServiceProvider driveSyncRootsRepo={raceRoots1}>
+      <TestServiceProvider driveSyncRootsRepo={raceRoots1}>
         <RouterProvider initialPath="/">
           <BookshelfPage
             initialDriveSetupState={{ kind: "unauthenticated" }}
             initialRecentHistory={[]}
           />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     unmountRace1();
     await act(async () => {
@@ -1675,14 +1727,14 @@ describe("BookshelfPage", () => {
       listActive: vi.fn(() => lateReject.promise),
     });
     const { unmount: unmountRace2 } = render(
-      <ServiceProvider driveSyncRootsRepo={raceRoots2}>
+      <TestServiceProvider driveSyncRootsRepo={raceRoots2}>
         <RouterProvider initialPath="/">
           <BookshelfPage
             initialDriveSetupState={{ kind: "unauthenticated" }}
             initialRecentHistory={[]}
           />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     unmountRace2();
     await act(async () => {
@@ -1700,7 +1752,7 @@ describe("BookshelfPage", () => {
 
     const progressRepo = createMockReadingProgressRepo();
     const { unmount } = await renderAndFlush(
-      <ServiceProvider readingProgressRepo={progressRepo}>
+      <TestServiceProvider readingProgressRepo={progressRepo}>
         <RouterProvider initialPath="/">
           <BookshelfPage
             initialSnapshot={{
@@ -1709,7 +1761,7 @@ describe("BookshelfPage", () => {
             }}
           />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
 
     expect(progressRepo.listRecentLocal).not.toHaveBeenCalled();
@@ -1723,7 +1775,7 @@ describe("BookshelfPage", () => {
       targetKey: "local:fallback.cbz:2048",
     });
     await renderAndFlush(
-      <ServiceProvider readingProgressRepo={progressRepo}>
+      <TestServiceProvider readingProgressRepo={progressRepo}>
         <RouterProvider initialPath="/">
           <BookshelfPage
             initialRecentHistory={[fallbackItem]}
@@ -1733,7 +1785,7 @@ describe("BookshelfPage", () => {
             }}
           />
         </RouterProvider>
-      </ServiceProvider>,
+      </TestServiceProvider>,
     );
     expect(progressRepo.listRecentLocal).not.toHaveBeenCalled();
     expect(getLatestRecentHistoryProps().items).toEqual([fallbackItem]);
