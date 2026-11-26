@@ -17,6 +17,8 @@ import type {
   DriveSyncClient,
   DriveSyncEngine,
 } from "../providers/gdrive/types";
+import { resetBookshelfUiState } from "../features/bookshelf/bookshelfUiStateStore";
+import { resetDriveSyncState } from "../shared/sync/driveSyncStateStore";
 import { db, resetTestDb } from "../storage/db";
 import {
   DexieDriveSyncMetaRepository,
@@ -176,6 +178,8 @@ function buildGlobalServicesState(
     appBridge: params.appBridge,
     resetTestDb: async () => {
       writePersistedMockAuthSession(null);
+      resetBookshelfUiState();
+      resetDriveSyncState();
       params.mockGoogleAuthAdapter?.reset();
       params.mockDriveFolderClient?.reset();
       params.mockDriveSyncClient?.reset();

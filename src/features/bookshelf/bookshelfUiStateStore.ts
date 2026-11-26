@@ -32,15 +32,30 @@ export const useBookshelfUiStateStore = create<BookshelfUiState>((set) => ({
     set({ scrollY: 0 });
   },
   setSortOrder: (sortOrder: BookshelfSortOrder) => {
-    void sortOrder;
+    set({ sortOrder });
   },
   saveSeriesDetailScroll: (seriesId: string, scrollY: number) => {
-    void seriesId;
-    void scrollY;
+    const trimmedSeriesId = seriesId.trim();
+    if (trimmedSeriesId.length === 0) {
+      set({ seriesDetailScroll: null });
+      return;
+    }
+    set({
+      seriesDetailScroll: {
+        seriesId: trimmedSeriesId,
+        scrollY: normalizeScrollY(scrollY),
+      },
+    });
   },
-  clearSeriesDetailScroll: () => {},
+  clearSeriesDetailScroll: () => {
+    set({ seriesDetailScroll: null });
+  },
 }));
 
 export function resetBookshelfUiState(): void {
-  useBookshelfUiStateStore.setState({ scrollY: 0 });
+  useBookshelfUiStateStore.setState({
+    scrollY: 0,
+    sortOrder: "lastReadDesc",
+    seriesDetailScroll: null,
+  });
 }
