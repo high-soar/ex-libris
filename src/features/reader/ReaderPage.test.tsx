@@ -151,6 +151,7 @@ function createMockReadingProgressRepo(
   return {
     get: vi.fn(async () => null),
     put: vi.fn(async () => {}),
+    listByVolumeIds: vi.fn(async () => new Map()),
     listRecentLocal: vi.fn(async () => []),
     delete: vi.fn(async () => {}),
     clearLocal: vi.fn(async () => {}),

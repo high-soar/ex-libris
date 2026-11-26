@@ -1,12 +1,28 @@
 import { createContext, useContext } from "react";
 import type { AppRoute } from "./routeMatcher";
 
+export type ReaderOrigin = "bookshelf" | "series-detail";
+
+export interface ReaderOriginState {
+  readonly readerOrigin: ReaderOrigin | null;
+  readonly seriesId: string | null;
+  readonly canGoBackFrom: string | null;
+}
+
+export interface NavigateOptions {
+  readonly replace?: boolean;
+  readonly readerOrigin?: ReaderOrigin;
+  readonly seriesId?: string;
+}
+
 export interface RouterContextValue {
   readonly currentPath: string;
   readonly route: AppRoute;
-  readonly navigate: (to: string, options?: { replace?: boolean }) => void;
+  readonly readerOriginState: ReaderOriginState;
+  readonly navigate: (to: string, options?: NavigateOptions) => void;
   readonly replace: (to: string) => void;
   readonly back: () => void;
+  readonly exitReader: (fallbackSeriesId?: string | null) => void;
   readonly isBackBlocked: boolean;
   readonly setBackBlocked: (blocked: boolean) => void;
 }
