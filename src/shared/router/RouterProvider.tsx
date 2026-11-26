@@ -11,7 +11,12 @@ import {
   matchRoute,
   resolveInitialPath,
 } from "./routeMatcher";
-import { RouterContext, type RouterContextValue } from "./routerContext";
+import {
+  type NavigateOptions,
+  type ReaderOriginState,
+  RouterContext,
+  type RouterContextValue,
+} from "./routerContext";
 
 export interface RouterProviderProps {
   readonly children?: ReactNode;
@@ -21,6 +26,12 @@ export interface RouterProviderProps {
 interface ExLibrisHistoryState {
   readonly exLibrisCanGoBackFrom?: unknown;
 }
+
+const EMPTY_READER_ORIGIN_STATE: ReaderOriginState = {
+  readerOrigin: null,
+  seriesId: null,
+  canGoBackFrom: null,
+};
 
 function readWindowPath(): string {
   return `${window.location.pathname}${window.location.search}`;
@@ -83,7 +94,7 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
   }, [commitPathState]);
 
   const navigate = useCallback(
-    (to: string, options?: { replace?: boolean }) => {
+    (to: string, options?: NavigateOptions) => {
       const target = resolveNavigationTarget(to);
       if (currentPathRef.current === target) {
         return;
@@ -127,13 +138,19 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
     }
   }, [route.name, navigate]);
 
+  const exitReader = useCallback((fallbackSeriesId?: string | null) => {
+    void fallbackSeriesId;
+  }, []);
+
   const contextValue = useMemo<RouterContextValue>(
     () => ({
       currentPath,
       route,
+      readerOriginState: EMPTY_READER_ORIGIN_STATE,
       navigate,
       replace,
       back,
+      exitReader,
       isBackBlocked,
       setBackBlocked,
     }),
@@ -143,6 +160,7 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
       navigate,
       replace,
       back,
+      exitReader,
       isBackBlocked,
       setBackBlocked,
     ],

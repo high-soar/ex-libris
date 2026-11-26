@@ -14,9 +14,11 @@ function RouterConsumerProbe() {
   const {
     currentPath,
     route,
+    readerOriginState,
     navigate,
     replace,
     back,
+    exitReader,
     isBackBlocked,
     setBackBlocked,
   } = useRouter();
@@ -26,6 +28,15 @@ function RouterConsumerProbe() {
       <span data-testid="probe-current-path">{currentPath}</span>
       <span data-testid="probe-route-name">{route.name}</span>
       <span data-testid="probe-route-path">{route.path}</span>
+      <span data-testid="probe-reader-origin">
+        {readerOriginState.readerOrigin ?? "null"}
+      </span>
+      <span data-testid="probe-reader-origin-series">
+        {readerOriginState.seriesId ?? "null"}
+      </span>
+      <span data-testid="probe-can-go-back-from">
+        {readerOriginState.canGoBackFrom ?? "null"}
+      </span>
       <span data-testid="probe-back-blocked">{String(isBackBlocked)}</span>
       <button
         type="button"
@@ -40,6 +51,50 @@ function RouterConsumerProbe() {
         onClick={() => navigate("/settings")}
       >
         to settings
+      </button>
+      <button
+        type="button"
+        data-testid="btn-nav-series"
+        onClick={() => navigate("/series/s-1")}
+      >
+        to series
+      </button>
+      <button
+        type="button"
+        data-testid="btn-nav-vol-from-bookshelf"
+        onClick={() =>
+          navigate("/read/volume/v-1", {
+            readerOrigin: "bookshelf",
+            seriesId: "s-1",
+          })
+        }
+      >
+        to vol from bookshelf
+      </button>
+      <button
+        type="button"
+        data-testid="btn-nav-vol-from-series"
+        onClick={() =>
+          navigate("/read/volume/v-1", {
+            readerOrigin: "series-detail",
+            seriesId: "s-1",
+          })
+        }
+      >
+        to vol from series
+      </button>
+      <button
+        type="button"
+        data-testid="btn-nav-replace-vol-origin"
+        onClick={() =>
+          navigate("/read/volume/v-2", {
+            replace: true,
+            readerOrigin: "series-detail",
+            seriesId: "s-2",
+          })
+        }
+      >
+        replace vol with origin
       </button>
       <button
         type="button"
@@ -64,6 +119,20 @@ function RouterConsumerProbe() {
       </button>
       <button type="button" data-testid="btn-back" onClick={back}>
         back
+      </button>
+      <button
+        type="button"
+        data-testid="btn-exit-reader"
+        onClick={() => exitReader()}
+      >
+        exit reader
+      </button>
+      <button
+        type="button"
+        data-testid="btn-exit-reader-fallback"
+        onClick={() => exitReader("s-fallback")}
+      >
+        exit reader with fallback
       </button>
       <button
         type="button"
@@ -489,5 +558,313 @@ describe("RouterProvider", () => {
         expect(screen.getByTestId("probe-current-path")).toHaveTextContent("/");
       });
     });
+  });
+
+  it("back()はseries-detail時に'/'起点ならwindow.history.back()、直接到達時はreplace('/')へフォールバックすること (TR-05)", async () => {
+    const user = userEvent.setup();
+    const historyBackSpy = vi.spyOn(window.history, "back");
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
+
+    const { unmount } = render(
+      <RouterProvider initialPath="/">
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+
+    await user.click(screen.getByTestId("btn-nav-series"));
+    expect(screen.getByTestId("probe-route-name")).toHaveTextContent(
+      "series-detail",
+    );
+    expect(screen.getByTestId("probe-current-path")).toHaveTextContent(
+      "/series/s-1",
+    );
+    expect(screen.getByTestId("probe-can-go-back-from")).toHaveTextContent("/");
+    replaceStateSpy.mockClear();
+
+    await user.click(screen.getByTestId("btn-back"));
+    expect(historyBackSpy).toHaveBeenCalledTimes(1);
+    expect(replaceStateSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(screen.getByTestId("probe-current-path")).toHaveTextContent("/");
+      });
+    });
+    unmount();
+
+    // 直接 /series/s-1 へ到達時は replace("/") へフォールバック
+    window.history.replaceState(null, "", "/series/s-1");
+    historyBackSpy.mockClear();
+    replaceStateSpy.mockClear();
+
+    render(
+      <RouterProvider>
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+
+    expect(screen.getByTestId("probe-route-name")).toHaveTextContent(
+      "series-detail",
+    );
+    await user.click(screen.getByTestId("btn-back"));
+    expect(historyBackSpy).not.toHaveBeenCalled();
+    expect(replaceStateSpy).toHaveBeenCalledWith(null, "", "/");
+    expect(screen.getByTestId("probe-current-path")).toHaveTextContent("/");
+  });
+
+  it("navigateのreaderOrigin/seriesIdオプションとpopstateでreaderOriginStateが同期され不正値はnullへ正規化されること (TR-02b, TR-04)", async () => {
+    const user = userEvent.setup();
+    const pushStateSpy = vi.spyOn(window.history, "pushState");
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
+
+    window.history.replaceState(
+      {
+        exLibrisCanGoBackFrom: "",
+        readerOrigin: "invalid",
+        seriesId: "   ",
+      },
+      "",
+      "/",
+    );
+
+    render(
+      <RouterProvider initialPath="/">
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+
+    expect(screen.getByTestId("probe-reader-origin")).toHaveTextContent("null");
+    expect(screen.getByTestId("probe-reader-origin-series")).toHaveTextContent(
+      "null",
+    );
+    expect(screen.getByTestId("probe-can-go-back-from")).toHaveTextContent(
+      "null",
+    );
+
+    // bookshelf -> /read/volume/v-1 (TR-02b)
+    await user.click(screen.getByTestId("btn-nav-vol-from-bookshelf"));
+    expect(pushStateSpy).toHaveBeenCalledWith(
+      {
+        exLibrisCanGoBackFrom: "/",
+        readerOrigin: "bookshelf",
+        seriesId: "s-1",
+      },
+      "",
+      "/read/volume/v-1",
+    );
+    expect(screen.getByTestId("probe-reader-origin")).toHaveTextContent(
+      "bookshelf",
+    );
+    expect(screen.getByTestId("probe-reader-origin-series")).toHaveTextContent(
+      "s-1",
+    );
+    expect(screen.getByTestId("probe-can-go-back-from")).toHaveTextContent("/");
+
+    // replace: true + readerOrigin/seriesId
+    await user.click(screen.getByTestId("btn-nav-replace-vol-origin"));
+    expect(replaceStateSpy).toHaveBeenCalledWith(
+      {
+        readerOrigin: "series-detail",
+        seriesId: "s-2",
+      },
+      "",
+      "/read/volume/v-2",
+    );
+    expect(screen.getByTestId("probe-reader-origin")).toHaveTextContent(
+      "series-detail",
+    );
+    expect(screen.getByTestId("probe-reader-origin-series")).toHaveTextContent(
+      "s-2",
+    );
+    expect(screen.getByTestId("probe-can-go-back-from")).toHaveTextContent(
+      "null",
+    );
+
+    // popstate 時は window.history.state から readerOriginState を再同期する
+    act(() => {
+      window.history.pushState(
+        {
+          exLibrisCanGoBackFrom: "/series/s-3",
+          readerOrigin: "series-detail",
+          seriesId: "s-3",
+        },
+        "",
+        "/read/volume/v-3",
+      );
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(screen.getByTestId("probe-reader-origin")).toHaveTextContent(
+      "series-detail",
+    );
+    expect(screen.getByTestId("probe-reader-origin-series")).toHaveTextContent(
+      "s-3",
+    );
+    expect(screen.getByTestId("probe-can-go-back-from")).toHaveTextContent(
+      "/series/s-3",
+    );
+  });
+
+  it("exitReader()がreader-localおよびreader-volumeの各起点・直接URLフォールバック・ブロック状態に応じて正しく遷移すること (TR-07, TR-08)", async () => {
+    const user = userEvent.setup();
+    const historyBackSpy = vi.spyOn(window.history, "back");
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
+
+    // 1. bookshelf での exitReader はノーオペ
+    const first = render(
+      <RouterProvider initialPath="/">
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+    await user.click(screen.getByTestId("btn-exit-reader"));
+    expect(historyBackSpy).not.toHaveBeenCalled();
+    expect(replaceStateSpy).not.toHaveBeenCalled();
+
+    // 2. TR-02b: bookshelf -> /read/volume/v-1 の exitReader は window.history.back() (TR-08)
+    await user.click(screen.getByTestId("btn-nav-vol-from-bookshelf"));
+    expect(screen.getByTestId("probe-route-name")).toHaveTextContent(
+      "reader-volume",
+    );
+    await user.click(screen.getByTestId("btn-block-back"));
+    await user.click(screen.getByTestId("btn-exit-reader"));
+    expect(historyBackSpy).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId("btn-unblock-back"));
+
+    await user.click(screen.getByTestId("btn-exit-reader"));
+    expect(historyBackSpy).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(screen.getByTestId("probe-current-path")).toHaveTextContent("/");
+      });
+    });
+
+    // 3. TR-04: / -> /series/s-1 -> /read/volume/v-1 の exitReader は window.history.back() (TR-07)
+    await user.click(screen.getByTestId("btn-nav-series"));
+    await user.click(screen.getByTestId("btn-nav-vol-from-series"));
+    expect(screen.getByTestId("probe-route-name")).toHaveTextContent(
+      "reader-volume",
+    );
+    historyBackSpy.mockClear();
+    await user.click(screen.getByTestId("btn-exit-reader"));
+    expect(historyBackSpy).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(screen.getByTestId("probe-current-path")).toHaveTextContent(
+          "/series/s-1",
+        );
+      });
+    });
+    first.unmount();
+
+    // 4. reader-local からの exitReader は back() と同様に "/" へフォールバック (TR-08)
+    window.history.replaceState(null, "", "/read/local");
+    replaceStateSpy.mockClear();
+    const localRun = render(
+      <RouterProvider>
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+    await user.click(screen.getByTestId("btn-exit-reader"));
+    expect(replaceStateSpy).toHaveBeenCalledWith(null, "", "/");
+    expect(screen.getByTestId("probe-current-path")).toHaveTextContent("/");
+    localRun.unmount();
+
+    // 5. readerOrigin === "bookshelf" だが canGoBackFrom が "/" 以外は replace("/")
+    window.history.replaceState(
+      { readerOrigin: "bookshelf", exLibrisCanGoBackFrom: "/settings" },
+      "",
+      "/read/volume/v-1",
+    );
+    historyBackSpy.mockClear();
+    replaceStateSpy.mockClear();
+    const bookshelfFallbackRun = render(
+      <RouterProvider>
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+    await user.click(screen.getByTestId("btn-exit-reader"));
+    expect(historyBackSpy).not.toHaveBeenCalled();
+    expect(replaceStateSpy).toHaveBeenCalledWith(null, "", "/");
+    bookshelfFallbackRun.unmount();
+
+    // 6. readerOrigin === "series-detail" だが履歴不在: seriesId 優先 -> fallbackSeriesId -> "/"
+    window.history.replaceState(
+      { readerOrigin: "series-detail", seriesId: "s-from-state" },
+      "",
+      "/read/volume/v-1",
+    );
+    replaceStateSpy.mockClear();
+    const sdStateRun = render(
+      <RouterProvider>
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+    await user.click(screen.getByTestId("btn-exit-reader"));
+    expect(replaceStateSpy).toHaveBeenCalledWith(
+      null,
+      "",
+      "/series/s-from-state",
+    );
+    sdStateRun.unmount();
+
+    window.history.replaceState(
+      { readerOrigin: "series-detail" },
+      "",
+      "/read/volume/v-1",
+    );
+    replaceStateSpy.mockClear();
+    const sdFallbackRun = render(
+      <RouterProvider>
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+    await user.click(screen.getByTestId("btn-exit-reader-fallback"));
+    expect(replaceStateSpy).toHaveBeenCalledWith(
+      null,
+      "",
+      "/series/s-fallback",
+    );
+    sdFallbackRun.unmount();
+
+    window.history.replaceState(
+      { readerOrigin: "series-detail" },
+      "",
+      "/read/volume/v-1",
+    );
+    replaceStateSpy.mockClear();
+    const sdHomeFallbackRun = render(
+      <RouterProvider>
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+    await user.click(screen.getByTestId("btn-exit-reader"));
+    expect(replaceStateSpy).toHaveBeenCalledWith(null, "", "/");
+    sdHomeFallbackRun.unmount();
+
+    // 7. 直接 URL アクセス (readerOrigin === null): fallbackSeriesId あり -> /series/:id, なし -> "/"
+    window.history.replaceState(null, "", "/read/volume/v-direct");
+    replaceStateSpy.mockClear();
+    const directWithFallbackRun = render(
+      <RouterProvider>
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+    await user.click(screen.getByTestId("btn-exit-reader-fallback"));
+    expect(replaceStateSpy).toHaveBeenCalledWith(
+      null,
+      "",
+      "/series/s-fallback",
+    );
+    directWithFallbackRun.unmount();
+
+    window.history.replaceState(null, "", "/read/volume/v-direct");
+    replaceStateSpy.mockClear();
+    const directNoFallbackRun = render(
+      <RouterProvider>
+        <RouterConsumerProbe />
+      </RouterProvider>,
+    );
+    await user.click(screen.getByTestId("btn-exit-reader"));
+    expect(replaceStateSpy).toHaveBeenCalledWith(null, "", "/");
+    directNoFallbackRun.unmount();
   });
 });

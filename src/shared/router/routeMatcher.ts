@@ -1,6 +1,16 @@
 export type AppRoute =
   | { readonly name: "bookshelf"; readonly path: "/" }
+  | {
+      readonly name: "series-detail";
+      readonly path: string;
+      readonly seriesId: string;
+    }
   | { readonly name: "reader-local"; readonly path: "/read/local" }
+  | {
+      readonly name: "reader-volume";
+      readonly path: string;
+      readonly volumeId: string;
+    }
   | { readonly name: "settings"; readonly path: "/settings" };
 
 export const BOOKSHELF_ROUTE: AppRoute = { name: "bookshelf", path: "/" };
@@ -12,6 +22,16 @@ export const SETTINGS_ROUTE: AppRoute = {
   name: "settings",
   path: "/settings",
 };
+
+export function buildSeriesDetailPath(seriesId: string): string {
+  void seriesId;
+  return BOOKSHELF_ROUTE.path;
+}
+
+export function buildReaderVolumePath(volumeId: string): string {
+  void volumeId;
+  return BOOKSHELF_ROUTE.path;
+}
 
 export function normalizePath(path: string): string {
   const trimmed = path.trim();

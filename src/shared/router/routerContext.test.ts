@@ -18,9 +18,15 @@ describe("routerContext", () => {
     const value: RouterContextValue = {
       currentPath: "/read/local",
       route: { name: "reader-local", path: "/read/local" },
+      readerOriginState: {
+        readerOrigin: null,
+        seriesId: null,
+        canGoBackFrom: null,
+      },
       navigate: vi.fn(),
       replace: vi.fn(),
       back: vi.fn(),
+      exitReader: vi.fn(),
       isBackBlocked: false,
       setBackBlocked: vi.fn(),
     };
