@@ -63,6 +63,7 @@ export function GoogleAccountSection({
   status,
   email,
   errorMessage,
+  isSyncing = false,
   onSignIn,
   onSignOut,
 }: GoogleAccountSectionProps): ReactNode {
@@ -126,7 +127,7 @@ export function GoogleAccountSection({
             <button
               type="button"
               data-testid="google-signout-button"
-              disabled={isSigningOut}
+              disabled={isSigningOut || isSyncing}
               onClick={onSignOut}
               className="inline-flex shrink-0 items-center gap-2 touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
             >
