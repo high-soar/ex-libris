@@ -16,18 +16,39 @@ const meta: Meta<typeof BookshelfHeader> = {
   ],
   args: {
     copyStatus: "idle",
+    canSync: true,
+    isSyncing: false,
     onCopyDiagnostics: () => {},
     onOpenLocalZip: () => {},
     onOpenSettings: () => {},
+    onSyncDrive: () => {},
   },
 };
 
 export default meta;
 type Story = StoryObj<typeof BookshelfHeader>;
 
-/** 本棚ヘッダーの初期表示状態 */
+/** 本棚ヘッダーの初期表示状態（同期可能） */
 export const Default: Story = {
   name: "初期状態",
+};
+
+/** Google Drive 未連携またはルート未設定時の同期ボタン非活性状態 */
+export const SyncDisabled: Story = {
+  name: "同期非活性状態（未連携・ルート未設定）",
+  args: {
+    canSync: false,
+    isSyncing: false,
+  },
+};
+
+/** Google Drive 手動同期実行中のスピナー表示状態 */
+export const Syncing: Story = {
+  name: "Google Drive 同期実行中",
+  args: {
+    canSync: true,
+    isSyncing: true,
+  },
 };
 
 /** 診断ログのクリップボードコピー完了時のステータス表示 */

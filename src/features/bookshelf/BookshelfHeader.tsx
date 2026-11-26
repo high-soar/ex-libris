@@ -8,6 +8,9 @@ export interface BookshelfHeaderProps {
   readonly onCopyDiagnostics: () => void;
   readonly onOpenLocalZip: () => void;
   readonly onOpenSettings?: () => void;
+  readonly canSync?: boolean;
+  readonly isSyncing?: boolean;
+  readonly onSyncDrive?: () => void;
 }
 
 export function BookshelfHeader({
