@@ -42,6 +42,7 @@ export function ReaderErrorView({
   mode,
   message,
   errorCode,
+  backLabel = "ホームへ戻る",
   onBackToHome,
   slotPosition = "center",
   pageNumber,
@@ -68,9 +69,9 @@ export function ReaderErrorView({
             type="button"
             data-testid="reader-error-back-button"
             onClick={onBackToHome}
-            className="mt-6 w-full rounded-xl bg-indigo-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-400 transition-colors"
+            className="mt-6 w-full touch-manipulation rounded-xl bg-indigo-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-400 transition-colors"
           >
-            ホームへ戻る
+            {backLabel}
           </button>
         </div>
       </div>

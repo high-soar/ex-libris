@@ -14,9 +14,11 @@ export interface ExtractedReaderError {
 }
 
 const READER_ERROR_MESSAGES: Record<ReaderFatalErrorCode, string> = {
-  VOLUME_NOT_FOUND: "",
-  VOLUME_UNAVAILABLE: "",
-  AUTH_REQUIRED: "",
+  VOLUME_NOT_FOUND: "指定された巻データが見つかりませんでした",
+  VOLUME_UNAVAILABLE:
+    "この巻はゴミ箱に移動されたか、同期対象外のフォルダにあります",
+  AUTH_REQUIRED:
+    "Google アカウントにログインしていないため開けませんでした。設定画面から連携してください",
   CORRUPT_ZIP: "ZIP ファイルが破損しているため開けませんでした",
   EMPTY_ARCHIVE:
     "表示できる画像ファイル（JPEG / PNG / WebP / AVIF）が見つかりませんでした",
