@@ -494,13 +494,68 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
     await expect(page.getByTestId("settings-sync-status-badge")).toHaveText(
       "同期完了",
     );
+
+    // addedDesc ソート順を 100% 決定論化するため各シリーズの addedAt を明示的に階段設定
+    await page.evaluate(async () => {
+      const addedAtByDriveFileId: Record<string, number> = {
+        "mock-file-vol1": 1_700_000_001_000,
+        "mock-file-vol2": 1_700_000_001_500,
+        "mock-file-omnibus": 1_700_000_002_000,
+        "mock-file-extra-1": 1_700_000_003_000,
+        "mock-file-extra-2": 1_700_000_004_000,
+        "mock-file-manga-1": 1_700_000_005_000,
+        "mock-file-parent-fallback": 1_700_000_006_000,
+      };
+      await new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("ExLibrisDB");
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const idb = request.result;
+          const tx = idb.transaction("volumes", "readwrite");
+          tx.oncomplete = () => {
+            idb.close();
+            resolve();
+          };
+          tx.onerror = () => {
+            idb.close();
+            reject(tx.error);
+          };
+          const store = tx.objectStore("volumes");
+          const getAllReq = store.getAll();
+          getAllReq.onerror = () => reject(getAllReq.error);
+          getAllReq.onsuccess = () => {
+            const rows = getAllReq.result as Record<string, unknown>[];
+            for (const row of rows) {
+              const driveFileId = String(row.driveFileId ?? "");
+              const nextAddedAt = addedAtByDriveFileId[driveFileId];
+              if (nextAddedAt !== undefined) {
+                store.put({ ...row, addedAt: nextAddedAt });
+              }
+            }
+          };
+        };
+      });
+    });
+
     await page.getByTestId("settings-back-button").click();
     await expect(page).toHaveURL(/\/$/);
     await expect(page.getByTestId("series-card")).toHaveCount(6);
 
-    // 4軸ソート切替検証
+    // 4軸ソート切替検証（全4軸で実カード並び順を検証）
     const sortSelect = page.getByTestId("bookshelf-sort-select");
     await expect(sortSelect).toHaveValue("lastReadDesc");
+
+    const expectedAddedDescOrder = [
+      "めぞん一刻",
+      "ジョジョの奇妙な冒険",
+      "SLAM DUNK",
+      "MONSTER",
+      "AKIRA",
+      "ONE PIECE",
+    ];
+    await expect
+      .poll(() => getSeriesCardTitles(page))
+      .toEqual(expectedAddedDescOrder);
 
     await sortSelect.selectOption("volumeCountDesc");
     await expect
@@ -528,8 +583,11 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
 
     await sortSelect.selectOption("addedDesc");
     await expect(sortSelect).toHaveValue("addedDesc");
+    await expect
+      .poll(() => getSeriesCardTitles(page))
+      .toEqual(expectedAddedDescOrder);
 
-    // ソート順（titleAsc）とスクロール位置が SCR-04 / SCR-02 往復（goBack / goForward）で復元されること
+    // ソート順（titleAsc）とスクロール位置が SCR-04 往復（goBack / goForward）で復元されること
     await sortSelect.selectOption("titleAsc");
     await expect
       .poll(() =>
@@ -553,6 +611,47 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
       .toBe(50);
     await page.goForward();
     await expect(page).toHaveURL(/\/settings$/);
+    await page.goBack();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(sortSelect).toHaveValue("titleAsc");
+
+    // ソート順（titleAsc）とスクロール位置が SCR-01 ↔ SCR-02 往復（TR-01 → TR-05 ＆ goForward / goBack）でも復元されること
+    const slamDunkCard = page
+      .getByTestId("series-card")
+      .filter({ hasText: "SLAM DUNK" });
+    await slamDunkCard
+      .getByTestId("series-card-open-detail")
+      .scrollIntoViewIfNeeded();
+    const scrollBeforeDetail = await page.evaluate(() =>
+      Math.round(window.scrollY),
+    );
+    expect(scrollBeforeDetail).toBeGreaterThan(100);
+
+    await slamDunkCard.getByTestId("series-card-open-detail").click();
+    await expect(page).toHaveURL(/\/series\/.+/);
+    await expect(page.getByTestId("series-detail-title")).toHaveText(
+      "SLAM DUNK",
+    );
+
+    await page.getByTestId("series-detail-back-button").click();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(sortSelect).toHaveValue("titleAsc");
+    await expect
+      .poll(() => page.evaluate(() => Math.round(window.scrollY)))
+      .toBe(scrollBeforeDetail);
+
+    // 再度 TR-01 で遷移し、ブラウザ goBack() でもスクロール位置復元 ＆ goForward() / goBack() 追従を検証
+    await slamDunkCard.getByTestId("series-card-open-detail").click();
+    await expect(page).toHaveURL(/\/series\/.+/);
+    await page.goBack();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(sortSelect).toHaveValue("titleAsc");
+    await expect
+      .poll(() => page.evaluate(() => Math.round(window.scrollY)))
+      .toBe(scrollBeforeDetail);
+
+    await page.goForward();
+    await expect(page).toHaveURL(/\/series\/.+/);
     await page.goBack();
     await expect(page).toHaveURL(/\/$/);
     await expect(sortSelect).toHaveValue("titleAsc");

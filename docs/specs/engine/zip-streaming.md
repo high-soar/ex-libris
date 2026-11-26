@@ -47,6 +47,7 @@ related_tests:
   - src/app/coordinatorClient.test.ts
   - src/storage/repositories/zipIndexCacheRepository.test.ts
   - test/it/local-reader.spec.ts
+  - test/it/bookshelf-drive-reader.spec.ts
 ---
 
 # ZIP ストリーミング・I/O・Worker エンジン仕様書
