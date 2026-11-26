@@ -185,8 +185,42 @@ export const ConnectedWithRoots: Story = {
         email: "reader@example.com",
       },
       syncRoots: SAMPLE_SYNC_ROOTS,
+      syncState: {
+        phase: "completed",
+        lastSyncedAt: Date.UTC(2026, 10, 25, 12, 30, 0),
+        lastResult: {
+          mode: "incremental",
+          scannedRoots: 1,
+          upsertedVolumes: 12,
+          trashedVolumes: 0,
+          invalidatedZipCaches: 0,
+          syncedAt: Date.UTC(2026, 10, 25, 12, 30, 0),
+        },
+      },
       diagnosticEntries: FIXED_DIAGNOSTIC_ENTRIES,
       copyStatus: "copied",
+    },
+  },
+};
+
+/** Google Drive 同期実行中（ログアウト・ルート変更排他中、戻るボタンは非ブロック） */
+export const Syncing: Story = {
+  name: "Drive同期実行中（排他保護）",
+  args: {
+    logger: createDeterministicStoryLogger(FIXED_DIAGNOSTIC_ENTRIES),
+    initialSnapshot: {
+      authState: {
+        status: "connected",
+        email: "reader@example.com",
+      },
+      syncRoots: SAMPLE_SYNC_ROOTS,
+      syncState: {
+        phase: "syncing",
+        activeMode: "incremental",
+        lastSyncedAt: Date.UTC(2026, 10, 25, 12, 30, 0),
+      },
+      diagnosticEntries: FIXED_DIAGNOSTIC_ENTRIES,
+      copyStatus: "idle",
     },
   },
 };

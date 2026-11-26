@@ -6,6 +6,7 @@ export interface DriveSyncRootsSectionProps {
   readonly isConnected: boolean;
   readonly folderInput: string;
   readonly isSubmitting: boolean;
+  readonly isSyncing?: boolean;
   readonly errorMessage: string | null;
   readonly onChangeFolderInput: (value: string) => void;
   readonly onAddFolderByInput: () => void;

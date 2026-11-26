@@ -5,6 +5,7 @@ export interface GoogleAccountSectionProps {
   readonly status: GoogleAccountAuthStatus;
   readonly email: string | null;
   readonly errorMessage: string | null;
+  readonly isSyncing?: boolean;
   readonly onSignIn: () => void;
   readonly onSignOut: () => void;
 }
