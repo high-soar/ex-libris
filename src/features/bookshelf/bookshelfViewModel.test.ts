@@ -254,6 +254,12 @@ describe("bookshelfViewModel", () => {
       lastReadAt: 9_000,
       addedAt: 3_000,
     });
+    const activeInProgressOnly = createSeries("s-in-progress", {
+      title: "途中読書作品",
+      titleReading: "とちゅう",
+      lastReadAt: 7_500,
+      addedAt: 2_800,
+    });
     const emptySeries = createSeries("s-empty");
     const tombstonedSeries = createSeries("s-deleted", { deletedAt: 5_000 });
 
@@ -283,6 +289,11 @@ describe("bookshelfViewModel", () => {
         volumeLabel: "単巻",
         addedAt: 3_100,
       }),
+      createVolume("v-p1", "s-in-progress", {
+        volumeNumber: 1,
+        volumeLabel: "第01巻",
+        addedAt: 2_900,
+      }),
       createVolume("v-del1", "s-deleted", {
         volumeNumber: 1,
       }),
@@ -291,6 +302,7 @@ describe("bookshelfViewModel", () => {
     const progress = new Map<string, ReadingProgressRecord>([
       ["v-r1", createProgress("v-r1", { readStatus: "completed" })],
       ["v-d1", createProgress("v-d1", { readStatus: "completed" })],
+      ["v-p1", createProgress("v-p1", { readStatus: "reading" })],
     ]);
 
     const items = buildBookshelfSeriesItems({
@@ -298,6 +310,7 @@ describe("bookshelfViewModel", () => {
         activeUnread,
         activeReading,
         activeCompleted,
+        activeInProgressOnly,
         emptySeries,
         tombstonedSeries,
       ],
@@ -309,6 +322,7 @@ describe("bookshelfViewModel", () => {
       "s-unread",
       "s-reading",
       "s-done",
+      "s-in-progress",
     ]);
 
     expect(items[0]).toMatchObject({
@@ -338,6 +352,15 @@ describe("bookshelfViewModel", () => {
       readStatus: "completed",
       quickLaunchVolumeId: "v-d1",
       quickLaunchLabel: "最初から読む",
+    });
+
+    expect(items[3]).toMatchObject({
+      seriesId: "s-in-progress",
+      volumeCount: 1,
+      completedCount: 0,
+      readStatus: "reading",
+      quickLaunchVolumeId: "v-p1",
+      quickLaunchLabel: "続きを読む (第01巻)",
     });
   });
 
@@ -497,6 +520,11 @@ describe("bookshelfViewModel", () => {
       volumeLabel: "第01巻",
       fileSize: 2048,
     });
+    const v3 = createVolume("v3", "s1", {
+      volumeNumber: 2,
+      volumeLabel: "第02巻",
+      fileSize: 4096,
+    });
     const progress = new Map<string, ReadingProgressRecord>([
       [
         "v1",
@@ -506,11 +534,19 @@ describe("bookshelfViewModel", () => {
           readStatus: "reading",
         }),
       ],
+      [
+        "v3",
+        createProgress("v3", {
+          currentPageIndex: 19,
+          totalPageCount: 20,
+          readStatus: "completed",
+        }),
+      ],
     ]);
 
     const vm = buildSeriesDetailViewModel({
       series,
-      volumes: [v2, v1],
+      volumes: [v3, v2, v1],
       enabledRootIds: enabledRoots,
       progressByVolumeId: progress,
     });
@@ -518,15 +554,15 @@ describe("bookshelfViewModel", () => {
     expect(vm).not.toBeNull();
     expect(vm?.series).toBe(series);
     expect(vm?.representativeVolume).toBe(v2);
-    expect(vm?.volumeCount).toBe(2);
-    expect(vm?.completedCount).toBe(0);
+    expect(vm?.volumeCount).toBe(3);
+    expect(vm?.completedCount).toBe(1);
     expect(vm?.quickLaunch).toEqual({
       volume: v1,
       kind: "continue",
       bookshelfLabel: "続きを読む (第01巻)",
       seriesDetailLabel: "続きを読む（第01巻）",
     });
-    expect(vm?.volumes).toHaveLength(2);
+    expect(vm?.volumes).toHaveLength(3);
     expect(vm?.volumes[0]).toMatchObject({
       volume: v1,
       isOmnibus: false,
@@ -541,6 +577,13 @@ describe("bookshelfViewModel", () => {
       readStatus: "unread",
       progress: null,
       progressPercent: null,
+    });
+    expect(vm?.volumes[2]).toMatchObject({
+      volume: v3,
+      isOmnibus: false,
+      fileSizeLabel: "4.0 KB",
+      readStatus: "completed",
+      progressPercent: 100,
     });
   });
 

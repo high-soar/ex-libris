@@ -149,20 +149,17 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
         return;
       }
 
+      const nextState = buildNextHistoryState(
+        options?.replace ? null : currentPathRef.current,
+        options,
+      );
+      lastHistoryStateRef.current = nextState;
       if (options?.replace) {
-        const nextState = buildNextHistoryState(null, options);
-        lastHistoryStateRef.current = nextState;
         window.history.replaceState(nextState, "", target);
-        setReaderOriginState(parseReaderOriginState(nextState));
       } else {
-        const nextState = buildNextHistoryState(
-          currentPathRef.current,
-          options,
-        );
-        lastHistoryStateRef.current = nextState;
         window.history.pushState(nextState, "", target);
-        setReaderOriginState(parseReaderOriginState(nextState));
       }
+      setReaderOriginState(parseReaderOriginState(nextState));
       commitPathState(target);
     },
     [commitPathState],
