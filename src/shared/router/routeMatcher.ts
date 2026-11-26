@@ -23,14 +23,31 @@ export const SETTINGS_ROUTE: AppRoute = {
   path: "/settings",
 };
 
+const SERIES_DETAIL_PREFIX = "/series/";
+const READER_VOLUME_PREFIX = "/read/volume/";
+
 export function buildSeriesDetailPath(seriesId: string): string {
-  void seriesId;
-  return BOOKSHELF_ROUTE.path;
+  return `${SERIES_DETAIL_PREFIX}${encodeURIComponent(seriesId)}`;
 }
 
 export function buildReaderVolumePath(volumeId: string): string {
-  void volumeId;
-  return BOOKSHELF_ROUTE.path;
+  return `${READER_VOLUME_PREFIX}${encodeURIComponent(volumeId)}`;
+}
+
+function decodeSingleRouteParam(rawSegment: string): string | null {
+  if (rawSegment.includes("/")) {
+    return null;
+  }
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rawSegment);
+  } catch {
+    return null;
+  }
+  if (decoded.trim().length === 0 || decoded.includes("/")) {
+    return null;
+  }
+  return decoded;
 }
 
 export function normalizePath(path: string): string {
@@ -51,6 +68,30 @@ export function matchRoute(path: string): AppRoute {
   }
   if (normalized === SETTINGS_ROUTE.path) {
     return SETTINGS_ROUTE;
+  }
+  if (normalized.startsWith(SERIES_DETAIL_PREFIX)) {
+    const seriesId = decodeSingleRouteParam(
+      normalized.slice(SERIES_DETAIL_PREFIX.length),
+    );
+    if (seriesId !== null) {
+      return {
+        name: "series-detail",
+        path: buildSeriesDetailPath(seriesId),
+        seriesId,
+      };
+    }
+  }
+  if (normalized.startsWith(READER_VOLUME_PREFIX)) {
+    const volumeId = decodeSingleRouteParam(
+      normalized.slice(READER_VOLUME_PREFIX.length),
+    );
+    if (volumeId !== null) {
+      return {
+        name: "reader-volume",
+        path: buildReaderVolumePath(volumeId),
+        volumeId,
+      };
+    }
   }
   return BOOKSHELF_ROUTE;
 }

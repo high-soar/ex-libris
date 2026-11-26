@@ -8,11 +8,13 @@ import {
 } from "react";
 import {
   BOOKSHELF_ROUTE,
+  buildSeriesDetailPath,
   matchRoute,
   resolveInitialPath,
 } from "./routeMatcher";
 import {
   type NavigateOptions,
+  type ReaderOrigin,
   type ReaderOriginState,
   RouterContext,
   type RouterContextValue,
@@ -25,6 +27,8 @@ export interface RouterProviderProps {
 
 interface ExLibrisHistoryState {
   readonly exLibrisCanGoBackFrom?: unknown;
+  readonly readerOrigin?: unknown;
+  readonly seriesId?: unknown;
 }
 
 const EMPTY_READER_ORIGIN_STATE: ReaderOriginState = {
@@ -42,9 +46,53 @@ function resolveNavigationTarget(to: string): string {
   return trimmed === "" ? BOOKSHELF_ROUTE.path : trimmed;
 }
 
+function normalizeOptionalId(value?: string | null): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function parseReaderOriginState(rawState: unknown): ReaderOriginState {
+  if (typeof rawState !== "object" || rawState === null) {
+    return EMPTY_READER_ORIGIN_STATE;
+  }
+  const state = rawState as ExLibrisHistoryState;
+  const readerOrigin: ReaderOrigin | null =
+    state.readerOrigin === "bookshelf" || state.readerOrigin === "series-detail"
+      ? state.readerOrigin
+      : null;
+  const seriesId =
+    typeof state.seriesId === "string" && state.seriesId.trim().length > 0
+      ? state.seriesId
+      : null;
+  const canGoBackFrom =
+    typeof state.exLibrisCanGoBackFrom === "string" &&
+    state.exLibrisCanGoBackFrom.length > 0
+      ? state.exLibrisCanGoBackFrom
+      : null;
+  return { readerOrigin, seriesId, canGoBackFrom };
+}
+
+function buildNextHistoryState(
+  previousPath: string | null,
+  options?: NavigateOptions,
+): ExLibrisHistoryState | null {
+  const hasOrigin = options?.readerOrigin !== undefined;
+  const hasSeriesId = options?.seriesId !== undefined;
+  if (previousPath === null && !hasOrigin && !hasSeriesId) {
+    return null;
+  }
+  return {
+    ...(previousPath !== null ? { exLibrisCanGoBackFrom: previousPath } : {}),
+    ...(hasOrigin ? { readerOrigin: options.readerOrigin } : {}),
+    ...(hasSeriesId ? { seriesId: options.seriesId } : {}),
+  };
+}
+
 export function RouterProvider({ children, initialPath }: RouterProviderProps) {
   const [currentPath, setCurrentPath] = useState<string>(() =>
     resolveInitialPath(initialPath, readWindowPath()),
+  );
+  const [readerOriginState, setReaderOriginState] = useState<ReaderOriginState>(
+    () => parseReaderOriginState(window.history.state),
   );
   const [isBackBlocked, setIsBackBlocked] = useState<boolean>(false);
   const currentPathRef = useRef<string>(currentPath);
@@ -84,6 +132,7 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
         return;
       }
       lastHistoryStateRef.current = window.history.state;
+      setReaderOriginState(parseReaderOriginState(window.history.state));
       commitPathState(readWindowPath());
     };
 
@@ -101,14 +150,18 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
       }
 
       if (options?.replace) {
-        lastHistoryStateRef.current = null;
-        window.history.replaceState(null, "", target);
+        const nextState = buildNextHistoryState(null, options);
+        lastHistoryStateRef.current = nextState;
+        window.history.replaceState(nextState, "", target);
+        setReaderOriginState(parseReaderOriginState(nextState));
       } else {
-        const nextState: ExLibrisHistoryState = {
-          exLibrisCanGoBackFrom: currentPathRef.current,
-        };
+        const nextState = buildNextHistoryState(
+          currentPathRef.current,
+          options,
+        );
         lastHistoryStateRef.current = nextState;
         window.history.pushState(nextState, "", target);
+        setReaderOriginState(parseReaderOriginState(nextState));
       }
       commitPathState(target);
     },
@@ -128,9 +181,13 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
     if (isBackBlockedRef.current) {
       return;
     }
-    if (route.name === "reader-local" || route.name === "settings") {
-      const state = window.history.state as ExLibrisHistoryState | null;
-      if (state?.exLibrisCanGoBackFrom === BOOKSHELF_ROUTE.path) {
+    if (
+      route.name === "reader-local" ||
+      route.name === "settings" ||
+      route.name === "series-detail"
+    ) {
+      const originState = parseReaderOriginState(window.history.state);
+      if (originState.canGoBackFrom === BOOKSHELF_ROUTE.path) {
         window.history.back();
         return;
       }
@@ -138,15 +195,64 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
     }
   }, [route.name, navigate]);
 
-  const exitReader = useCallback((fallbackSeriesId?: string | null) => {
-    void fallbackSeriesId;
-  }, []);
+  const exitReader = useCallback(
+    (fallbackSeriesId?: string | null) => {
+      if (isBackBlockedRef.current) {
+        return;
+      }
+      if (route.name === "reader-local") {
+        back();
+        return;
+      }
+      if (route.name !== "reader-volume") {
+        return;
+      }
+
+      const originState = parseReaderOriginState(window.history.state);
+      const resolvedFallbackSeriesId = normalizeOptionalId(fallbackSeriesId);
+
+      if (originState.readerOrigin === "bookshelf") {
+        if (originState.canGoBackFrom === BOOKSHELF_ROUTE.path) {
+          window.history.back();
+          return;
+        }
+        navigate(BOOKSHELF_ROUTE.path, { replace: true });
+        return;
+      }
+
+      if (originState.readerOrigin === "series-detail") {
+        if (
+          originState.canGoBackFrom !== null &&
+          matchRoute(originState.canGoBackFrom).name === "series-detail"
+        ) {
+          window.history.back();
+          return;
+        }
+        const targetSeriesId = originState.seriesId ?? resolvedFallbackSeriesId;
+        if (targetSeriesId !== null) {
+          navigate(buildSeriesDetailPath(targetSeriesId), { replace: true });
+          return;
+        }
+        navigate(BOOKSHELF_ROUTE.path, { replace: true });
+        return;
+      }
+
+      if (resolvedFallbackSeriesId !== null) {
+        navigate(buildSeriesDetailPath(resolvedFallbackSeriesId), {
+          replace: true,
+        });
+        return;
+      }
+      navigate(BOOKSHELF_ROUTE.path, { replace: true });
+    },
+    [route.name, back, navigate],
+  );
 
   const contextValue = useMemo<RouterContextValue>(
     () => ({
       currentPath,
       route,
-      readerOriginState: EMPTY_READER_ORIGIN_STATE,
+      readerOriginState,
       navigate,
       replace,
       back,
@@ -157,6 +263,7 @@ export function RouterProvider({ children, initialPath }: RouterProviderProps) {
     [
       currentPath,
       route,
+      readerOriginState,
       navigate,
       replace,
       back,
