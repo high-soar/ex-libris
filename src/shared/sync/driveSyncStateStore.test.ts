@@ -138,6 +138,50 @@ describe("driveSyncStateStore", () => {
     );
     expect(useDriveSyncStateStore.getState().isLastSyncedAtLoaded).toBe(true);
 
+    // 3b. 水和待機中に skipped-no-roots で同期完了した場合でも、後着した meta.lastDriveSyncAt を破棄せず復元すること
+    resetDriveSyncState();
+    const skippedMetaDeferred = createDeferred<{
+      startPageToken: string | null;
+      lastDriveSyncAt: number | null;
+      syncedRootFolderIds: readonly string[];
+    }>();
+    const skippedSlowMetaRepo: Pick<DriveSyncMetaRepository, "getSyncState"> = {
+      getSyncState: vi.fn(() => skippedMetaDeferred.promise),
+    };
+    const skippedSyncEngine: DriveSyncEngine = {
+      sync: vi.fn(async () =>
+        createSyncResult({
+          mode: "skipped-no-roots",
+          scannedRoots: 0,
+          upsertedVolumes: 0,
+          trashedVolumes: 0,
+          invalidatedZipCaches: 0,
+          syncedAt: 1_700_001_000_000,
+        }),
+      ),
+    };
+
+    const skippedHydratePromise = useDriveSyncStateStore
+      .getState()
+      .hydrateLastSyncedAt(skippedSlowMetaRepo, logger);
+    await useDriveSyncStateStore
+      .getState()
+      .runDriveSync({ driveSyncEngine: skippedSyncEngine, logger });
+    expect(useDriveSyncStateStore.getState().completedSyncCount).toBe(1);
+    expect(useDriveSyncStateStore.getState().lastSyncedAt).toBeNull();
+    expect(useDriveSyncStateStore.getState().isLastSyncedAtLoaded).toBe(false);
+
+    skippedMetaDeferred.resolve({
+      startPageToken: "tok-prev",
+      lastDriveSyncAt: 1_700_000_080_000,
+      syncedRootFolderIds: ["root-1"],
+    });
+    await skippedHydratePromise;
+    expect(useDriveSyncStateStore.getState().lastSyncedAt).toBe(
+      1_700_000_080_000,
+    );
+    expect(useDriveSyncStateStore.getState().isLastSyncedAtLoaded).toBe(true);
+
     // 4. 取得エラー時は warn ログのみ記録してクラッシュしないこと（Error / non-Error 双方）
     resetDriveSyncState();
     const failingMetaRepo: Pick<DriveSyncMetaRepository, "getSyncState"> = {

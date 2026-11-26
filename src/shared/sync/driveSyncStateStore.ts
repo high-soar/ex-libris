@@ -101,15 +101,10 @@ export const useDriveSyncStateStore = create<DriveSyncState>((set, get) => ({
     if (get().isLastSyncedAtLoaded) {
       return;
     }
-    const startSyncCount = get().completedSyncCount;
     try {
       const meta = await driveSyncMetaRepo.getSyncState();
       const current = get();
-      if (
-        current.isLastSyncedAtLoaded ||
-        current.completedSyncCount !== startSyncCount ||
-        current.lastSyncedAt !== null
-      ) {
+      if (current.isLastSyncedAtLoaded || current.lastSyncedAt !== null) {
         set({ isLastSyncedAtLoaded: true });
         return;
       }
