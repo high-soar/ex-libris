@@ -12,6 +12,7 @@ import {
 } from "./features/bookshelf/BookshelfPage";
 import type { DriveSetupBannerState } from "./features/bookshelf/DriveSetupBanner";
 import { ReaderPage } from "./features/reader/ReaderPage";
+import { SeriesDetailPage } from "./features/series-detail/SeriesDetailPage";
 import type { SeriesDetailPageInitialSnapshot } from "./features/series-detail/types";
 import { SettingsPage } from "./features/settings/SettingsPage";
 import type { SettingsPageInitialSnapshot } from "./features/settings/types";
@@ -36,6 +37,7 @@ interface AppShellProps {
   readonly initialCopyStatus: CopyStatus;
   readonly initialDriveSetupState?: DriveSetupBannerState;
   readonly initialBookshelfSnapshot?: BookshelfPageInitialSnapshot;
+  readonly initialSeriesDetailSnapshot?: SeriesDetailPageInitialSnapshot;
   readonly initialSettingsSnapshot?: SettingsPageInitialSnapshot;
   readonly settingsLogger?: DiagnosticLogger;
 }
@@ -44,6 +46,7 @@ function AppShell({
   initialCopyStatus,
   initialDriveSetupState,
   initialBookshelfSnapshot,
+  initialSeriesDetailSnapshot,
   initialSettingsSnapshot,
   settingsLogger,
 }: AppShellProps) {
@@ -71,11 +74,17 @@ function AppShell({
         settingsModalBackRef.current();
         return;
       }
-      if (routeNameRef.current === "reader-local") {
+      if (
+        routeNameRef.current === "reader-local" ||
+        routeNameRef.current === "reader-volume"
+      ) {
         readerExitRef.current?.();
         return;
       }
-      if (routeNameRef.current === "settings") {
+      if (
+        routeNameRef.current === "settings" ||
+        routeNameRef.current === "series-detail"
+      ) {
         backRef.current();
         return;
       }
@@ -103,8 +112,19 @@ function AppShell({
       data-app-ready="true"
       className="min-h-screen bg-slate-950 text-slate-100"
     >
-      {route.name === "reader-local" ? (
-        <ReaderPage onRegisterExit={handleRegisterReaderExit} />
+      {route.name === "reader-local" || route.name === "reader-volume" ? (
+        <ReaderPage
+          key={route.path}
+          onRegisterExit={handleRegisterReaderExit}
+        />
+      ) : route.name === "series-detail" ? (
+        <SeriesDetailPage
+          key={route.seriesId}
+          seriesId={route.seriesId}
+          {...(initialSeriesDetailSnapshot !== undefined
+            ? { initialSnapshot: initialSeriesDetailSnapshot }
+            : {})}
+        />
       ) : route.name === "settings" ? (
         <SettingsPage
           onRegisterModalBack={handleRegisterSettingsModalBack}
@@ -135,6 +155,7 @@ export function App({
   initialCopyStatus = "idle",
   initialDriveSetupState,
   initialBookshelfSnapshot,
+  initialSeriesDetailSnapshot,
   initialSettingsSnapshot,
   settingsLogger,
 }: AppProps) {
@@ -148,6 +169,7 @@ export function App({
           initialCopyStatus={initialCopyStatus}
           initialDriveSetupState={initialDriveSetupState}
           initialBookshelfSnapshot={initialBookshelfSnapshot}
+          initialSeriesDetailSnapshot={initialSeriesDetailSnapshot}
           initialSettingsSnapshot={initialSettingsSnapshot}
           settingsLogger={settingsLogger}
         />
