@@ -864,29 +864,28 @@ export function SettingsPage({
     void savePickedFolder({ id: current.id, name: current.name });
   }, [savePickedFolder]);
 
+  const runManualSync = useCallback(
+    (forceFullScan: boolean) => {
+      void runDriveSync({
+        driveSyncEngine,
+        forceFullScan,
+        logger,
+      }).finally(() => {
+        if (isMountedRef.current) {
+          syncDiagnosticsFromLogger();
+        }
+      });
+    },
+    [driveSyncEngine, logger, runDriveSync, syncDiagnosticsFromLogger],
+  );
+
   const handleRunIncrementalSync = useCallback(() => {
-    void runDriveSync({
-      driveSyncEngine,
-      forceFullScan: false,
-      logger,
-    }).finally(() => {
-      if (isMountedRef.current) {
-        syncDiagnosticsFromLogger();
-      }
-    });
-  }, [driveSyncEngine, logger, runDriveSync, syncDiagnosticsFromLogger]);
+    runManualSync(false);
+  }, [runManualSync]);
 
   const handleRunFullScan = useCallback(() => {
-    void runDriveSync({
-      driveSyncEngine,
-      forceFullScan: true,
-      logger,
-    }).finally(() => {
-      if (isMountedRef.current) {
-        syncDiagnosticsFromLogger();
-      }
-    });
-  }, [driveSyncEngine, logger, runDriveSync, syncDiagnosticsFromLogger]);
+    runManualSync(true);
+  }, [runManualSync]);
 
   const handleCopyDiagnostics = useCallback(async () => {
     const report = logger.formatReport();

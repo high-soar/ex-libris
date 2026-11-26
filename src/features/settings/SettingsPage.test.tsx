@@ -1767,6 +1767,7 @@ describe("SettingsPage", () => {
         syncedAt: Date.UTC(2026, 10, 25, 12, 0, 0),
       });
       await flushMicrotasks();
+      await flushMicrotasks();
     });
     expect(syncEngine.sync).toHaveBeenNthCalledWith(1, {
       forceFullScan: false,
@@ -1776,6 +1777,7 @@ describe("SettingsPage", () => {
     // 強制フルスキャン実行
     await act(async () => {
       getSyncExecProps().onRunFullScan();
+      await flushMicrotasks();
       await flushMicrotasks();
     });
     expect(syncEngine.sync).toHaveBeenNthCalledWith(2, { forceFullScan: true });
