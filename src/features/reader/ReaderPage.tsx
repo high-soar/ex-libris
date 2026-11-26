@@ -87,6 +87,8 @@ export interface ReaderPageInitialSnapshot {
   readonly shaderParams?: ShaderCorrectionParams;
   readonly isShaderSheetOpen?: boolean;
   readonly shaderSaveStatus?: ShaderSaveStatus;
+  readonly displayTitle?: string;
+  readonly errorBackLabel?: string;
 }
 
 export interface ReaderPageProps {

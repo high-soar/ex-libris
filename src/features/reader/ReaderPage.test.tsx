@@ -26,6 +26,11 @@ import {
 } from "vitest";
 import { ServiceProvider } from "../../app/ServiceProvider";
 import type { CoordinatorSessionHandle } from "../../app/coordinatorClient";
+import {
+  ServiceContext,
+  type ServiceContextValue,
+} from "../../app/serviceContext";
+import type { GoogleAuthSession } from "../../bridges/oauth/types";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
 import type {
   CoordinatorWorkerApi,
@@ -36,12 +41,21 @@ import type {
 } from "../../engine/types";
 import { ZipArchiveError } from "../../engine/zip/errors";
 import { RouterProvider } from "../../shared/router/RouterProvider";
-import { useRouter } from "../../shared/router/routerContext";
+import {
+  RouterContext,
+  type RouterContextValue,
+  useRouter,
+} from "../../shared/router/routerContext";
 import { resetTestDb } from "../../storage/db";
 import type { ReaderSettingsRepository } from "../../storage/repositories/readerSettingsRepository";
 import type { ReadingProgressRepository } from "../../storage/repositories/readingProgressRepository";
 import type { ZipIndexCacheRepository } from "../../storage/repositories/zipIndexCacheRepository";
-import type { ReadingProgressRecord } from "../../storage/types";
+import type {
+  DriveSyncRootRecord,
+  ReadingProgressRecord,
+  SeriesRecord,
+  VolumeRecord,
+} from "../../storage/types";
 import * as ReaderCanvasModule from "../../webgl/ReaderCanvas";
 import { L1PageCache } from "../../webgl/l1PageCache";
 import { DEFAULT_SHADER_CORRECTION_PARAMS } from "../../webgl/shaderParams";
@@ -64,6 +78,7 @@ const {
   PortraitAutoSingle,
   PartialSpreadError,
   ShaderSheetOpen,
+  DriveVolumeHudOpen,
 } = composeStories(stories);
 
 function createFakeBitmap(width = 800, height = 1200): ImageBitmap {
@@ -4743,5 +4758,400 @@ describe("ReaderPage", () => {
       await flushMicrotasks();
     });
     expect(errorViewSpy).not.toHaveBeenCalled();
+  });
+
+  it("DriveVolumeHudOpenストーリーで作品名＋巻ラベルをHUDへ渡して描画すること (AC-RD-09, AC-RD-16)", () => {
+    render(<DriveVolumeHudOpen />);
+    expect(getLatestHudProps()).toEqual(
+      expect.objectContaining({
+        isOpen: true,
+        fileName: "ダンジョン飯 第02巻",
+        totalPages: 192,
+      }),
+    );
+  });
+
+  it("Drive巻ルート(/read/volume/:volumeId)で事前検証・gdriveソース構築・HUD作品名表示・同一同期ティックvol:*＆series.lastReadAt並列保存・TR-07終了を実行すること (AC-RD-16, AC-RD-17, AC-RD-18)", async () => {
+    setWindowSize(375, 667);
+    const sampleVolume: VolumeRecord = {
+      id: "vol-1",
+      seriesId: "series-1",
+      volumeNumber: 1,
+      volumeLabel: "第01巻",
+      rawFileName: "[九井諒子] ダンジョン飯 第01巻.zip",
+      driveFileId: "drive-file-1",
+      parentFolderId: "root-1",
+      rootFolderId: "root-1",
+      fileSize: 50_000_000,
+      md5Checksum: "md5-abc",
+      driveModifiedTime: 1_730_000_000_000,
+      coverBlob: null,
+      coverStatus: "pending",
+      coverCropMode: "auto",
+      coverPageIndex: 0,
+      coverUpdatedAt: null,
+      isTrashed: 0,
+      addedAt: 1_730_000_000_000,
+      updatedAt: 1_730_000_000_000,
+    };
+    const sampleSeries: SeriesRecord = {
+      id: "series-1",
+      title: "ダンジョン飯",
+      titleReading: "だんじょんめし",
+      authors: ["九井諒子"],
+      publisher: "",
+      label: "",
+      tags: [],
+      synopsis: "",
+      publicationStatus: "unknown",
+      knownTotalVolumes: null,
+      externalIds: {},
+      metadataLocked: false,
+      representativeVolumeId: "vol-1",
+      readerPresetJson: null,
+      lastReadAt: null,
+      addedAt: 1_730_000_000_000,
+      updatedAt: 1_730_000_000_000,
+      deletedAt: null,
+    };
+    const activeRoot: DriveSyncRootRecord = {
+      folderId: "root-1",
+      folderName: "Comics",
+      enabled: 1,
+      addedAt: 1_730_000_000_000,
+      updatedAt: 1_730_000_000_000,
+      deletedAt: null,
+    };
+    const authSession: GoogleAuthSession = {
+      email: "reader@example.com",
+      accessToken: "token-1",
+      expiresAt: Date.now() + 3_600_000,
+    };
+
+    const pendingPut = createDeferred<void>();
+    const putMock = vi.fn(() => pendingPut.promise);
+    const updateLastReadAtMock = vi.fn().mockResolvedValue(sampleSeries);
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_730_123_456_000);
+
+    const mockSession = createMockCoordinatorSession({
+      openArchive: vi.fn(async () => ({
+        pageCount: 5,
+        entries: createSampleZipEntries(5),
+        fromIndexCache: false,
+      })),
+      requestVisiblePages: vi.fn(
+        async (
+          pages: readonly number[],
+          _pre: readonly number[],
+          epoch: number,
+        ) => pages.map((idx) => createReadyFrame(idx, epoch)),
+      ),
+    });
+
+    const services: ServiceContextValue = {
+      createCoordinatorSession: vi.fn(() => mockSession.handle),
+      zipIndexCacheRepo: createMockZipIndexCacheRepo(),
+      readingProgressRepo: createMockReadingProgressRepo({ put: putMock }),
+      readerSettingsRepo: createMockReaderSettingsRepo(),
+      volumesRepo: {
+        getById: vi.fn().mockResolvedValue(sampleVolume),
+        getByDriveFileId: vi.fn(),
+        listBySeriesId: vi.fn(),
+        listVisibleByRootIds: vi.fn(),
+        upsertByDriveFileId: vi.fn(),
+        markTrashedByDriveFileId: vi.fn(),
+        markTrashedMissingInRoot: vi.fn(),
+        listPendingCovers: vi.fn(),
+        updateCover: vi.fn(),
+      },
+      seriesRepo: {
+        getById: vi.fn().mockResolvedValue(sampleSeries),
+        listActive: vi.fn(),
+        findOrCreateByParsedTitle: vi.fn(),
+        mergeAuthorsIfUnlocked: vi.fn(),
+        updateLastReadAt: updateLastReadAtMock,
+      },
+      driveSyncRootsRepo: {
+        listActive: vi.fn().mockResolvedValue([activeRoot]),
+        countEnabled: vi.fn(),
+        upsertRoot: vi.fn(),
+        setEnabled: vi.fn(),
+        removeRoot: vi.fn(),
+      },
+      googleAuthBridge: {
+        getCachedSession: vi.fn().mockReturnValue(authSession),
+        getSession: vi.fn().mockResolvedValue(authSession),
+        signIn: vi.fn(),
+        signOut: vi.fn(),
+        refreshAccessToken: vi.fn(),
+      },
+    } as unknown as ServiceContextValue;
+
+    const router: RouterContextValue = {
+      currentPath: "/read/volume/vol-1",
+      route: {
+        name: "reader-volume",
+        path: "/read/volume/vol-1",
+        volumeId: "vol-1",
+      },
+      readerOriginState: {
+        readerOrigin: "series-detail",
+        seriesId: "series-1",
+        canGoBackFrom: "/series/series-1",
+      },
+      navigate: vi.fn(),
+      replace: vi.fn(),
+      back: vi.fn(),
+      exitReader: vi.fn(),
+      isBackBlocked: false,
+      setBackBlocked: vi.fn(),
+    };
+
+    window.history.replaceState(null, "", "/read/volume/vol-1");
+    useLocalReaderSessionStore.getState().clearSession();
+
+    const { unmount } = render(
+      <ServiceContext.Provider value={services}>
+        <RouterContext.Provider value={router}>
+          <ReaderPage />
+        </RouterContext.Provider>
+      </ServiceContext.Provider>,
+    );
+
+    await waitFor(() => {
+      expect(mockSession.api.openArchive).toHaveBeenCalledTimes(1);
+    });
+
+    expect(mockSession.api.openArchive).toHaveBeenCalledWith(
+      {
+        kind: "gdrive",
+        volumeId: "vol-1",
+        driveFileId: "drive-file-1",
+        fileSize: 50_000_000,
+        md5Checksum: "md5-abc",
+        indexCacheKey: "gdrive:drive-file-1:md5-abc",
+        progressTargetKey: "vol:vol-1",
+      },
+      null,
+      1,
+    );
+
+    await waitFor(() => {
+      expect(getLatestHudProps().fileName).toBe("ダンジョン飯 第01巻");
+    });
+
+    // readingProgressRepo.put が未解決のままでも、同一同期ティック内で seriesRepo.updateLastReadAt が即座に呼ばれること
+    await waitFor(() => {
+      expect(putMock).toHaveBeenCalledWith({
+        targetKey: "vol:vol-1",
+        volumeId: "vol-1",
+        currentPageIndex: 0,
+        totalPageCount: 5,
+        readStatus: "reading",
+        spreadPageOffset: 0,
+      });
+    });
+    expect(updateLastReadAtMock).toHaveBeenCalledWith(
+      "series-1",
+      1_730_123_456_000,
+    );
+
+    // 終了操作時は exitReader("series-1") を呼び出す
+    act(() => {
+      getLatestHudProps().onClose();
+    });
+    expect(router.exitReader).toHaveBeenCalledWith("series-1");
+    expect(router.back).not.toHaveBeenCalled();
+
+    pendingPut.resolve(undefined);
+    nowSpy.mockRestore();
+    unmount();
+  });
+
+  it("Drive巻ルートで事前検証3種(VOLUME_NOT_FOUND / VOLUME_UNAVAILABLE / AUTH_REQUIRED)失敗時はWorkerを起動せず理由別エラーと起点別backLabelを表示すること (AC-RD-18, AC-RD-19)", async () => {
+    const baseVolume: VolumeRecord = {
+      id: "vol-1",
+      seriesId: "series-1",
+      volumeNumber: 1,
+      volumeLabel: "第01巻",
+      rawFileName: "test-vol01.zip",
+      driveFileId: "drive-1",
+      parentFolderId: "root-1",
+      rootFolderId: "root-1",
+      fileSize: 1024,
+      md5Checksum: null,
+      driveModifiedTime: 1_730_000_000_000,
+      coverBlob: null,
+      coverStatus: "pending",
+      coverCropMode: "auto",
+      coverPageIndex: 0,
+      coverUpdatedAt: null,
+      isTrashed: 0,
+      addedAt: 1_730_000_000_000,
+      updatedAt: 1_730_000_000_000,
+    };
+    const activeRoot: DriveSyncRootRecord = {
+      folderId: "root-1",
+      folderName: "Comics",
+      enabled: 1,
+      addedAt: 1_730_000_000_000,
+      updatedAt: 1_730_000_000_000,
+      deletedAt: null,
+    };
+
+    const renderDriveVolume = (
+      serviceOverrides: Partial<ServiceContextValue>,
+      originOverrides: Partial<RouterContextValue["readerOriginState"]> = {},
+    ) => {
+      const createCoordinatorSession = vi.fn();
+      const exitReader = vi.fn();
+      const services = {
+        createCoordinatorSession,
+        zipIndexCacheRepo: createMockZipIndexCacheRepo(),
+        readingProgressRepo: createMockReadingProgressRepo(),
+        readerSettingsRepo: createMockReaderSettingsRepo(),
+        volumesRepo: {
+          getById: vi.fn().mockResolvedValue(baseVolume),
+        },
+        seriesRepo: {
+          getById: vi.fn().mockResolvedValue(null),
+          updateLastReadAt: vi.fn().mockResolvedValue(null),
+        },
+        driveSyncRootsRepo: {
+          listActive: vi.fn().mockResolvedValue([activeRoot]),
+        },
+        googleAuthBridge: {
+          getCachedSession: vi.fn().mockReturnValue(null),
+          getSession: vi.fn().mockResolvedValue(null),
+        },
+        ...serviceOverrides,
+      } as unknown as ServiceContextValue;
+
+      const router: RouterContextValue = {
+        currentPath: "/read/volume/vol-1",
+        route: {
+          name: "reader-volume",
+          path: "/read/volume/vol-1",
+          volumeId: "vol-1",
+        },
+        readerOriginState: {
+          readerOrigin: null,
+          seriesId: null,
+          canGoBackFrom: null,
+          ...originOverrides,
+        },
+        navigate: vi.fn(),
+        replace: vi.fn(),
+        back: vi.fn(),
+        exitReader,
+        isBackBlocked: false,
+        setBackBlocked: vi.fn(),
+      };
+
+      const result = render(
+        <ServiceContext.Provider value={services}>
+          <RouterContext.Provider value={router}>
+            <ReaderPage />
+          </RouterContext.Provider>
+        </ServiceContext.Provider>,
+      );
+      return { ...result, createCoordinatorSession, exitReader };
+    };
+
+    // 1. VOLUME_NOT_FOUND (直接 URL アクセス -> ホームへ戻る)
+    errorViewSpy.mockClear();
+    const case1 = renderDriveVolume({
+      volumesRepo: {
+        getById: vi.fn().mockResolvedValue(null),
+      } as unknown as ServiceContextValue["volumesRepo"],
+    });
+    await waitFor(() => {
+      expect(errorViewSpy).toHaveBeenCalled();
+    });
+    expect(case1.createCoordinatorSession).not.toHaveBeenCalled();
+    expect(getLatestErrorViewProps()).toEqual(
+      expect.objectContaining({
+        mode: "archive",
+        errorCode: "VOLUME_NOT_FOUND",
+        backLabel: "ホームへ戻る",
+      }),
+    );
+    act(() => {
+      getLatestErrorViewProps().onBackToHome?.();
+    });
+    expect(case1.exitReader).toHaveBeenCalledWith(null);
+    case1.unmount();
+
+    // 2. VOLUME_UNAVAILABLE (ゴミ箱化、直接 URL -> fallbackSeriesId でシリーズ詳細へ戻る)
+    errorViewSpy.mockClear();
+    const case2 = renderDriveVolume({
+      volumesRepo: {
+        getById: vi.fn().mockResolvedValue({ ...baseVolume, isTrashed: 1 }),
+      } as unknown as ServiceContextValue["volumesRepo"],
+    });
+    await waitFor(() => {
+      expect(errorViewSpy).toHaveBeenCalled();
+    });
+    expect(case2.createCoordinatorSession).not.toHaveBeenCalled();
+    expect(getLatestErrorViewProps()).toEqual(
+      expect.objectContaining({
+        mode: "archive",
+        errorCode: "VOLUME_UNAVAILABLE",
+        backLabel: "シリーズ詳細へ戻る",
+      }),
+    );
+    act(() => {
+      getLatestErrorViewProps().onBackToHome?.();
+    });
+    expect(case2.exitReader).toHaveBeenCalledWith("series-1");
+    case2.unmount();
+
+    // 3. VOLUME_UNAVAILABLE (無効ルート配下、bookshelf 起点 -> ホームへ戻る)
+    errorViewSpy.mockClear();
+    const case3 = renderDriveVolume(
+      {
+        driveSyncRootsRepo: {
+          listActive: vi
+            .fn()
+            .mockResolvedValue([{ ...activeRoot, enabled: 0 }]),
+        } as unknown as ServiceContextValue["driveSyncRootsRepo"],
+      },
+      { readerOrigin: "bookshelf", seriesId: "series-1", canGoBackFrom: "/" },
+    );
+    await waitFor(() => {
+      expect(errorViewSpy).toHaveBeenCalled();
+    });
+    expect(case3.createCoordinatorSession).not.toHaveBeenCalled();
+    expect(getLatestErrorViewProps()).toEqual(
+      expect.objectContaining({
+        mode: "archive",
+        errorCode: "VOLUME_UNAVAILABLE",
+        backLabel: "ホームへ戻る",
+      }),
+    );
+    case3.unmount();
+
+    // 4. AUTH_REQUIRED (Google未連携、series-detail 起点 -> シリーズ詳細へ戻る)
+    errorViewSpy.mockClear();
+    const case4 = renderDriveVolume(
+      {},
+      {
+        readerOrigin: "series-detail",
+        seriesId: "series-1",
+        canGoBackFrom: "/series/series-1",
+      },
+    );
+    await waitFor(() => {
+      expect(errorViewSpy).toHaveBeenCalled();
+    });
+    expect(case4.createCoordinatorSession).not.toHaveBeenCalled();
+    expect(getLatestErrorViewProps()).toEqual(
+      expect.objectContaining({
+        mode: "archive",
+        errorCode: "AUTH_REQUIRED",
+        backLabel: "シリーズ詳細へ戻る",
+      }),
+    );
+    case4.unmount();
   });
 });
