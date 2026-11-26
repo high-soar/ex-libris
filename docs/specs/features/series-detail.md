@@ -31,11 +31,23 @@ related_specs:
   - docs/guidelines/testing.md
 related_tests:
   - src/App.test.tsx
+  - src/features/bookshelf/bookshelfUiStateStore.test.ts
+  - src/features/bookshelf/bookshelfViewModel.test.ts
+  - src/features/series-detail/SeriesDetailEmptyState.test.tsx
+  - src/features/series-detail/SeriesDetailHeader.test.tsx
+  - src/features/series-detail/SeriesDetailPage.test.tsx
+  - src/features/series-detail/SeriesSummaryCard.test.tsx
+  - src/features/series-detail/SeriesVolumeListSection.test.tsx
   - src/shared/router/RouterProvider.test.tsx
   - src/shared/router/routeMatcher.test.ts
+  - src/shared/router/routerContext.test.ts
+  - src/shared/sync/driveSyncStateStore.test.ts
+  - src/shared/ui/CoverThumbnail.test.tsx
   - src/storage/repositories/seriesRepository.test.ts
   - src/storage/repositories/volumesRepository.test.ts
   - src/storage/repositories/readingProgressRepository.test.ts
+  - test/vrt/vrt.spec.ts
+  - test/it/bookshelf-drive-reader.spec.ts
 ---
 
 # シリーズ詳細・巻一覧画面仕様書（`SCR-02`: Series Detail）

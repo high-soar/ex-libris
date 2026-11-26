@@ -36,11 +36,18 @@ related_tests:
   - src/App.test.tsx
   - src/features/bookshelf/BookshelfPage.test.tsx
   - src/features/bookshelf/BookshelfHeader.test.tsx
+  - src/features/bookshelf/BookshelfToolbar.test.tsx
   - src/features/bookshelf/DriveSetupBanner.test.tsx
+  - src/features/bookshelf/DriveSyncEmptyState.test.tsx
   - src/features/bookshelf/LocalArchiveEmptyState.test.tsx
   - src/features/bookshelf/RecentLocalHistorySection.test.tsx
+  - src/features/bookshelf/SeriesCard.test.tsx
+  - src/features/bookshelf/SeriesGridSection.test.tsx
   - src/features/bookshelf/bookshelfUiStateStore.test.ts
+  - src/features/bookshelf/bookshelfViewModel.test.ts
   - src/features/reader/localReaderSessionStore.test.ts
+  - src/shared/sync/driveSyncStateStore.test.ts
+  - src/shared/ui/CoverThumbnail.test.tsx
   - src/storage/repositories/readingProgressRepository.test.ts
   - src/storage/repositories/seriesRepository.test.ts
   - src/storage/repositories/volumesRepository.test.ts
@@ -50,6 +57,7 @@ related_tests:
   - test/it/local-reader.spec.ts
   - test/it/settings-oauth.spec.ts
   - test/it/drive-sync.spec.ts
+  - test/it/bookshelf-drive-reader.spec.ts
 ---
 
 # 仮想本棚ホーム画面仕様書（`SCR-01`: Bookshelf）

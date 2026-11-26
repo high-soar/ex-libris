@@ -40,12 +40,14 @@ related_tests:
   - src/features/reader/ReaderHudOverlay.test.tsx
   - src/features/reader/ReaderShaderSheet.test.tsx
   - src/features/reader/ReaderPage.test.tsx
+  - src/features/series-detail/SeriesDetailPage.test.tsx
   - src/features/settings/SettingsPage.test.tsx
   - test/vrt/vrt.spec.ts
   - test/it/smoke.spec.ts
   - test/it/local-reader.spec.ts
   - test/it/settings-oauth.spec.ts
   - test/it/drive-sync.spec.ts
+  - test/it/bookshelf-drive-reader.spec.ts
 ---
 
 # ExLibris 全体要件定義・機能一覧・ミニMilestoneロードマップ

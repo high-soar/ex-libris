@@ -64,7 +64,10 @@ related_tests:
   - src/providers/gdrive/driveSyncEngine.test.ts
   - src/shared/constants/app.test.ts
   - src/shared/router/RouterProvider.test.tsx
+  - src/shared/router/routeMatcher.test.ts
   - src/shared/router/routerContext.test.ts
+  - src/shared/sync/driveSyncStateStore.test.ts
+  - src/shared/ui/CoverThumbnail.test.tsx
   - src/storage/db.test.ts
   - src/storage/repositories/driveSyncMetaRepository.test.ts
   - src/storage/repositories/driveSyncRootsRepository.test.ts
@@ -73,6 +76,8 @@ related_tests:
   - src/storage/repositories/zipIndexCacheRepository.test.ts
   - src/storage/repositories/readingProgressRepository.test.ts
   - src/storage/repositories/readerSettingsRepository.test.ts
+  - src/features/bookshelf/bookshelfViewModel.test.ts
+  - src/features/series-detail/SeriesDetailPage.test.tsx
   - src/webgl/ReaderCanvas.test.tsx
   - src/webgl/WebGLRendererCore.test.ts
   - src/webgl/l1PageCache.test.ts
@@ -83,6 +88,7 @@ related_tests:
   - test/it/local-reader.spec.ts
   - test/it/settings-oauth.spec.ts
   - test/it/drive-sync.spec.ts
+  - test/it/bookshelf-drive-reader.spec.ts
 ---
 
 # ExLibris 4層＋マルチスレッドアーキテクチャと共通インターフェース契約
