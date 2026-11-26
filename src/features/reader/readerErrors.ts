@@ -2,7 +2,11 @@ import type { ZipErrorCode } from "../../engine/types";
 import { ZipArchiveError } from "../../engine/zip/errors";
 import type { WebGLFatalErrorCode } from "../../webgl/ReaderCanvas";
 
-export type ReaderFatalErrorCode = ZipErrorCode | WebGLFatalErrorCode;
+export type DriveVolumeErrorCode =
+  "VOLUME_NOT_FOUND" | "VOLUME_UNAVAILABLE" | "AUTH_REQUIRED";
+
+export type ReaderFatalErrorCode =
+  ZipErrorCode | WebGLFatalErrorCode | DriveVolumeErrorCode;
 
 export interface ExtractedReaderError {
   readonly code: ReaderFatalErrorCode;
@@ -10,6 +14,9 @@ export interface ExtractedReaderError {
 }
 
 const READER_ERROR_MESSAGES: Record<ReaderFatalErrorCode, string> = {
+  VOLUME_NOT_FOUND: "",
+  VOLUME_UNAVAILABLE: "",
+  AUTH_REQUIRED: "",
   CORRUPT_ZIP: "ZIP ファイルが破損しているため開けませんでした",
   EMPTY_ARCHIVE:
     "表示できる画像ファイル（JPEG / PNG / WebP / AVIF）が見つかりませんでした",

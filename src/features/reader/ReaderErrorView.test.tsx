@@ -6,6 +6,7 @@ import * as stories from "./ReaderErrorView.stories";
 
 const {
   ArchiveError,
+  ArchiveErrorBackToSeries,
   PageDecodeError,
   PageDecodeErrorLeftSlot,
   PageDecodeErrorRightSlot,
@@ -26,10 +27,25 @@ describe("ReaderErrorView", () => {
     expect(screen.getByTestId("reader-error-code")).toHaveTextContent(
       "CORRUPT_ZIP",
     );
+    expect(screen.getByTestId("reader-error-back-button")).toHaveTextContent(
+      "ホームへ戻る",
+    );
 
     await user.click(screen.getByTestId("reader-error-back-button"));
     expect(onBackToHome).toHaveBeenCalledTimes(1);
     unmount();
+
+    // ArchiveErrorBackToSeries でカスタム戻り先ラベルが表示されること
+    const onBackToSeries = vi.fn();
+    const { unmount: unmountSeries } = render(
+      <ArchiveErrorBackToSeries onBackToHome={onBackToSeries} />,
+    );
+    expect(screen.getByTestId("reader-error-back-button")).toHaveTextContent(
+      "シリーズ詳細へ戻る",
+    );
+    await user.click(screen.getByTestId("reader-error-back-button"));
+    expect(onBackToSeries).toHaveBeenCalledTimes(1);
+    unmountSeries();
 
     // errorCode 省略時はエラーコード表示を省略すること
     render(<ArchiveError errorCode={undefined} message="WebGL2 初期化失敗" />);

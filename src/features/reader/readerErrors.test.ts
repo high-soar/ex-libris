@@ -8,8 +8,17 @@ import {
 } from "./readerErrors";
 
 describe("readerErrors", () => {
-  it("getReaderErrorMessageがDECODE_FAILEDを含む全8種のエラーコードに対し仕様通りの日本語文言を返すこと (AC-RD-06, AC-RD-07)", () => {
+  it("getReaderErrorMessageがDrive巻事前検証エラー3種とDECODE_FAILEDを含む全11種のエラーコードに対し仕様通りの日本語文言を返すこと (AC-RD-06, AC-RD-07, AC-RD-19)", () => {
     const expectedEntries: Array<readonly [ReaderFatalErrorCode, string]> = [
+      ["VOLUME_NOT_FOUND", "指定された巻データが見つかりませんでした"],
+      [
+        "VOLUME_UNAVAILABLE",
+        "この巻はゴミ箱に移動されたか、同期対象外のフォルダにあります",
+      ],
+      [
+        "AUTH_REQUIRED",
+        "Google アカウントにログインしていないため開けませんでした。設定画面から連携してください",
+      ],
       ["CORRUPT_ZIP", "ZIP ファイルが破損しているため開けませんでした"],
       [
         "EMPTY_ARCHIVE",
@@ -32,13 +41,13 @@ describe("readerErrors", () => {
       ["DECODE_FAILED", "ページの画像デコードに失敗しました"],
     ];
 
-    expect(expectedEntries).toHaveLength(8);
+    expect(expectedEntries).toHaveLength(11);
     for (const [code, expectedMessage] of expectedEntries) {
       expect(getReaderErrorMessage(code)).toBe(expectedMessage);
     }
   });
 
-  it("extractReaderErrorがZipArchiveError・WebGLInitError・Comlink経由のcodeオブジェクトを正しく変換すること (AC-RD-06)", () => {
+  it("extractReaderErrorがZipArchiveError・WebGLInitError・Comlink経由のcodeオブジェクトを正しく変換すること (AC-RD-06, AC-RD-19)", () => {
     expect(
       extractReaderError(new ZipArchiveError("ENCRYPTED_ZIP", "encrypted")),
     ).toEqual({
@@ -71,6 +80,12 @@ describe("readerErrors", () => {
     expect(extractReaderError({ code: "DECODE_FAILED" })).toEqual({
       code: "DECODE_FAILED",
       message: "ページの画像デコードに失敗しました",
+    });
+
+    expect(extractReaderError({ code: "AUTH_REQUIRED" })).toEqual({
+      code: "AUTH_REQUIRED",
+      message:
+        "Google アカウントにログインしていないため開けませんでした。設定画面から連携してください",
     });
   });
 

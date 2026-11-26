@@ -5,6 +5,7 @@ export interface ReaderErrorViewProps {
   readonly mode: "archive" | "page";
   readonly message: string;
   readonly errorCode?: string;
+  readonly backLabel?: string;
   readonly onBackToHome?: () => void;
   readonly slotPosition?: SlotPosition;
   readonly pageNumber?: number;

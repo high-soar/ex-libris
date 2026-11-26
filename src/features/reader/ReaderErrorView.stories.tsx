@@ -30,6 +30,18 @@ export const ArchiveError: Story = {
   },
 };
 
+/** シリーズ詳細起点の Drive 巻検証エラー（シリーズ詳細へ戻るラベル） */
+export const ArchiveErrorBackToSeries: Story = {
+  name: "Drive巻検証エラー（シリーズ詳細へ戻る）",
+  args: {
+    mode: "archive",
+    message: "この巻はゴミ箱に移動されたか、同期対象外のフォルダにあります",
+    errorCode: "VOLUME_UNAVAILABLE",
+    backLabel: "シリーズ詳細へ戻る",
+    onBackToHome: () => {},
+  },
+};
+
 /** 個別ページのみデコード失敗時の中央エラーカード（前後めくり継続可能） */
 export const PageDecodeError: Story = {
   name: "個別ページデコードエラー（前後移動継続可）",
