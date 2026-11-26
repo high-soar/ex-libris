@@ -47,9 +47,10 @@ describe("SeriesDetailHeader", () => {
     );
 
     const header = screen.getByRole("banner");
-    expect(header.style.paddingTop).toBe(
-      "calc(1rem + env(safe-area-inset-top, 0px))",
-    );
+    expect(header).toHaveStyle({
+      paddingTop: "calc(1rem + env(safe-area-inset-top, 0px))",
+    });
+    expect(header.style.paddingTop).toContain("safe-area-inset-top");
 
     fireEvent.click(screen.getByTestId("series-detail-back-button"));
     expect(onBack).toHaveBeenCalledTimes(1);
