@@ -233,8 +233,51 @@ export class DexieReadingProgressRepository implements ReadingProgressRepository
   listByVolumeIds(
     volumeIds: ReadonlySet<string>,
   ): Promise<ReadonlyMap<string, ReadingProgressRecord>> {
-    void volumeIds;
-    return Promise.resolve(new Map());
+    if (volumeIds.size === 0) {
+      return Promise.resolve(new Map<string, ReadingProgressRecord>());
+    }
+    return this.enqueue(async () => {
+      const normalizedIds = new Set<string>();
+      for (const rawId of volumeIds) {
+        const trimmed = rawId.trim();
+        if (trimmed.length > 0) {
+          normalizedIds.add(trimmed);
+        }
+      }
+      if (normalizedIds.size === 0) {
+        return new Map<string, ReadingProgressRecord>();
+      }
+
+      const idList = [...normalizedIds];
+      const targetKeys = idList.map((id) => `vol:${id}`);
+      const result = new Map<string, ReadingProgressRecord>();
+
+      await this.database.transaction(
+        "rw",
+        this.database.readingProgress,
+        async () => {
+          const records =
+            await this.database.readingProgress.bulkGet(targetKeys);
+          const corruptKeys: string[] = [];
+          for (let index = 0; index < records.length; index += 1) {
+            const record = records[index];
+            if (!record) {
+              continue;
+            }
+            if (!isValidRecord(record)) {
+              corruptKeys.push(targetKeys[index]);
+              continue;
+            }
+            result.set(idList[index], record);
+          }
+          if (corruptKeys.length > 0) {
+            await this.database.readingProgress.bulkDelete(corruptKeys);
+          }
+        },
+      );
+
+      return result;
+    });
   }
 
   listRecentLocal(
