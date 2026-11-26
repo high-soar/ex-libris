@@ -192,4 +192,36 @@ describe("DriveSyncRootsSection", () => {
     );
     expect(screen.queryByTestId("sync-roots-error")).not.toBeInTheDocument();
   });
+
+  it("Drive同期実行中(isSyncing=true)はフォルダ追加・ピッカー・有効切替・削除をすべてdisabledで排他保護すること (AC-ST-08)", async () => {
+    const user = userEvent.setup();
+    const onToggleRootEnabled = vi.fn();
+    const onRemoveRoot = vi.fn();
+
+    render(
+      <ConnectedWithMixedRoots
+        isSyncing={true}
+        folderInput="folder-abc"
+        onToggleRootEnabled={onToggleRootEnabled}
+        onRemoveRoot={onRemoveRoot}
+      />,
+    );
+
+    expect(screen.getByTestId("open-folder-picker-button")).toBeDisabled();
+    expect(screen.getByTestId("folder-input")).toBeDisabled();
+    expect(screen.getByTestId("add-folder-by-input-button")).toBeDisabled();
+
+    const rows = screen.getAllByTestId("sync-root-item");
+    for (const row of rows) {
+      const toggle = within(row).getByTestId("toggle-sync-root-button");
+      const remove = within(row).getByTestId("remove-sync-root-button");
+      expect(toggle).toBeDisabled();
+      expect(remove).toBeDisabled();
+      await user.click(toggle);
+      await user.click(remove);
+    }
+
+    expect(onToggleRootEnabled).not.toHaveBeenCalled();
+    expect(onRemoveRoot).not.toHaveBeenCalled();
+  });
 });

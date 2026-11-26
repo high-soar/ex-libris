@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { App } from "./App";
 import type { DiagnosticEntry } from "./diagnostics/types";
+import type { BookshelfPageInitialSnapshot } from "./features/bookshelf/BookshelfPage";
 
 const FIXED_SETTINGS_ENTRIES: readonly DiagnosticEntry[] = [
   {
@@ -19,6 +20,12 @@ const FIXED_SETTINGS_ENTRIES: readonly DiagnosticEntry[] = [
   },
 ];
 
+const READY_EMPTY_BOOKSHELF_SNAPSHOT: BookshelfPageInitialSnapshot = {
+  driveSetupState: { kind: "ready" },
+  seriesItems: [],
+  recentHistory: [],
+};
+
 const meta: Meta<typeof App> = {
   title: "Shell/App",
   component: App,
@@ -34,7 +41,7 @@ type Story = StoryObj<typeof App>;
 export const Default: Story = {
   name: "初期状態（空の本棚シェル）",
   args: {
-    initialDriveSetupState: { kind: "ready" },
+    initialBookshelfSnapshot: READY_EMPTY_BOOKSHELF_SNAPSHOT,
   },
 };
 
@@ -43,7 +50,10 @@ export const CopiedFeedback: Story = {
   name: "診断ログコピー完了状態",
   args: {
     initialCopyStatus: "copied",
-    initialDriveSetupState: { kind: "ready" },
+    initialBookshelfSnapshot: {
+      ...READY_EMPTY_BOOKSHELF_SNAPSHOT,
+      copyStatus: "copied",
+    },
   },
 };
 
@@ -52,7 +62,10 @@ export const CopyFailedFeedback: Story = {
   name: "診断ログコピー失敗状態",
   args: {
     initialCopyStatus: "failed",
-    initialDriveSetupState: { kind: "ready" },
+    initialBookshelfSnapshot: {
+      ...READY_EMPTY_BOOKSHELF_SNAPSHOT,
+      copyStatus: "failed",
+    },
   },
 };
 
@@ -88,6 +101,6 @@ export const ReaderLocalFallback: Story = {
   name: "ローカルリーダーセッション不在フォールバック（/）",
   args: {
     initialPath: "/read/local",
-    initialDriveSetupState: { kind: "ready" },
+    initialBookshelfSnapshot: READY_EMPTY_BOOKSHELF_SNAPSHOT,
   },
 };

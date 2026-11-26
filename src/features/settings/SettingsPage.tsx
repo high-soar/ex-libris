@@ -23,9 +23,11 @@ import type {
   DriveFolderMetadata,
 } from "../../providers/gdrive/types";
 import { useRouter } from "../../shared/router/routerContext";
+import { useDriveSyncStateStore } from "../../shared/sync/driveSyncStateStore";
 import type { DriveSyncRootRecord } from "../../storage/types";
 import { DiagnosticsSection } from "./DiagnosticsSection";
 import { DriveFolderPickerModal } from "./DriveFolderPickerModal";
+import { DriveSyncExecutionSection } from "./DriveSyncExecutionSection";
 import { DriveSyncRootsSection } from "./DriveSyncRootsSection";
 import { GoogleAccountSection } from "./GoogleAccountSection";
 import { SettingsHeader } from "./SettingsHeader";
@@ -89,9 +91,32 @@ export function SettingsPage({
   logger = diagnosticLogger,
   onRegisterModalBack,
 }: SettingsPageProps): ReactNode {
-  const { googleAuthBridge, driveSyncRootsRepo, driveFolderClient } =
-    useServices();
+  const {
+    googleAuthBridge,
+    driveSyncRootsRepo,
+    driveFolderClient,
+    driveSyncMetaRepo,
+    driveSyncEngine,
+  } = useServices();
   const { back, setBackBlocked } = useRouter();
+
+  const storeSyncPhase = useDriveSyncStateStore((state) => state.phase);
+  const storeSyncActiveMode = useDriveSyncStateStore(
+    (state) => state.activeMode,
+  );
+  const storeLastSyncedAt = useDriveSyncStateStore(
+    (state) => state.lastSyncedAt,
+  );
+  const storeLastSyncResult = useDriveSyncStateStore(
+    (state) => state.lastResult,
+  );
+  const storeSyncErrorMessage = useDriveSyncStateStore(
+    (state) => state.errorMessage,
+  );
+  const hydrateLastSyncedAt = useDriveSyncStateStore(
+    (state) => state.hydrateLastSyncedAt,
+  );
+  const runDriveSync = useDriveSyncStateStore((state) => state.runDriveSync);
 
   const [authStatus, setAuthStatus] = useState<GoogleAccountAuthStatus>(() => {
     if (initialSnapshot !== undefined) {
@@ -160,6 +185,27 @@ export function SettingsPage({
     initialSnapshot?.pickerState?.errorMessage ?? null,
   );
 
+  const hasSnapshot = initialSnapshot !== undefined;
+  const effectiveSyncPhase = hasSnapshot
+    ? (initialSnapshot.syncState?.phase ?? "idle")
+    : storeSyncPhase;
+  const effectiveSyncActiveMode = hasSnapshot
+    ? (initialSnapshot.syncState?.activeMode ?? null)
+    : storeSyncActiveMode;
+  const effectiveLastSyncedAt = hasSnapshot
+    ? (initialSnapshot.syncState?.lastSyncedAt ?? null)
+    : storeLastSyncedAt;
+  const effectiveLastSyncResult = hasSnapshot
+    ? (initialSnapshot.syncState?.lastResult ?? null)
+    : storeLastSyncResult;
+  const effectiveSyncErrorMessage = hasSnapshot
+    ? (initialSnapshot.syncState?.errorMessage ?? null)
+    : storeSyncErrorMessage;
+  const isSyncing = effectiveSyncPhase === "syncing";
+  const enabledRootCount = syncRoots.filter(
+    (root) => root.enabled === 1,
+  ).length;
+
   const isAuthBusy =
     authStatus === "signing-in" || authStatus === "signing-out";
   const isSavingSyncRoot = isSubmittingRoot || isPickerSaving;
@@ -174,6 +220,8 @@ export function SettingsPage({
 
   const isAuthBusyRef = useRef<boolean>(isAuthBusy);
   isAuthBusyRef.current = isAuthBusy;
+  const isSyncingRef = useRef<boolean>(isSyncing);
+  isSyncingRef.current = isSyncing;
   const isSubmittingRootRef = useRef<boolean>(isSubmittingRoot);
   isSubmittingRootRef.current = isSubmittingRoot;
   const isPickerSavingRef = useRef<boolean>(isPickerSaving);
@@ -265,6 +313,8 @@ export function SettingsPage({
         });
     }
 
+    void hydrateLastSyncedAt(driveSyncMetaRepo, logger);
+
     const initialRootsSeq = rootsMutationSeqRef.current;
     void driveSyncRootsRepo
       .listActive()
@@ -294,8 +344,10 @@ export function SettingsPage({
       unsubscribe();
     };
   }, [
+    driveSyncMetaRepo,
     driveSyncRootsRepo,
     googleAuthBridge,
+    hydrateLastSyncedAt,
     initialSnapshot,
     logger,
     syncDiagnosticsFromLogger,
@@ -391,7 +443,7 @@ export function SettingsPage({
   }, [googleAuthBridge, logger, syncDiagnosticsFromLogger]);
 
   const handleSignOut = useCallback(async () => {
-    if (isAuthBusyRef.current) {
+    if (isAuthBusyRef.current || isSyncingRef.current) {
       return;
     }
     isAuthBusyRef.current = true;
@@ -443,7 +495,11 @@ export function SettingsPage({
   }, []);
 
   const handleAddFolderByInput = useCallback(async () => {
-    if (isSubmittingRootRef.current || authStatusRef.current !== "connected") {
+    if (
+      isSubmittingRootRef.current ||
+      isSyncingRef.current ||
+      authStatusRef.current !== "connected"
+    ) {
       return;
     }
 
@@ -518,6 +574,9 @@ export function SettingsPage({
 
   const handleToggleRootEnabled = useCallback(
     async (folderId: string, nextEnabled: boolean) => {
+      if (isSyncingRef.current) {
+        return;
+      }
       rootsMutationSeqRef.current += 1;
       const mutationSeq = rootsMutationSeqRef.current;
       const previousRoots = syncRootsRef.current;
@@ -571,6 +630,9 @@ export function SettingsPage({
 
   const handleRemoveRoot = useCallback(
     async (folderId: string) => {
+      if (isSyncingRef.current) {
+        return;
+      }
       rootsMutationSeqRef.current += 1;
       const mutationSeq = rootsMutationSeqRef.current;
       const previousRoots = syncRootsRef.current;
@@ -679,7 +741,11 @@ export function SettingsPage({
   );
 
   const handleOpenFolderPicker = useCallback(() => {
-    if (authStatusRef.current !== "connected" || isSubmittingRootRef.current) {
+    if (
+      authStatusRef.current !== "connected" ||
+      isSubmittingRootRef.current ||
+      isSyncingRef.current
+    ) {
       return;
     }
     setIsPickerOpen(true);
@@ -798,6 +864,29 @@ export function SettingsPage({
     void savePickedFolder({ id: current.id, name: current.name });
   }, [savePickedFolder]);
 
+  const runManualSync = useCallback(
+    (forceFullScan: boolean) => {
+      void runDriveSync({
+        driveSyncEngine,
+        forceFullScan,
+        logger,
+      }).finally(() => {
+        if (isMountedRef.current) {
+          syncDiagnosticsFromLogger();
+        }
+      });
+    },
+    [driveSyncEngine, logger, runDriveSync, syncDiagnosticsFromLogger],
+  );
+
+  const handleRunIncrementalSync = useCallback(() => {
+    runManualSync(false);
+  }, [runManualSync]);
+
+  const handleRunFullScan = useCallback(() => {
+    runManualSync(true);
+  }, [runManualSync]);
+
   const handleCopyDiagnostics = useCallback(async () => {
     const report = logger.formatReport();
     if (!navigator.clipboard) {
@@ -839,6 +928,7 @@ export function SettingsPage({
             status={authStatus}
             email={authEmail}
             errorMessage={authErrorMessage}
+            isSyncing={isSyncing}
             onSignIn={handleSignIn}
             onSignOut={handleSignOut}
           />
@@ -847,12 +937,25 @@ export function SettingsPage({
             isConnected={authStatus === "connected"}
             folderInput={folderInput}
             isSubmitting={isSubmittingRoot}
+            isSyncing={isSyncing}
             errorMessage={syncRootsErrorMessage}
             onChangeFolderInput={handleChangeFolderInput}
             onAddFolderByInput={handleAddFolderByInput}
             onOpenFolderPicker={handleOpenFolderPicker}
             onToggleRootEnabled={handleToggleRootEnabled}
             onRemoveRoot={handleRemoveRoot}
+          />
+          <DriveSyncExecutionSection
+            authStatus={authStatus}
+            enabledRootCount={enabledRootCount}
+            syncPhase={effectiveSyncPhase}
+            activeMode={effectiveSyncActiveMode}
+            lastSyncedAt={effectiveLastSyncedAt}
+            lastResult={effectiveLastSyncResult}
+            errorMessage={effectiveSyncErrorMessage}
+            isBackBlocked={isBackBlocked}
+            onRunIncrementalSync={handleRunIncrementalSync}
+            onRunFullScan={handleRunFullScan}
           />
           <DiagnosticsSection
             entries={diagnosticEntries}

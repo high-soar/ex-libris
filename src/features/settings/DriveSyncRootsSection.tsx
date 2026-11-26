@@ -6,6 +6,7 @@ export interface DriveSyncRootsSectionProps {
   readonly isConnected: boolean;
   readonly folderInput: string;
   readonly isSubmitting: boolean;
+  readonly isSyncing?: boolean;
   readonly errorMessage: string | null;
   readonly onChangeFolderInput: (value: string) => void;
   readonly onAddFolderByInput: () => void;
@@ -19,10 +20,12 @@ export interface DriveSyncRootsSectionProps {
 
 function SyncRootRow({
   root,
+  isSyncing,
   onToggleRootEnabled,
   onRemoveRoot,
 }: {
   readonly root: DriveSyncRootRecord;
+  readonly isSyncing: boolean;
   readonly onToggleRootEnabled: (
     folderId: string,
     nextEnabled: boolean,
@@ -56,8 +59,9 @@ function SyncRootRow({
           data-testid="toggle-sync-root-button"
           aria-pressed={isEnabled}
           aria-label={`${root.folderName} の同期を${isEnabled ? "無効" : "有効"}にする`}
+          disabled={isSyncing}
           onClick={() => onToggleRootEnabled(root.folderId, !isEnabled)}
-          className={`touch-manipulation rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+          className={`touch-manipulation rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
             isEnabled
               ? "border-emerald-500/40 bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30"
               : "border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
@@ -69,8 +73,9 @@ function SyncRootRow({
           type="button"
           data-testid="remove-sync-root-button"
           aria-label={`${root.folderName} を削除`}
+          disabled={isSyncing}
           onClick={() => onRemoveRoot(root.folderId)}
-          className="touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-rose-500/50 hover:bg-rose-950/50 hover:text-rose-200"
+          className="touch-manipulation rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-rose-500/50 hover:bg-rose-950/50 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-40"
         >
           削除
         </button>
@@ -84,6 +89,7 @@ export function DriveSyncRootsSection({
   isConnected,
   folderInput,
   isSubmitting,
+  isSyncing = false,
   errorMessage,
   onChangeFolderInput,
   onAddFolderByInput,
@@ -91,7 +97,7 @@ export function DriveSyncRootsSection({
   onToggleRootEnabled,
   onRemoveRoot,
 }: DriveSyncRootsSectionProps): ReactNode {
-  const isAdditionDisabled = !isConnected || isSubmitting;
+  const isAdditionDisabled = !isConnected || isSubmitting || isSyncing;
   const isSubmitDisabled =
     isAdditionDisabled || folderInput.trim().length === 0;
   const hasError = errorMessage !== null && errorMessage.length > 0;
@@ -190,6 +196,7 @@ export function DriveSyncRootsSection({
             <SyncRootRow
               key={root.folderId}
               root={root}
+              isSyncing={isSyncing}
               onToggleRootEnabled={onToggleRootEnabled}
               onRemoveRoot={onRemoveRoot}
             />

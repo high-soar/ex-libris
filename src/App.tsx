@@ -6,7 +6,10 @@ import type { AppBridge } from "./bridges/app/types";
 import { diagnosticLogger } from "./diagnostics/diagnosticLogger";
 import type { DiagnosticLogger } from "./diagnostics/types";
 import type { CopyStatus as BookshelfCopyStatus } from "./features/bookshelf/BookshelfHeader";
-import { BookshelfPage } from "./features/bookshelf/BookshelfPage";
+import {
+  BookshelfPage,
+  type BookshelfPageInitialSnapshot,
+} from "./features/bookshelf/BookshelfPage";
 import type { DriveSetupBannerState } from "./features/bookshelf/DriveSetupBanner";
 import { ReaderPage } from "./features/reader/ReaderPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
@@ -22,6 +25,7 @@ export interface AppProps {
   readonly createCoordinatorSession?: () => CoordinatorSessionHandle;
   readonly initialCopyStatus?: CopyStatus;
   readonly initialDriveSetupState?: DriveSetupBannerState;
+  readonly initialBookshelfSnapshot?: BookshelfPageInitialSnapshot;
   readonly initialSettingsSnapshot?: SettingsPageInitialSnapshot;
   readonly settingsLogger?: DiagnosticLogger;
 }
@@ -29,6 +33,7 @@ export interface AppProps {
 interface AppShellProps {
   readonly initialCopyStatus: CopyStatus;
   readonly initialDriveSetupState?: DriveSetupBannerState;
+  readonly initialBookshelfSnapshot?: BookshelfPageInitialSnapshot;
   readonly initialSettingsSnapshot?: SettingsPageInitialSnapshot;
   readonly settingsLogger?: DiagnosticLogger;
 }
@@ -36,6 +41,7 @@ interface AppShellProps {
 function AppShell({
   initialCopyStatus,
   initialDriveSetupState,
+  initialBookshelfSnapshot,
   initialSettingsSnapshot,
   settingsLogger,
 }: AppShellProps) {
@@ -111,6 +117,9 @@ function AppShell({
           {...(initialDriveSetupState !== undefined
             ? { initialDriveSetupState }
             : {})}
+          {...(initialBookshelfSnapshot !== undefined
+            ? { initialSnapshot: initialBookshelfSnapshot }
+            : {})}
         />
       )}
     </div>
@@ -123,6 +132,7 @@ export function App({
   createCoordinatorSession,
   initialCopyStatus = "idle",
   initialDriveSetupState,
+  initialBookshelfSnapshot,
   initialSettingsSnapshot,
   settingsLogger,
 }: AppProps) {
@@ -135,6 +145,7 @@ export function App({
         <AppShell
           initialCopyStatus={initialCopyStatus}
           initialDriveSetupState={initialDriveSetupState}
+          initialBookshelfSnapshot={initialBookshelfSnapshot}
           initialSettingsSnapshot={initialSettingsSnapshot}
           settingsLogger={settingsLogger}
         />

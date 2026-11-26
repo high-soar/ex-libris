@@ -1,5 +1,12 @@
 import type { DiagnosticEntry } from "../../diagnostics/types";
-import type { DriveFolderMetadata } from "../../providers/gdrive/types";
+import type {
+  DriveFolderMetadata,
+  DriveSyncResult,
+} from "../../providers/gdrive/types";
+import type {
+  DriveSyncActiveMode,
+  DriveSyncUiPhase,
+} from "../../shared/sync/driveSyncStateStore";
 import type { DriveSyncRootRecord } from "../../storage/types";
 
 export type GoogleAccountAuthStatus =
@@ -29,9 +36,18 @@ export interface SettingsPickerSnapshotState {
   readonly errorMessage?: string | null;
 }
 
+export interface SettingsSyncSnapshotState {
+  readonly phase: DriveSyncUiPhase;
+  readonly activeMode?: DriveSyncActiveMode | null;
+  readonly lastSyncedAt?: number | null;
+  readonly lastResult?: DriveSyncResult | null;
+  readonly errorMessage?: string | null;
+}
+
 export interface SettingsPageInitialSnapshot {
   readonly authState: SettingsAuthSnapshotState;
   readonly syncRoots: readonly DriveSyncRootRecord[];
+  readonly syncState?: SettingsSyncSnapshotState;
   readonly diagnosticEntries?: readonly DiagnosticEntry[];
   readonly copyStatus?: DiagnosticsCopyStatus;
   readonly folderInput?: string;

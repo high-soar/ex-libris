@@ -26,14 +26,21 @@ import type {
   DriveApiErrorCode,
   DriveFolderClient,
   DriveFolderPage,
+  DriveSyncEngine,
 } from "../../providers/gdrive/types";
 import { RouterProvider } from "../../shared/router/RouterProvider";
 import { useRouter } from "../../shared/router/routerContext";
+import {
+  resetDriveSyncState,
+  useDriveSyncStateStore,
+} from "../../shared/sync/driveSyncStateStore";
 import { resetTestDb } from "../../storage/db";
+import type { DriveSyncMetaRepository } from "../../storage/repositories/driveSyncMetaRepository";
 import type { DriveSyncRootsRepository } from "../../storage/repositories/driveSyncRootsRepository";
 import type { DriveSyncRootRecord } from "../../storage/types";
 import * as DiagnosticsSectionModule from "./DiagnosticsSection";
 import * as DriveFolderPickerModalModule from "./DriveFolderPickerModal";
+import * as DriveSyncExecutionSectionModule from "./DriveSyncExecutionSection";
 import * as DriveSyncRootsSectionModule from "./DriveSyncRootsSection";
 import * as GoogleAccountSectionModule from "./GoogleAccountSection";
 import * as SettingsHeaderModule from "./SettingsHeader";
@@ -44,6 +51,7 @@ const {
   Unlinked,
   AuthProcessing,
   ConnectedWithRoots,
+  Syncing,
   FolderPickerOpen,
   ErrorState,
 } = composeStories(stories);
@@ -151,6 +159,37 @@ function createMockDriveFolderClient(
   };
 }
 
+function createMockDriveSyncMetaRepo(
+  overrides: Partial<DriveSyncMetaRepository> = {},
+): DriveSyncMetaRepository {
+  return {
+    getSyncState: vi.fn(async () => ({
+      startPageToken: null,
+      lastDriveSyncAt: null,
+      syncedRootFolderIds: [],
+    })),
+    saveSyncState: vi.fn(async (state) => state),
+    clearSyncState: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
+function createMockDriveSyncEngine(
+  overrides: Partial<DriveSyncEngine> = {},
+): DriveSyncEngine {
+  return {
+    sync: vi.fn(async () => ({
+      mode: "incremental" as const,
+      scannedRoots: 1,
+      upsertedVolumes: 3,
+      trashedVolumes: 0,
+      invalidatedZipCaches: 0,
+      syncedAt: Date.UTC(2026, 10, 25, 12, 30, 0),
+    })),
+    ...overrides,
+  };
+}
+
 describe("SettingsPage", () => {
   const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
     navigator,
@@ -165,6 +204,9 @@ describe("SettingsPage", () => {
   let syncRootsSpy: MockInstance<
     typeof DriveSyncRootsSectionModule.DriveSyncRootsSection
   >;
+  let syncExecSpy: MockInstance<
+    typeof DriveSyncExecutionSectionModule.DriveSyncExecutionSection
+  >;
   let pickerSpy: MockInstance<
     typeof DriveFolderPickerModalModule.DriveFolderPickerModal
   >;
@@ -175,6 +217,7 @@ describe("SettingsPage", () => {
   beforeEach(async () => {
     await resetTestDb();
     diagnosticLogger.clear();
+    resetDriveSyncState();
     window.history.replaceState(null, "", "/settings");
 
     headerSpy = vi
@@ -185,6 +228,9 @@ describe("SettingsPage", () => {
       .mockImplementation(() => null);
     syncRootsSpy = vi
       .spyOn(DriveSyncRootsSectionModule, "DriveSyncRootsSection")
+      .mockImplementation(() => null);
+    syncExecSpy = vi
+      .spyOn(DriveSyncExecutionSectionModule, "DriveSyncExecutionSection")
       .mockImplementation(() => null);
     pickerSpy = vi
       .spyOn(DriveFolderPickerModalModule, "DriveFolderPickerModal")
@@ -197,6 +243,7 @@ describe("SettingsPage", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await resetTestDb();
+    resetDriveSyncState();
     window.history.replaceState(null, "", originalUrl || "/");
     if (originalClipboardDescriptor) {
       Object.defineProperty(
@@ -229,6 +276,13 @@ describe("SettingsPage", () => {
       return call![0] as DriveSyncRootsSectionModule.DriveSyncRootsSectionProps;
     };
 
+  const getSyncExecProps =
+    (): DriveSyncExecutionSectionModule.DriveSyncExecutionSectionProps => {
+      const call = syncExecSpy.mock.calls.at(-1);
+      expect(call).toBeDefined();
+      return call![0] as DriveSyncExecutionSectionModule.DriveSyncExecutionSectionProps;
+    };
+
   const getPickerProps =
     (): DriveFolderPickerModalModule.DriveFolderPickerModalProps => {
       const call = pickerSpy.mock.calls.at(-1);
@@ -256,6 +310,8 @@ describe("SettingsPage", () => {
       readonly authBridge?: GoogleAuthBridge;
       readonly syncRootsRepo?: DriveSyncRootsRepository;
       readonly folderClient?: DriveFolderClient;
+      readonly syncMetaRepo?: DriveSyncMetaRepository;
+      readonly syncEngine?: DriveSyncEngine;
       readonly initialPath?: string;
       readonly routerProbe?: (blocked: boolean) => void;
     } = {},
@@ -272,6 +328,8 @@ describe("SettingsPage", () => {
         googleAuthBridge={deps.authBridge ?? createMockGoogleAuthBridge()}
         driveSyncRootsRepo={deps.syncRootsRepo ?? createMockSyncRootsRepo()}
         driveFolderClient={deps.folderClient ?? createMockDriveFolderClient()}
+        driveSyncMetaRepo={deps.syncMetaRepo ?? createMockDriveSyncMetaRepo()}
+        driveSyncEngine={deps.syncEngine ?? createMockDriveSyncEngine()}
       >
         <RouterProvider initialPath={deps.initialPath ?? "/settings"}>
           <RouterObserver />
@@ -281,7 +339,7 @@ describe("SettingsPage", () => {
     );
   }
 
-  it("全Storybookストーリーを描画し5つの直下子コンポーネントへPropsを正しく配線すること (AC-ST-07)", async () => {
+  it("全Storybookストーリーを描画し6つの直下子コンポーネントへPropsを正しく配線すること (AC-ST-07, AC-ST-08)", async () => {
     const { unmount: u1 } = await renderAndFlush(<Unlinked />);
     expect(screen.getByTestId("settings-main-content")).not.toHaveAttribute(
       "inert",
@@ -1596,5 +1654,133 @@ describe("SettingsPage", () => {
       await getDiagnosticsProps().onCopyDiagnostics();
     });
     expect(getDiagnosticsProps().copyStatus).toBe("failed");
+  });
+
+  it("Syncingストーリーおよび通常マウント時のDrive手動同期実行・排他保護・TR-09非ブロック継続を検証すること (AC-ST-08)", async () => {
+    // 1. Syncing ストーリー: isSyncing=true が Account/Roots へ伝播しつつ isBackBlocked=false を維持
+    const { unmount: unmountSyncing } = await renderAndFlush(<Syncing />);
+    expect(getHeaderProps().isBackBlocked).toBe(false);
+    expect(getAccountProps().isSyncing).toBe(true);
+    expect(getSyncRootsProps().isSyncing).toBe(true);
+    expect(getSyncExecProps()).toMatchObject({
+      authStatus: "connected",
+      enabledRootCount: 1,
+      syncPhase: "syncing",
+      activeMode: "incremental",
+      isBackBlocked: false,
+    });
+    unmountSyncing();
+
+    // 2. 通常マウント時: hydrateLastSyncedAt が呼ばれ、差分同期・強制フルスキャンが実行できること
+    const syncDeferred = createDeferred<{
+      mode: "incremental";
+      scannedRoots: number;
+      upsertedVolumes: number;
+      trashedVolumes: number;
+      invalidatedZipCaches: number;
+      syncedAt: number;
+    }>();
+    const syncEngine = createMockDriveSyncEngine({
+      sync: vi
+        .fn()
+        .mockImplementationOnce(() => syncDeferred.promise)
+        .mockResolvedValueOnce({
+          mode: "full",
+          scannedRoots: 1,
+          upsertedVolumes: 5,
+          trashedVolumes: 0,
+          invalidatedZipCaches: 0,
+          syncedAt: Date.UTC(2026, 10, 25, 13, 0, 0),
+        }),
+    });
+    const syncMetaRepo = createMockDriveSyncMetaRepo({
+      getSyncState: vi.fn(async () => ({
+        startPageToken: "tok-1",
+        lastDriveSyncAt: Date.UTC(2026, 10, 25, 11, 0, 0),
+        syncedRootFolderIds: ["folder-comics"],
+      })),
+    });
+    const authBridge = createMockGoogleAuthBridge({
+      getCachedSession: vi.fn(() => ({
+        email: "reader@example.com",
+        accessToken: "ya29.ok",
+        expiresAt: Date.now() + 3_600_000,
+      })),
+    });
+    const syncRootsRepo = createMockSyncRootsRepo({
+      listActive: vi.fn(async () => [
+        createSampleRoot({ folderId: "folder-comics", enabled: 1 }),
+        createSampleRoot({ folderId: "folder-disabled", enabled: 0 }),
+      ]),
+    });
+
+    let lastBackBlocked = false;
+    await renderSettings({
+      authBridge,
+      syncRootsRepo,
+      syncMetaRepo,
+      syncEngine,
+      routerProbe: (blocked) => {
+        lastBackBlocked = blocked;
+      },
+    });
+
+    expect(syncMetaRepo.getSyncState).toHaveBeenCalledTimes(1);
+    expect(getSyncExecProps()).toMatchObject({
+      authStatus: "connected",
+      enabledRootCount: 1,
+      syncPhase: "idle",
+      lastSyncedAt: Date.UTC(2026, 10, 25, 11, 0, 0),
+      isBackBlocked: false,
+    });
+
+    // 差分同期開始 -> syncing 中は isBackBlocked=false のままログアウト・ルート変更がガードされること
+    act(() => {
+      getSyncExecProps().onRunIncrementalSync();
+    });
+    expect(getSyncExecProps().syncPhase).toBe("syncing");
+    expect(getAccountProps().isSyncing).toBe(true);
+    expect(getSyncRootsProps().isSyncing).toBe(true);
+    expect(lastBackBlocked).toBe(false);
+
+    // 同期実行中の排他ガード確認（直接ハンドラ呼び出しでも通信・DB更新しないこと）
+    await act(async () => {
+      getAccountProps().onSignOut();
+      getSyncRootsProps().onOpenFolderPicker();
+      getSyncRootsProps().onAddFolderByInput();
+      getSyncRootsProps().onToggleRootEnabled("folder-comics", false);
+      getSyncRootsProps().onRemoveRoot("folder-comics");
+      await flushMicrotasks();
+    });
+    expect(authBridge.signOut).not.toHaveBeenCalled();
+    expect(syncRootsRepo.setEnabled).not.toHaveBeenCalled();
+    expect(syncRootsRepo.removeRoot).not.toHaveBeenCalled();
+
+    // 差分同期完了
+    await act(async () => {
+      syncDeferred.resolve({
+        mode: "incremental",
+        scannedRoots: 1,
+        upsertedVolumes: 2,
+        trashedVolumes: 0,
+        invalidatedZipCaches: 0,
+        syncedAt: Date.UTC(2026, 10, 25, 12, 0, 0),
+      });
+      await flushMicrotasks();
+      await flushMicrotasks();
+    });
+    expect(syncEngine.sync).toHaveBeenNthCalledWith(1, {
+      forceFullScan: false,
+    });
+    expect(useDriveSyncStateStore.getState().phase).toBe("completed");
+
+    // 強制フルスキャン実行
+    await act(async () => {
+      getSyncExecProps().onRunFullScan();
+      await flushMicrotasks();
+      await flushMicrotasks();
+    });
+    expect(syncEngine.sync).toHaveBeenNthCalledWith(2, { forceFullScan: true });
+    expect(getSyncExecProps().lastResult?.mode).toBe("full");
   });
 });

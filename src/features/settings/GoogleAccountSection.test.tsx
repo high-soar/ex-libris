@@ -144,4 +144,25 @@ describe("GoogleAccountSection", () => {
     );
     expect(screen.queryByTestId("google-auth-error")).not.toBeInTheDocument();
   });
+
+  it("Drive同期実行中(isSyncing=true)はログアウトボタンをdisabledで排他保護すること (AC-ST-08)", async () => {
+    const user = userEvent.setup();
+    const onSignOut = vi.fn();
+
+    render(
+      <GoogleAccountSection
+        status="connected"
+        email="reader@example.com"
+        errorMessage={null}
+        isSyncing={true}
+        onSignIn={vi.fn()}
+        onSignOut={onSignOut}
+      />,
+    );
+
+    const signOutButton = screen.getByTestId("google-signout-button");
+    expect(signOutButton).toBeDisabled();
+    await user.click(signOutButton);
+    expect(onSignOut).not.toHaveBeenCalled();
+  });
 });
