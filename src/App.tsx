@@ -12,6 +12,7 @@ import {
 } from "./features/bookshelf/BookshelfPage";
 import type { DriveSetupBannerState } from "./features/bookshelf/DriveSetupBanner";
 import { ReaderPage } from "./features/reader/ReaderPage";
+import type { SeriesDetailPageInitialSnapshot } from "./features/series-detail/types";
 import { SettingsPage } from "./features/settings/SettingsPage";
 import type { SettingsPageInitialSnapshot } from "./features/settings/types";
 import { RouterProvider } from "./shared/router/RouterProvider";
@@ -26,6 +27,7 @@ export interface AppProps {
   readonly initialCopyStatus?: CopyStatus;
   readonly initialDriveSetupState?: DriveSetupBannerState;
   readonly initialBookshelfSnapshot?: BookshelfPageInitialSnapshot;
+  readonly initialSeriesDetailSnapshot?: SeriesDetailPageInitialSnapshot;
   readonly initialSettingsSnapshot?: SettingsPageInitialSnapshot;
   readonly settingsLogger?: DiagnosticLogger;
 }
