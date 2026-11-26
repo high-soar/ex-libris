@@ -97,7 +97,11 @@ describe("App", () => {
     expect(window.__exLibrisServices?.isReady).toBe(true);
     expect(getLatestBookshelfProps()).toEqual({
       initialCopyStatus: "idle",
-      initialDriveSetupState: { kind: "ready" },
+      initialSnapshot: {
+        driveSetupState: { kind: "ready" },
+        seriesItems: [],
+        recentHistory: [],
+      },
     });
     expect(readerSpy).not.toHaveBeenCalled();
     expect(settingsSpy).not.toHaveBeenCalled();
@@ -115,7 +119,12 @@ describe("App", () => {
     const { unmount: unmountCopied } = render(<CopiedFeedback />);
     expect(getLatestBookshelfProps()).toEqual({
       initialCopyStatus: "copied",
-      initialDriveSetupState: { kind: "ready" },
+      initialSnapshot: {
+        driveSetupState: { kind: "ready" },
+        seriesItems: [],
+        recentHistory: [],
+        copyStatus: "copied",
+      },
     });
     unmountCopied();
 
@@ -123,7 +132,12 @@ describe("App", () => {
     const { unmount: unmountFailed } = render(<CopyFailedFeedback />);
     expect(getLatestBookshelfProps()).toEqual({
       initialCopyStatus: "failed",
-      initialDriveSetupState: { kind: "ready" },
+      initialSnapshot: {
+        driveSetupState: { kind: "ready" },
+        seriesItems: [],
+        recentHistory: [],
+        copyStatus: "failed",
+      },
     });
     unmountFailed();
 
@@ -189,6 +203,18 @@ describe("App", () => {
     expect(getLatestSettingsProps()).toEqual({
       onRegisterModalBack: expect.any(Function),
       logger: customLogger,
+    });
+
+    bookshelfSpy.mockClear();
+    render(
+      <App
+        initialPath="/"
+        initialDriveSetupState={{ kind: "unauthenticated" }}
+      />,
+    );
+    expect(getLatestBookshelfProps()).toEqual({
+      initialCopyStatus: "idle",
+      initialDriveSetupState: { kind: "unauthenticated" },
     });
 
     bookshelfSpy.mockClear();
