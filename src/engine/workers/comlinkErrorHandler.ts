@@ -1,6 +1,6 @@
 import * as Comlink from "comlink";
 import type { ZipErrorCode } from "../types";
-import { ZipArchiveError } from "../zip/errors";
+import { ZipArchiveError, type ZipArchiveErrorMetadata } from "../zip/errors";
 
 export type ComlinkTransferHandlers = Map<
   string,
@@ -19,6 +19,9 @@ interface SerializedZipArchiveErrorEnvelope {
     readonly message: string;
     readonly stack?: unknown;
     readonly code: ZipErrorCode;
+    readonly httpStatus?: unknown;
+    readonly isRateLimited?: unknown;
+    readonly isUnauthorized?: unknown;
   };
 }
 
@@ -67,6 +70,33 @@ function isSerializedZipArchiveError(
   );
 }
 
+function extractZipArchiveMetadata(
+  value: SerializedZipArchiveErrorEnvelope["value"],
+): ZipArchiveErrorMetadata | undefined {
+  const httpStatus =
+    typeof value.httpStatus === "number" ? value.httpStatus : undefined;
+  const isRateLimited =
+    typeof value.isRateLimited === "boolean" ? value.isRateLimited : undefined;
+  const isUnauthorized =
+    typeof value.isUnauthorized === "boolean"
+      ? value.isUnauthorized
+      : undefined;
+
+  if (
+    httpStatus === undefined &&
+    isRateLimited === undefined &&
+    isUnauthorized === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    httpStatus,
+    isRateLimited,
+    isUnauthorized,
+  };
+}
+
 export function registerZipArchiveErrorTransferHandler(
   handlers: ComlinkTransferHandlers = Comlink.transferHandlers,
 ): void {
@@ -86,13 +116,23 @@ export function registerZipArchiveErrorTransferHandler(
         isSerializedErrorEnvelope(serialized) &&
         thrownValue instanceof ZipArchiveError
       ) {
+        const payload: Record<string, unknown> = {
+          ...serialized.value,
+          code: thrownValue.code,
+        };
+        if (thrownValue.httpStatus !== undefined) {
+          payload.httpStatus = thrownValue.httpStatus;
+        }
+        if (thrownValue.isRateLimited !== undefined) {
+          payload.isRateLimited = thrownValue.isRateLimited;
+        }
+        if (thrownValue.isUnauthorized !== undefined) {
+          payload.isUnauthorized = thrownValue.isUnauthorized;
+        }
         return [
           {
             isError: true,
-            value: {
-              ...serialized.value,
-              code: thrownValue.code,
-            },
+            value: payload,
           },
           transferables,
         ];
@@ -115,7 +155,8 @@ export function registerZipArchiveErrorTransferHandler(
     deserialize(serialized) {
       if (isSerializedZipArchiveError(serialized)) {
         const { code, message, stack } = serialized.value;
-        const error = new ZipArchiveError(code, message);
+        const metadata = extractZipArchiveMetadata(serialized.value);
+        const error = new ZipArchiveError(code, message, undefined, metadata);
         if (typeof stack === "string") {
           error.stack = stack;
         }

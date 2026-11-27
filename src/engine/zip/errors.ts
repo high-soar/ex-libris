@@ -16,12 +16,14 @@ export class ZipArchiveError extends Error {
     code: ZipErrorCode,
     message: string,
     cause?: unknown,
-    _metadata?: ZipArchiveErrorMetadata,
+    metadata?: ZipArchiveErrorMetadata,
   ) {
     super(message, cause !== undefined ? { cause } : undefined);
     this.name = "ZipArchiveError";
     this.code = code;
-    void _metadata;
+    this.httpStatus = metadata?.httpStatus;
+    this.isRateLimited = metadata?.isRateLimited;
+    this.isUnauthorized = metadata?.isUnauthorized;
   }
 }
 

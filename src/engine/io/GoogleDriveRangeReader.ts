@@ -1,8 +1,20 @@
+import { GoogleAuthError } from "../../bridges/oauth/googleAuthErrors";
 import { redactSensitiveText } from "../../diagnostics/diagnosticLogger";
 import type { RandomAccessReader } from "../types";
-import { ZipArchiveError, isAbortError } from "../zip/errors";
+import {
+  ZipArchiveError,
+  type ZipArchiveErrorMetadata,
+  isAbortError,
+} from "../zip/errors";
 
 const GOOGLE_DRIVE_FILES_API_BASE = "https://www.googleapis.com/drive/v3/files";
+
+const RATE_LIMIT_403_REASONS = new Set([
+  "rateLimitExceeded",
+  "userRateLimitExceeded",
+  "downloadQuotaExceeded",
+  "quotaExceeded",
+]);
 
 export interface GetRangeAccessTokenOptions {
   readonly forceRefresh?: boolean;
@@ -62,6 +74,47 @@ function rethrowIfAbortedError(error: unknown, signal?: AbortSignal): void {
   }
 }
 
+function hasRateLimitReason(payload: unknown): boolean {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const errorObj = (payload as { readonly error?: unknown }).error;
+  if (typeof errorObj !== "object" || errorObj === null) {
+    return false;
+  }
+  const errors = (errorObj as { readonly errors?: unknown }).errors;
+  if (!Array.isArray(errors)) {
+    return false;
+  }
+  return errors.some((entry) => {
+    if (typeof entry !== "object" || entry === null) {
+      return false;
+    }
+    const reason = (entry as { readonly reason?: unknown }).reason;
+    return typeof reason === "string" && RATE_LIMIT_403_REASONS.has(reason);
+  });
+}
+
+async function detectRateLimited403(
+  response: Response,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    rethrowIfAbortedError(error, signal);
+    cancelResponseBody(response);
+    return false;
+  }
+
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+
+  return hasRateLimitReason(payload);
+}
+
 export class GoogleDriveRangeReader implements RandomAccessReader {
   readonly sourceId: string;
   readonly totalSize: number;
@@ -115,9 +168,10 @@ export class GoogleDriveRangeReader implements RandomAccessReader {
     errorMessage: string,
     detail: string,
     cause?: unknown,
+    metadata?: ZipArchiveErrorMetadata,
   ): never {
     this.emitDiagnostic("error", diagnosticMessage, detail);
-    throw new ZipArchiveError("READ_ERROR", errorMessage, cause);
+    throw new ZipArchiveError("READ_ERROR", errorMessage, cause, metadata);
   }
 
   private async acquireToken(
@@ -133,11 +187,16 @@ export class GoogleDriveRangeReader implements RandomAccessReader {
           : await this.getAccessToken();
     } catch (error) {
       rethrowIfAbortedError(error, signal);
+      const metadata: ZipArchiveErrorMetadata | undefined =
+        error instanceof GoogleAuthError && error.code !== "AUTH_NETWORK_ERROR"
+          ? { isUnauthorized: true }
+          : undefined;
       this.failRead(
         "Google Drive Range取得用アクセストークンの取得に失敗しました",
         `Google Drive Range取得用アクセストークンの取得に失敗しました: ${this.driveFileId}`,
         `fileId=${this.driveFileId} range=${rangeHeader} ${formatErrorDetail(error)}`,
         error,
+        metadata,
       );
     }
 
@@ -182,12 +241,13 @@ export class GoogleDriveRangeReader implements RandomAccessReader {
     return response;
   }
 
-  private validateRangeResponse(
+  private async validateRangeResponse(
     response: Response,
     rangeHeader: string,
     expectedLength: number,
     isFullFileRequest: boolean,
-  ): void {
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (response.status === 200 && !isFullFileRequest) {
       cancelResponseBody(response);
       this.failRead(
@@ -198,11 +258,27 @@ export class GoogleDriveRangeReader implements RandomAccessReader {
     }
 
     if (response.status !== 206 && response.status !== 200) {
-      cancelResponseBody(response);
+      let metadata: ZipArchiveErrorMetadata;
+      if (response.status === 429) {
+        cancelResponseBody(response);
+        metadata = { httpStatus: 429, isRateLimited: true };
+      } else if (response.status === 403) {
+        const isRateLimited = await detectRateLimited403(response, signal);
+        metadata = { httpStatus: 403, isRateLimited };
+      } else if (response.status === 401) {
+        cancelResponseBody(response);
+        metadata = { httpStatus: 401, isUnauthorized: true };
+      } else {
+        cancelResponseBody(response);
+        metadata = { httpStatus: response.status, isRateLimited: false };
+      }
+
       this.failRead(
         "Google Drive Range取得がエラー応答を返しました",
         `Google Drive Range取得に失敗しました (status=${response.status}): ${this.driveFileId} (${rangeHeader})`,
         `fileId=${this.driveFileId} range=${rangeHeader} status=${response.status}`,
+        undefined,
+        metadata,
       );
     }
 
@@ -306,11 +382,12 @@ export class GoogleDriveRangeReader implements RandomAccessReader {
       response = await this.executeRangeFetch(url, token, rangeHeader, signal);
     }
 
-    this.validateRangeResponse(
+    await this.validateRangeResponse(
       response,
       rangeHeader,
       expectedLength,
       isFullFileRequest,
+      signal,
     );
 
     return this.readResponseBytes(

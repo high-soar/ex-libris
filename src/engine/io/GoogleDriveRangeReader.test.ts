@@ -646,6 +646,7 @@ describe("GoogleDriveRangeReader", () => {
         error: { errors: [{ reason: "insufficientFilePermissions" }] },
       }),
       JSON.stringify({ error: { errors: [null, { reason: 123 }] } }),
+      JSON.stringify({ error: {} }),
       JSON.stringify({ error: "not-an-object" }),
       JSON.stringify(null),
       "<html>Forbidden</html>",
