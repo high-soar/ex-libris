@@ -6,4 +6,6 @@ export type SeriesDetailPageInitialSnapshot =
   | {
       readonly kind: "ready";
       readonly viewModel: SeriesDetailViewModel;
+      readonly isGoogleConnected?: boolean;
+      readonly isSyncing?: boolean;
     };

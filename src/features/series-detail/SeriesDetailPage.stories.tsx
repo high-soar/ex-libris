@@ -179,3 +179,32 @@ export const Empty: Story = {
     },
   },
 };
+
+/** 表紙取得失敗巻があり再試行バーが表示される状態 */
+export const WithCoverErrors: Story = {
+  name: "表紙取得失敗あり（再試行バー表示）",
+  args: {
+    initialSnapshot: {
+      kind: "ready",
+      viewModel: {
+        ...SAMPLE_VIEW_MODEL,
+        representativeVolume: {
+          ...VOL_1,
+          coverStatus: "error",
+        },
+        volumes: [
+          {
+            ...SAMPLE_VIEW_MODEL.volumes[0]!,
+            volume: {
+              ...VOL_1,
+              coverStatus: "error",
+            },
+          },
+          ...SAMPLE_VIEW_MODEL.volumes.slice(1),
+        ],
+      },
+      isGoogleConnected: true,
+      isSyncing: false,
+    },
+  },
+};
