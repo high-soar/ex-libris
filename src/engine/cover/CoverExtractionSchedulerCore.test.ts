@@ -1132,4 +1132,280 @@ describe("CoverExtractionSchedulerCore", () => {
     expect((await db.volumes.get("v-other-1"))?.coverStatus).toBe("ready");
     scheduler4.dispose();
   });
+
+  it("background-lowスロットル待機中にsyncQueue()で全ルート無効化・空キュー化してもundefined実行せず安全にidleへ遷移すること", async () => {
+    await seedEnabledRoot("root-1");
+    const zipBytes = makeZipBytes();
+    await db.series.put(makeSeries({ id: "s-1" }));
+    await db.volumes.bulkPut([
+      makeVolume(zipBytes.byteLength, {
+        id: "v-1",
+        driveFileId: "df-1",
+        volumeNumber: 1,
+      }),
+      makeVolume(zipBytes.byteLength, {
+        id: "v-2",
+        driveFileId: "df-2",
+        volumeNumber: 2,
+      }),
+    ]);
+
+    const baseVolumesRepo = new DexieVolumesRepository(db);
+    const getByIdArgs: Array<string | undefined> = [];
+    const throttleStarted = createDeferred<AbortSignal>();
+    const manualSleepRelease = createDeferred<void>();
+
+    const scheduler = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        now: () => 5_000,
+        volumesRepo: {
+          getById: async (id) => {
+            getByIdArgs.push(id);
+            return baseVolumesRepo.getById(id);
+          },
+          listVisibleByEnabledRoots: (ids) =>
+            baseVolumesRepo.listVisibleByEnabledRoots(ids),
+          saveCoverReady: (input) => baseVolumesRepo.saveCoverReady(input),
+          saveCoverError: (input) => baseVolumesRepo.saveCoverError(input),
+          resetErrorCoversToPending: (input) =>
+            baseVolumesRepo.resetErrorCoversToPending(input),
+        },
+        sleep: (_ms, signal) => {
+          throttleStarted.resolve(signal);
+          return new Promise<void>((resolve) => {
+            const onAbort = () => resolve();
+            signal.addEventListener("abort", onAbort, { once: true });
+            void manualSleepRelease.promise.then(() => {
+              signal.removeEventListener("abort", onAbort);
+              resolve();
+            });
+          });
+        },
+      }),
+    );
+
+    await scheduler.syncQueue();
+    const throttleSignal = await throttleStarted.promise;
+    expect(throttleSignal.aborted).toBe(false);
+
+    // スロットル待機中に全ルート無効化 → syncQueue() で空キュー化
+    await db.driveSyncRoots.update("root-1", { enabled: 0 });
+    await scheduler.syncQueue();
+
+    // スロットル待機が即座に中断され、idle へ遷移して getById(undefined) が呼ばれないこと
+    expect(throttleSignal.aborted).toBe(true);
+    manualSleepRelease.resolve();
+    const finalSnap = await waitForIdle(scheduler);
+    expect(finalSnap).toMatchObject({
+      phase: "idle",
+      totalCount: 0,
+      readyCount: 0,
+      pendingCount: 0,
+      errorCount: 0,
+      activeVolumeId: null,
+    });
+    expect(getByIdArgs).toEqual(["v-1"]);
+    expect(getByIdArgs).not.toContain(undefined);
+
+    scheduler.dispose();
+  });
+
+  it("saveCoverReady/saveCoverError待機中にsyncQueue()やdispose()が並走しても二重計上・ゴースト計上・破棄後更新が起きないこと", async () => {
+    const zipBytes = makeZipBytes();
+
+    // ① saveCoverReady 待機中に syncQueue() が完了した場合（二重計上なし）
+    await seedEnabledRoot("root-1");
+    await db.series.put(makeSeries({ id: "s-1" }));
+    await db.volumes.put(
+      makeVolume(zipBytes.byteLength, {
+        id: "v-ready-race",
+        driveFileId: "df-ready-race",
+        volumeNumber: 1,
+      }),
+    );
+
+    const baseRepo1 = new DexieVolumesRepository(db);
+    const readySaveStarted = createDeferred<void>();
+    const readySaveGate = createDeferred<void>();
+    const scheduler1 = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        volumesRepo: {
+          getById: (id) => baseRepo1.getById(id),
+          listVisibleByEnabledRoots: (ids) =>
+            baseRepo1.listVisibleByEnabledRoots(ids),
+          saveCoverReady: async (input) => {
+            const saved = await baseRepo1.saveCoverReady(input);
+            readySaveStarted.resolve();
+            await readySaveGate.promise;
+            return saved;
+          },
+          saveCoverError: (input) => baseRepo1.saveCoverError(input),
+          resetErrorCoversToPending: (input) =>
+            baseRepo1.resetErrorCoversToPending(input),
+        },
+      }),
+    );
+
+    await scheduler1.syncQueue();
+    await readySaveStarted.promise;
+    // DB は既に ready になっているため syncQueue() が readyCount: 1 を反映する
+    await scheduler1.syncQueue();
+    readySaveGate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const snap1 = await waitForIdle(scheduler1);
+    expect(snap1).toMatchObject({
+      phase: "idle",
+      totalCount: 1,
+      readyCount: 1,
+      pendingCount: 0,
+      errorCount: 0,
+    });
+    scheduler1.dispose();
+
+    // ② saveCoverError 待機中に syncQueue() でルート無効化された場合（ゴースト計上なし）
+    await resetTestDb();
+    await seedEnabledRoot("root-1");
+    await db.series.put(makeSeries({ id: "s-1" }));
+    await db.volumes.put(
+      makeVolume(zipBytes.byteLength, {
+        id: "v-err-race",
+        driveFileId: "df-err-race",
+        volumeNumber: 1,
+      }),
+    );
+
+    const baseRepo2 = new DexieVolumesRepository(db);
+    const errorSaveStarted = createDeferred<void>();
+    const errorSaveGate = createDeferred<void>();
+    const scheduler2 = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        volumesRepo: {
+          getById: (id) => baseRepo2.getById(id),
+          listVisibleByEnabledRoots: (ids) =>
+            baseRepo2.listVisibleByEnabledRoots(ids),
+          saveCoverReady: (input) => baseRepo2.saveCoverReady(input),
+          saveCoverError: async (input) => {
+            const saved = await baseRepo2.saveCoverError(input);
+            errorSaveStarted.resolve();
+            await errorSaveGate.promise;
+            return saved;
+          },
+          resetErrorCoversToPending: (input) =>
+            baseRepo2.resetErrorCoversToPending(input),
+        },
+        createRangeReader: (volume) => ({
+          sourceId: `gdrive:${volume.driveFileId}`,
+          totalSize: volume.fileSize,
+          async readRange() {
+            throw new ZipArchiveError("CORRUPT_ZIP", "broken zip");
+          },
+        }),
+      }),
+    );
+
+    await scheduler2.syncQueue();
+    await errorSaveStarted.promise;
+    await db.driveSyncRoots.update("root-1", { enabled: 0 });
+    await scheduler2.syncQueue();
+    errorSaveGate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const snap2 = await waitForIdle(scheduler2);
+    expect(snap2).toMatchObject({
+      phase: "idle",
+      totalCount: 0,
+      readyCount: 0,
+      pendingCount: 0,
+      errorCount: 0,
+    });
+    scheduler2.dispose();
+
+    // ③-a saveCoverReady 待機中に dispose() された場合（破棄後のカウント加算なし）
+    await resetTestDb();
+    await seedEnabledRoot("root-1");
+    await db.series.put(makeSeries({ id: "s-1" }));
+    await db.volumes.put(
+      makeVolume(zipBytes.byteLength, {
+        id: "v-ready-dispose",
+        driveFileId: "df-ready-dispose",
+        volumeNumber: 1,
+      }),
+    );
+
+    const baseRepo3 = new DexieVolumesRepository(db);
+    const readyDisposeStarted = createDeferred<void>();
+    const readyDisposeGate = createDeferred<void>();
+    const scheduler3 = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        volumesRepo: {
+          getById: (id) => baseRepo3.getById(id),
+          listVisibleByEnabledRoots: (ids) =>
+            baseRepo3.listVisibleByEnabledRoots(ids),
+          saveCoverReady: async (input) => {
+            const saved = await baseRepo3.saveCoverReady(input);
+            readyDisposeStarted.resolve();
+            await readyDisposeGate.promise;
+            return saved;
+          },
+          saveCoverError: (input) => baseRepo3.saveCoverError(input),
+          resetErrorCoversToPending: (input) =>
+            baseRepo3.resetErrorCoversToPending(input),
+        },
+      }),
+    );
+
+    await scheduler3.syncQueue();
+    await readyDisposeStarted.promise;
+    scheduler3.dispose();
+    readyDisposeGate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(scheduler3.getSnapshot().readyCount).toBe(0);
+
+    // ③-b saveCoverError 待機中に dispose() された場合（破棄後のカウント加算なし）
+    await resetTestDb();
+    await seedEnabledRoot("root-1");
+    await db.series.put(makeSeries({ id: "s-1" }));
+    await db.volumes.put(
+      makeVolume(zipBytes.byteLength, {
+        id: "v-err-dispose",
+        driveFileId: "df-err-dispose",
+        volumeNumber: 1,
+      }),
+    );
+
+    const baseRepo4 = new DexieVolumesRepository(db);
+    const errorDisposeStarted = createDeferred<void>();
+    const errorDisposeGate = createDeferred<void>();
+    const scheduler4 = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        volumesRepo: {
+          getById: (id) => baseRepo4.getById(id),
+          listVisibleByEnabledRoots: (ids) =>
+            baseRepo4.listVisibleByEnabledRoots(ids),
+          saveCoverReady: (input) => baseRepo4.saveCoverReady(input),
+          saveCoverError: async (input) => {
+            const saved = await baseRepo4.saveCoverError(input);
+            errorDisposeStarted.resolve();
+            await errorDisposeGate.promise;
+            return saved;
+          },
+          resetErrorCoversToPending: (input) =>
+            baseRepo4.resetErrorCoversToPending(input),
+        },
+        createRangeReader: (volume) => ({
+          sourceId: `gdrive:${volume.driveFileId}`,
+          totalSize: volume.fileSize,
+          async readRange() {
+            throw new ZipArchiveError("CORRUPT_ZIP", "broken zip");
+          },
+        }),
+      }),
+    );
+
+    await scheduler4.syncQueue();
+    await errorDisposeStarted.promise;
+    scheduler4.dispose();
+    errorDisposeGate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(scheduler4.getSnapshot().errorCount).toBe(0);
+  });
 });
