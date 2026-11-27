@@ -10,6 +10,7 @@ import {
 import { useServices } from "../../app/serviceContext";
 import type { GoogleAuthSession } from "../../bridges/oauth/types";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
+import type { CoverExtractionProgressSnapshot } from "../../engine/cover/types";
 import type { DriveSyncResult } from "../../providers/gdrive/types";
 import {
   SETTINGS_ROUTE,
@@ -52,6 +53,7 @@ export interface BookshelfPageInitialSnapshot {
   readonly lastSyncedAt?: number | null;
   readonly lastSyncResult?: DriveSyncResult | null;
   readonly syncErrorMessage?: string | null;
+  readonly coverExtractionState?: CoverExtractionProgressSnapshot;
   readonly recentHistory?: readonly LocalReadingHistoryItem[];
   readonly copyStatus?: CopyStatus;
   readonly errorMessage?: string | null;
