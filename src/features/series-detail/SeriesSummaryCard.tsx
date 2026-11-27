@@ -27,6 +27,11 @@ export function SeriesSummaryCard({
   return (
     <section
       data-testid="series-summary-card"
+      data-cover-volume-id={
+        representativeVolume.coverStatus === "pending"
+          ? representativeVolume.id
+          : undefined
+      }
       className="rounded-2xl border border-slate-800 bg-slate-900 p-4 shadow-md sm:p-6"
     >
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">
