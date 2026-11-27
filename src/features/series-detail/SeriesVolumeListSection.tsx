@@ -5,6 +5,8 @@ import type { SeriesDetailVolumeItem } from "../bookshelf/bookshelfViewModel";
 
 export interface SeriesVolumeListSectionProps {
   readonly volumes: readonly SeriesDetailVolumeItem[];
+  readonly canRetryCovers?: boolean;
+  readonly onRetryFailedCovers?: () => void;
   readonly onSelectVolume: (volumeId: string) => void;
 }
 
@@ -28,8 +30,14 @@ const READ_STATUS_BADGE: Record<
 
 export function SeriesVolumeListSection({
   volumes,
+  canRetryCovers = false,
+  onRetryFailedCovers,
   onSelectVolume,
 }: SeriesVolumeListSectionProps): ReactNode {
+  const errorCount = volumes.filter(
+    (item) => item.volume.coverStatus === "error",
+  ).length;
+
   return (
     <section data-testid="series-volume-list" className="space-y-3">
       <div className="flex items-center justify-between gap-2">
@@ -37,6 +45,26 @@ export function SeriesVolumeListSection({
           収録巻一覧（{volumes.length} 巻）
         </h2>
       </div>
+
+      {errorCount > 0 && (
+        <div
+          data-testid="series-cover-error-banner"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-200"
+        >
+          <span className="font-medium">
+            {errorCount} 冊の表紙取得に失敗しました
+          </span>
+          <button
+            type="button"
+            data-testid="series-retry-failed-covers-button"
+            disabled={!canRetryCovers}
+            onClick={onRetryFailedCovers}
+            className="inline-flex shrink-0 items-center justify-center touch-manipulation rounded-lg border border-amber-400/50 bg-amber-500/20 px-3 py-1.5 text-xs font-semibold text-amber-100 transition-colors hover:bg-amber-500/30 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            表紙を再試行
+          </button>
+        </div>
+      )}
 
       <ul className="space-y-2.5">
         {volumes.map((item) => {
@@ -46,6 +74,11 @@ export function SeriesVolumeListSection({
               key={item.volume.id}
               data-testid="series-volume-item"
               data-volume-id={item.volume.id}
+              data-cover-volume-id={
+                item.volume.coverStatus === "pending"
+                  ? item.volume.id
+                  : undefined
+              }
             >
               <button
                 type="button"

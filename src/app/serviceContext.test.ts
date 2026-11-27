@@ -135,6 +135,26 @@ describe("serviceContext", () => {
       driveSyncMetaRepo,
       driveSyncClient,
       driveSyncEngine,
+      coverExtractionScheduler: {
+        syncQueue: vi.fn(async () => {}),
+        setViewportVolumeIds: vi.fn(),
+        pause: vi.fn(),
+        resume: vi.fn(),
+        retryFailedCovers: vi.fn(async () => 0),
+        getSnapshot: vi.fn(() => ({
+          phase: "idle" as const,
+          totalCount: 0,
+          readyCount: 0,
+          pendingCount: 0,
+          errorCount: 0,
+          activeVolumeId: null,
+          pauseReasons: [],
+        })),
+        subscribeProgress: vi.fn(() => () => {}),
+        subscribeVolumeUpdated: vi.fn(() => () => {}),
+        resetForTest: vi.fn(async () => {}),
+        dispose: vi.fn(),
+      },
     };
 
     const wrapper = ({ children }: { children: ReactNode }) =>

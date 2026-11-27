@@ -1,9 +1,17 @@
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useServices } from "../../app/serviceContext";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
 import { buildReaderVolumePath } from "../../shared/router/routeMatcher";
 import { useRouter } from "../../shared/router/routerContext";
 import { useDriveSyncStateStore } from "../../shared/sync/driveSyncStateStore";
+import { useViewportVolumeObserver } from "../../shared/ui/useViewportVolumeObserver";
 import type { ReadingProgressRecord } from "../../storage/types";
 import { useBookshelfUiStateStore } from "../bookshelf/bookshelfUiStateStore";
 import {
@@ -29,8 +37,14 @@ export function SeriesDetailPage({
   seriesId,
   initialSnapshot,
 }: SeriesDetailPageProps): ReactNode {
-  const { seriesRepo, volumesRepo, driveSyncRootsRepo, readingProgressRepo } =
-    useServices();
+  const {
+    googleAuthBridge,
+    seriesRepo,
+    volumesRepo,
+    driveSyncRootsRepo,
+    readingProgressRepo,
+    coverExtractionScheduler,
+  } = useServices();
   const { navigate, back } = useRouter();
   const saveSeriesDetailScroll = useBookshelfUiStateStore(
     (state) => state.saveSeriesDetailScroll,
@@ -41,14 +55,130 @@ export function SeriesDetailPage({
   const completedSyncCount = useDriveSyncStateStore(
     (state) => state.completedSyncCount,
   );
+  const syncPhase = useDriveSyncStateStore((state) => state.phase);
 
   const hasSnapshot = initialSnapshot !== undefined;
+  const mainRef = useRef<HTMLElement | null>(null);
   const [isSettled, setIsSettled] = useState<boolean>(
     hasSnapshot ? initialSnapshot.kind !== "loading" : false,
   );
   const [viewModel, setViewModel] = useState<SeriesDetailViewModel | null>(
     initialSnapshot?.kind === "ready" ? initialSnapshot.viewModel : null,
   );
+  const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(() => {
+    if (hasSnapshot) {
+      return initialSnapshot.kind === "ready"
+        ? (initialSnapshot.isGoogleConnected ?? true)
+        : false;
+    }
+    return googleAuthBridge.getCachedSession() !== null;
+  });
+
+  const effectiveIsSyncing = hasSnapshot
+    ? initialSnapshot.kind === "ready"
+      ? (initialSnapshot.isSyncing ?? false)
+      : false
+    : syncPhase === "syncing";
+  const canRetryCovers = isGoogleConnected && !effectiveIsSyncing;
+
+  const pendingVolumeIds = useMemo(
+    () =>
+      viewModel === null
+        ? []
+        : viewModel.volumes
+            .filter((item) => item.volume.coverStatus === "pending")
+            .map((item) => item.volume.id),
+    [viewModel],
+  );
+
+  useViewportVolumeObserver({
+    containerRef: mainRef,
+    screenKey: "series-detail",
+    scheduler: coverExtractionScheduler,
+    pendingVolumeIds,
+    enabled: !hasSnapshot,
+  });
+
+  useEffect(() => {
+    if (hasSnapshot) {
+      return;
+    }
+
+    let isActive = true;
+    const unsubscribe = googleAuthBridge.subscribeSession((session) => {
+      setIsGoogleConnected(session !== null);
+    });
+
+    if (googleAuthBridge.getCachedSession() === null) {
+      void googleAuthBridge
+        .getSession()
+        .then((session) => {
+          if (isActive) {
+            setIsGoogleConnected(session !== null);
+          }
+        })
+        .catch(() => {
+          if (isActive) {
+            setIsGoogleConnected(false);
+          }
+        });
+    }
+
+    return () => {
+      isActive = false;
+      unsubscribe();
+    };
+  }, [googleAuthBridge, hasSnapshot]);
+
+  useEffect(() => {
+    if (hasSnapshot) {
+      return;
+    }
+    return coverExtractionScheduler.subscribeVolumeUpdated((event) => {
+      if (event.seriesId !== seriesId) {
+        return;
+      }
+      setViewModel((prev) => {
+        if (prev === null) {
+          return prev;
+        }
+        let changed = false;
+        const nextRepresentativeVolume =
+          prev.representativeVolume.id === event.volumeId
+            ? ((changed = true),
+              {
+                ...prev.representativeVolume,
+                coverStatus: event.coverStatus,
+                coverBlob: event.coverBlob,
+                coverUpdatedAt: event.coverUpdatedAt,
+              })
+            : prev.representativeVolume;
+        const nextVolumes = prev.volumes.map((item) => {
+          if (item.volume.id !== event.volumeId) {
+            return item;
+          }
+          changed = true;
+          return {
+            ...item,
+            volume: {
+              ...item.volume,
+              coverStatus: event.coverStatus,
+              coverBlob: event.coverBlob,
+              coverUpdatedAt: event.coverUpdatedAt,
+            },
+          };
+        });
+        if (!changed) {
+          return prev;
+        }
+        return {
+          ...prev,
+          representativeVolume: nextRepresentativeVolume,
+          volumes: nextVolumes,
+        };
+      });
+    });
+  }, [coverExtractionScheduler, hasSnapshot, seriesId]);
 
   useEffect(() => {
     if (hasSnapshot) {
@@ -152,13 +282,18 @@ export function SeriesDetailPage({
   const handleSelectVolume = useCallback(
     (volumeId: string) => {
       saveSeriesDetailScroll(seriesId, window.scrollY);
+      coverExtractionScheduler.pause("reader");
       navigate(buildReaderVolumePath(volumeId), {
         readerOrigin: "series-detail",
         seriesId,
       });
     },
-    [navigate, saveSeriesDetailScroll, seriesId],
+    [coverExtractionScheduler, navigate, saveSeriesDetailScroll, seriesId],
   );
+
+  const handleRetryFailedCovers = useCallback(() => {
+    void coverExtractionScheduler.retryFailedCovers({ seriesId });
+  }, [coverExtractionScheduler, seriesId]);
 
   return (
     <div
@@ -171,6 +306,7 @@ export function SeriesDetailPage({
       />
 
       <main
+        ref={mainRef}
         style={{
           paddingBottom: "calc(2rem + env(safe-area-inset-bottom, 0px))",
         }}
@@ -200,6 +336,8 @@ export function SeriesDetailPage({
             />
             <SeriesVolumeListSection
               volumes={viewModel.volumes}
+              canRetryCovers={canRetryCovers}
+              onRetryFailedCovers={handleRetryFailedCovers}
               onSelectVolume={handleSelectVolume}
             />
           </>

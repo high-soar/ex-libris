@@ -13,15 +13,27 @@ import {
   ServiceContext,
   type ServiceContextValue,
 } from "../../app/serviceContext";
+import type {
+  AuthSessionListener,
+  GoogleAuthBridge,
+  GoogleAuthSession,
+} from "../../bridges/oauth/types";
+import type {
+  CoverExtractionScheduler,
+  CoverExtractionVolumeUpdateEvent,
+} from "../../engine/cover/types";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
 import {
   RouterContext,
   type RouterContextValue,
 } from "../../shared/router/routerContext";
+import { INITIAL_COVER_EXTRACTION_SNAPSHOT } from "../../shared/sync/coverExtractionStateStore";
 import {
   resetDriveSyncState,
   useDriveSyncStateStore,
 } from "../../shared/sync/driveSyncStateStore";
+import * as ViewportObserverModule from "../../shared/ui/useViewportVolumeObserver";
+import type { VolumesRepository } from "../../storage/repositories/volumesRepository";
 import type {
   DriveSyncRootRecord,
   ReadingProgressRecord,
@@ -39,7 +51,7 @@ import * as stories from "./SeriesDetailPage.stories";
 import * as SeriesSummaryCardModule from "./SeriesSummaryCard";
 import * as SeriesVolumeListSectionModule from "./SeriesVolumeListSection";
 
-const { Ready, Loading, Empty } = composeStories(stories);
+const { Ready, Loading, Empty, WithCoverErrors } = composeStories(stories);
 
 function createSeries(overrides: Partial<SeriesRecord> = {}): SeriesRecord {
   return {
@@ -104,10 +116,105 @@ function createRoot(
   };
 }
 
+function createMockGoogleAuthBridge(
+  overrides: Partial<GoogleAuthBridge> = {},
+): GoogleAuthBridge & {
+  emitSession: (session: GoogleAuthSession | null) => void;
+} {
+  const listeners = new Set<AuthSessionListener>();
+  return {
+    getCachedSession: vi.fn(() => null),
+    getSession: vi.fn(async () => null),
+    signIn: vi.fn(),
+    signOut: vi.fn(async () => undefined),
+    getValidAccessToken: vi.fn(async () => "ya29.mock"),
+    subscribeSession: vi.fn((listener: AuthSessionListener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    }),
+    emitSession: (session: GoogleAuthSession | null) => {
+      for (const listener of [...listeners]) {
+        listener(session);
+      }
+    },
+    ...overrides,
+  };
+}
+
+function createMockCoverExtractionScheduler(
+  overrides: Partial<CoverExtractionScheduler> = {},
+): CoverExtractionScheduler & {
+  emitVolumeUpdated: (event: CoverExtractionVolumeUpdateEvent) => void;
+} {
+  const volumeListeners = new Set<
+    (event: CoverExtractionVolumeUpdateEvent) => void
+  >();
+  return {
+    syncQueue: vi.fn(async () => undefined),
+    setViewportVolumeIds: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    retryFailedCovers: vi.fn(async () => 0),
+    getSnapshot: vi.fn(() => INITIAL_COVER_EXTRACTION_SNAPSHOT),
+    subscribeProgress: vi.fn(() => () => undefined),
+    subscribeVolumeUpdated: vi.fn((listener) => {
+      volumeListeners.add(listener);
+      return () => {
+        volumeListeners.delete(listener);
+      };
+    }),
+    emitVolumeUpdated: (event) => {
+      for (const listener of [...volumeListeners]) {
+        listener(event);
+      }
+    },
+    resetForTest: vi.fn(async () => undefined),
+    dispose: vi.fn(),
+    ...overrides,
+  };
+}
+
+function createMockVolumesRepository(
+  overrides: Partial<VolumesRepository> = {},
+): VolumesRepository {
+  return {
+    getById: vi.fn<VolumesRepository["getById"]>().mockResolvedValue(null),
+    getByDriveFileId: vi
+      .fn<VolumesRepository["getByDriveFileId"]>()
+      .mockResolvedValue(null),
+    listBySeriesId: vi
+      .fn<VolumesRepository["listBySeriesId"]>()
+      .mockResolvedValue([createVolume()]),
+    listVisibleByEnabledRoots: vi
+      .fn<VolumesRepository["listVisibleByEnabledRoots"]>()
+      .mockResolvedValue([]),
+    listByRootFolderIds: vi
+      .fn<VolumesRepository["listByRootFolderIds"]>()
+      .mockResolvedValue([]),
+    upsertFromDriveSync: vi.fn<VolumesRepository["upsertFromDriveSync"]>(),
+    markTrashedByDriveFileIds: vi
+      .fn<VolumesRepository["markTrashedByDriveFileIds"]>()
+      .mockResolvedValue(0),
+    saveCoverReady: vi
+      .fn<VolumesRepository["saveCoverReady"]>()
+      .mockResolvedValue(null),
+    saveCoverError: vi
+      .fn<VolumesRepository["saveCoverError"]>()
+      .mockResolvedValue(null),
+    resetErrorCoversToPending: vi
+      .fn<VolumesRepository["resetErrorCoversToPending"]>()
+      .mockResolvedValue([]),
+    ...overrides,
+  };
+}
+
 function createMockServices(
   overrides: Partial<ServiceContextValue> = {},
 ): ServiceContextValue {
   return {
+    googleAuthBridge: createMockGoogleAuthBridge(),
     seriesRepo: {
       getById: vi.fn().mockResolvedValue(createSeries()),
       listActive: vi.fn().mockResolvedValue([]),
@@ -115,17 +222,7 @@ function createMockServices(
       mergeAuthorsIfUnlocked: vi.fn(),
       updateLastReadAt: vi.fn(),
     },
-    volumesRepo: {
-      getById: vi.fn(),
-      getByDriveFileId: vi.fn(),
-      listBySeriesId: vi.fn().mockResolvedValue([createVolume()]),
-      listVisibleByRootIds: vi.fn().mockResolvedValue([]),
-      upsertByDriveFileId: vi.fn(),
-      markTrashedByDriveFileId: vi.fn(),
-      markTrashedMissingInRoot: vi.fn(),
-      listPendingCovers: vi.fn(),
-      updateCover: vi.fn(),
-    },
+    volumesRepo: createMockVolumesRepository(),
     driveSyncRootsRepo: {
       listActive: vi.fn().mockResolvedValue([createRoot()]),
       countEnabled: vi.fn().mockResolvedValue(1),
@@ -141,6 +238,7 @@ function createMockServices(
       delete: vi.fn().mockResolvedValue(undefined),
       clearLocal: vi.fn().mockResolvedValue(undefined),
     },
+    coverExtractionScheduler: createMockCoverExtractionScheduler(),
     ...overrides,
   } as unknown as ServiceContextValue;
 }
@@ -183,6 +281,9 @@ describe("SeriesDetailPage", () => {
   let emptyStateSpy: MockInstance<
     typeof SeriesDetailEmptyStateModule.SeriesDetailEmptyState
   >;
+  let viewportObserverSpy: MockInstance<
+    typeof ViewportObserverModule.useViewportVolumeObserver
+  >;
 
   beforeEach(() => {
     diagnosticLogger.clear();
@@ -200,6 +301,10 @@ describe("SeriesDetailPage", () => {
     emptyStateSpy = vi
       .spyOn(SeriesDetailEmptyStateModule, "SeriesDetailEmptyState")
       .mockImplementation(() => null);
+    viewportObserverSpy = vi.spyOn(
+      ViewportObserverModule,
+      "useViewportVolumeObserver",
+    );
   });
 
   afterEach(() => {
@@ -592,5 +697,341 @@ describe("SeriesDetailPage", () => {
       await Promise.resolve();
     });
     expect(diagnosticLogger.getEntries()).toHaveLength(0);
+  });
+
+  it("WithCoverErrorsストーリーと表紙抽出ビューポート監視・インプレース差分更新・再試行活性制御・TR-04同期プリエンプションを検証する (AC-SD-03, AC-SD-06, AC-SD-07)", async () => {
+    // 1. WithCoverErrors ストーリー: initialSnapshot 指定時は isGoogleConnected/isSyncing 反映・ビューポート監視無効
+    const { unmount: unmountStory } = render(<WithCoverErrors />);
+    expect(volumeListSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        canRetryCovers: true,
+        onRetryFailedCovers: expect.any(Function),
+      }),
+      undefined,
+    );
+    expect(viewportObserverSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        screenKey: "series-detail",
+        enabled: false,
+      }),
+    );
+    unmountStory();
+    volumeListSpy.mockClear();
+    summarySpy.mockClear();
+
+    // 2. 通常マウント時: getSession・subscribeSession・syncPhase・インプレース更新・TR-04 pause("reader")
+    const session: GoogleAuthSession = {
+      email: "reader@example.com",
+      accessToken: "ya29.ok",
+      expiresAt: Date.now() + 3_600_000,
+    };
+    const authBridge = createMockGoogleAuthBridge({
+      getCachedSession: vi.fn(() => null),
+      getSession: vi.fn(async () => session),
+    });
+    const scheduler = createMockCoverExtractionScheduler();
+    const router = createMockRouter();
+
+    const vol1 = createVolume({
+      id: "vol-1",
+      seriesId: "series-1",
+      volumeNumber: 1,
+      coverStatus: "pending",
+      coverBlob: null,
+    });
+    const vol2Blob = new Blob(["vol2"], { type: "image/webp" });
+    const vol2 = createVolume({
+      id: "vol-2",
+      seriesId: "series-1",
+      volumeNumber: 2,
+      volumeLabel: "第02巻",
+      coverStatus: "ready",
+      coverBlob: vol2Blob,
+      coverUpdatedAt: 1000,
+    });
+
+    const services = createMockServices({
+      googleAuthBridge: authBridge,
+      coverExtractionScheduler: scheduler,
+      volumesRepo: createMockVolumesRepository({
+        listBySeriesId: vi
+          .fn<VolumesRepository["listBySeriesId"]>()
+          .mockResolvedValue([vol1, vol2]),
+      }),
+    });
+
+    const { unmount } = render(
+      <ServiceContext.Provider value={services}>
+        <RouterContext.Provider value={router}>
+          <SeriesDetailPage seriesId="series-1" />
+        </RouterContext.Provider>
+      </ServiceContext.Provider>,
+    );
+
+    await waitFor(() => {
+      expect(volumeListSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          canRetryCovers: true,
+        }),
+        undefined,
+      );
+    });
+
+    expect(scheduler.subscribeVolumeUpdated).toHaveBeenCalledTimes(1);
+    expect(viewportObserverSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        screenKey: "series-detail",
+        scheduler,
+        pendingVolumeIds: ["vol-1"],
+        enabled: true,
+      }),
+    );
+
+    // 再試行コールバックが seriesId 指定で呼ばれること
+    const lastVolumeListProps = volumeListSpy.mock.calls.at(
+      -1,
+    )![0] as SeriesVolumeListSectionModule.SeriesVolumeListSectionProps;
+    act(() => {
+      lastVolumeListProps.onRetryFailedCovers?.();
+    });
+    expect(scheduler.retryFailedCovers).toHaveBeenCalledWith({
+      seriesId: "series-1",
+    });
+
+    // 同期中 (syncPhase === "syncing") は canRetryCovers が false になること
+    act(() => {
+      useDriveSyncStateStore.setState({ phase: "syncing" });
+    });
+    expect(
+      (
+        volumeListSpy.mock.calls.at(
+          -1,
+        )![0] as SeriesVolumeListSectionModule.SeriesVolumeListSectionProps
+      ).canRetryCovers,
+    ).toBe(false);
+    act(() => {
+      useDriveSyncStateStore.setState({ phase: "idle" });
+    });
+
+    // subscribeSession で未連携になると canRetryCovers が false になること
+    act(() => {
+      authBridge.emitSession(null);
+    });
+    expect(
+      (
+        volumeListSpy.mock.calls.at(
+          -1,
+        )![0] as SeriesVolumeListSectionModule.SeriesVolumeListSectionProps
+      ).canRetryCovers,
+    ).toBe(false);
+
+    const beforeVolumes = (
+      volumeListSpy.mock.calls.at(
+        -1,
+      )![0] as SeriesVolumeListSectionModule.SeriesVolumeListSectionProps
+    ).volumes;
+    const beforeVol2Item = beforeVolumes[1]!;
+
+    // 別シリーズのイベントや未一致 volumeId は無視されること
+    act(() => {
+      scheduler.emitVolumeUpdated({
+        volumeId: "vol-1",
+        seriesId: "other-series",
+        coverStatus: "ready",
+        coverBlob: new Blob(["other"]),
+        coverUpdatedAt: 2000,
+      });
+      scheduler.emitVolumeUpdated({
+        volumeId: "vol-unmatched",
+        seriesId: "series-1",
+        coverStatus: "ready",
+        coverBlob: new Blob(["other"]),
+        coverUpdatedAt: 2000,
+      });
+    });
+    expect(
+      (
+        volumeListSpy.mock.calls.at(
+          -1,
+        )![0] as SeriesVolumeListSectionModule.SeriesVolumeListSectionProps
+      ).volumes,
+    ).toBe(beforeVolumes);
+
+    // 該当巻（代表巻 vol-1）の ready 更新 -> 代表表紙と vol-1 行のみインプレース更新し vol-2 の参照維持
+    const newBlob = new Blob(["new-cover"], { type: "image/webp" });
+    act(() => {
+      scheduler.emitVolumeUpdated({
+        volumeId: "vol-1",
+        seriesId: "series-1",
+        coverStatus: "ready",
+        coverBlob: newBlob,
+        coverUpdatedAt: 2001,
+      });
+    });
+    const afterSummary = summarySpy.mock.calls.at(
+      -1,
+    )![0] as SeriesSummaryCardModule.SeriesSummaryCardProps;
+    const afterVolumes = (
+      volumeListSpy.mock.calls.at(
+        -1,
+      )![0] as SeriesVolumeListSectionModule.SeriesVolumeListSectionProps
+    ).volumes;
+    expect(afterSummary.representativeVolume.coverStatus).toBe("ready");
+    expect(afterSummary.representativeVolume.coverBlob).toBe(newBlob);
+    expect(afterVolumes[0]!.volume.coverStatus).toBe("ready");
+    expect(afterVolumes[0]!.volume.coverBlob).toBe(newBlob);
+    expect(afterVolumes[1]).toBe(beforeVol2Item);
+    expect(afterVolumes[1]!.volume.coverBlob).toBe(vol2Blob);
+
+    // 非代表巻（vol-2）の error 更新 -> 代表表紙は変わらず vol-2 行のみインプレース更新
+    act(() => {
+      scheduler.emitVolumeUpdated({
+        volumeId: "vol-2",
+        seriesId: "series-1",
+        coverStatus: "error",
+        coverBlob: null,
+        coverUpdatedAt: 2002,
+      });
+    });
+    expect(
+      (
+        summarySpy.mock.calls.at(
+          -1,
+        )![0] as SeriesSummaryCardModule.SeriesSummaryCardProps
+      ).representativeVolume.coverStatus,
+    ).toBe("ready");
+    expect(
+      (
+        volumeListSpy.mock.calls.at(
+          -1,
+        )![0] as SeriesVolumeListSectionModule.SeriesVolumeListSectionProps
+      ).volumes[1]!.volume.coverStatus,
+    ).toBe("error");
+
+    // TR-04 遷移ハンドラで navigate 直前に同期 pause("reader") が呼ばれること
+    vi.mocked(scheduler.pause).mockClear();
+    act(() => {
+      afterSummary.onQuickRead("vol-1");
+    });
+    expect(scheduler.pause).toHaveBeenCalledWith("reader");
+    expect(router.navigate).toHaveBeenCalledWith("/read/volume/vol-1", {
+      readerOrigin: "series-detail",
+      seriesId: "series-1",
+    });
+
+    unmount();
+
+    // 3. getSession 失敗・アンマウント後解決・viewModel===null 時のイベント受信でも安全に動作すること
+    const failingAuth = createMockGoogleAuthBridge({
+      getCachedSession: vi.fn(() => null),
+      getSession: vi.fn(async () => {
+        throw new Error("auth failed");
+      }),
+    });
+    const emptyScheduler = createMockCoverExtractionScheduler();
+    const emptyServices = createMockServices({
+      googleAuthBridge: failingAuth,
+      coverExtractionScheduler: emptyScheduler,
+      seriesRepo: {
+        getById: vi.fn().mockResolvedValue(null),
+        listActive: vi.fn(),
+        findOrCreateByParsedTitle: vi.fn(),
+        mergeAuthorsIfUnlocked: vi.fn(),
+        updateLastReadAt: vi.fn(),
+      },
+    });
+    const { unmount: unmountEmpty } = render(
+      <ServiceContext.Provider value={emptyServices}>
+        <RouterContext.Provider value={router}>
+          <SeriesDetailPage seriesId="series-1" />
+        </RouterContext.Provider>
+      </ServiceContext.Provider>,
+    );
+    await waitFor(() => {
+      expect(emptyStateSpy).toHaveBeenCalled();
+    });
+    act(() => {
+      emptyScheduler.emitVolumeUpdated({
+        volumeId: "vol-1",
+        seriesId: "series-1",
+        coverStatus: "ready",
+        coverBlob: null,
+        coverUpdatedAt: 3000,
+      });
+    });
+    unmountEmpty();
+
+    // getSession 解決/拒否がアンマウント後に届いた場合も安全に無視されること
+    let resolveLateSession!: (s: GoogleAuthSession | null) => void;
+    const lateSessionAuth = createMockGoogleAuthBridge({
+      getCachedSession: vi.fn(() => null),
+      getSession: vi.fn(
+        () =>
+          new Promise<GoogleAuthSession | null>((res) => {
+            resolveLateSession = res;
+          }),
+      ),
+    });
+    const { unmount: unmountLate1 } = render(
+      <ServiceContext.Provider
+        value={createMockServices({ googleAuthBridge: lateSessionAuth })}
+      >
+        <RouterContext.Provider value={router}>
+          <SeriesDetailPage seriesId="series-1" />
+        </RouterContext.Provider>
+      </ServiceContext.Provider>,
+    );
+    unmountLate1();
+    await act(async () => {
+      resolveLateSession(session);
+      await Promise.resolve();
+    });
+
+    let rejectLateSession!: (err: unknown) => void;
+    const lateRejectAuth = createMockGoogleAuthBridge({
+      getCachedSession: vi.fn(() => null),
+      getSession: vi.fn(
+        () =>
+          new Promise<GoogleAuthSession | null>((_, rej) => {
+            rejectLateSession = rej;
+          }),
+      ),
+    });
+    const { unmount: unmountLate2 } = render(
+      <ServiceContext.Provider
+        value={createMockServices({ googleAuthBridge: lateRejectAuth })}
+      >
+        <RouterContext.Provider value={router}>
+          <SeriesDetailPage seriesId="series-1" />
+        </RouterContext.Provider>
+      </ServiceContext.Provider>,
+    );
+    unmountLate2();
+    await act(async () => {
+      rejectLateSession(new Error("late auth err"));
+      await Promise.resolve();
+    });
+
+    // getCachedSession が既に存在する場合は getSession を呼ばず即座に連携済み扱いとなること
+    const cachedAuth = createMockGoogleAuthBridge({
+      getCachedSession: vi.fn(() => session),
+    });
+    const { unmount: unmountCached } = render(
+      <ServiceContext.Provider
+        value={createMockServices({ googleAuthBridge: cachedAuth })}
+      >
+        <RouterContext.Provider value={router}>
+          <SeriesDetailPage seriesId="series-1" />
+        </RouterContext.Provider>
+      </ServiceContext.Provider>,
+    );
+    await waitFor(() => {
+      expect(volumeListSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({ canRetryCovers: true }),
+        undefined,
+      );
+    });
+    expect(cachedAuth.getSession).not.toHaveBeenCalled();
+    unmountCached();
   });
 });

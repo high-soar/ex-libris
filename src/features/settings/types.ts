@@ -1,4 +1,5 @@
 import type { DiagnosticEntry } from "../../diagnostics/types";
+import type { CoverExtractionProgressSnapshot } from "../../engine/cover/types";
 import type {
   DriveFolderMetadata,
   DriveSyncResult,
@@ -48,6 +49,7 @@ export interface SettingsPageInitialSnapshot {
   readonly authState: SettingsAuthSnapshotState;
   readonly syncRoots: readonly DriveSyncRootRecord[];
   readonly syncState?: SettingsSyncSnapshotState;
+  readonly coverExtractionState?: CoverExtractionProgressSnapshot;
   readonly diagnosticEntries?: readonly DiagnosticEntry[];
   readonly copyStatus?: DiagnosticsCopyStatus;
   readonly folderInput?: string;

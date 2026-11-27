@@ -1,7 +1,8 @@
 import { Capacitor } from "@capacitor/core";
 import { composeStories } from "@storybook/react";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import * as Comlink from "comlink";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CapacitorAppBridge } from "../bridges/app/capacitorAppBridge";
 import { MockAppBridge } from "../bridges/app/mockAppBridge";
@@ -9,7 +10,20 @@ import type { AppBridge } from "../bridges/app/types";
 import { CapacitorGoogleAuthAdapter } from "../bridges/oauth/capacitorGoogleAuthAdapter";
 import { GoogleAuthTokenManager } from "../bridges/oauth/googleAuthTokenManager";
 import { MockGoogleAuthAdapter } from "../bridges/oauth/mockGoogleAuthAdapter";
-import type { GoogleAuthBridge } from "../bridges/oauth/types";
+import type {
+  GoogleAuthBridge,
+  GoogleAuthSession,
+} from "../bridges/oauth/types";
+import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
+import {
+  CoverExtractionSchedulerCore,
+  NoopCoverExtractionScheduler,
+} from "../engine/cover/CoverExtractionSchedulerCore";
+import type {
+  CoverExtractionProgressSnapshot,
+  CoverExtractionScheduler,
+  CoverResizeWorkerApi,
+} from "../engine/cover/types";
 import type {
   CoordinatorHostCallbacks,
   CoordinatorWorkerApi,
@@ -25,7 +39,14 @@ import type {
   DriveSyncEngine,
 } from "../providers/gdrive/types";
 import { useBookshelfUiStateStore } from "../features/bookshelf/bookshelfUiStateStore";
-import { useDriveSyncStateStore } from "../shared/sync/driveSyncStateStore";
+import {
+  resetCoverExtractionState,
+  useCoverExtractionStateStore,
+} from "../shared/sync/coverExtractionStateStore";
+import {
+  resetDriveSyncState,
+  useDriveSyncStateStore,
+} from "../shared/sync/driveSyncStateStore";
 import { db, resetTestDb } from "../storage/db";
 import {
   DexieDriveSyncMetaRepository,
@@ -79,6 +100,9 @@ function resetGlobalServices(): void {
 
 describe("ServiceProvider", () => {
   beforeEach(async () => {
+    diagnosticLogger.clear();
+    resetCoverExtractionState();
+    resetDriveSyncState();
     window.sessionStorage.clear();
     resetGlobalServices();
     await resetTestDb();
@@ -87,6 +111,8 @@ describe("ServiceProvider", () => {
   afterEach(async () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    resetCoverExtractionState();
+    resetDriveSyncState();
     window.sessionStorage.clear();
     resetGlobalServices();
     await resetTestDb();
@@ -162,6 +188,9 @@ describe("ServiceProvider", () => {
     );
     expect(captured[0]?.driveSyncClient).toBeInstanceOf(MockDriveSyncClient);
     expect(captured[0]?.driveSyncEngine).toBeInstanceOf(DefaultDriveSyncEngine);
+    expect(captured[0]?.coverExtractionScheduler).toBeInstanceOf(
+      NoopCoverExtractionScheduler,
+    );
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: captured[0]?.appBridge,
@@ -173,6 +202,8 @@ describe("ServiceProvider", () => {
       volumesRepo: captured[0]?.volumesRepo,
       driveSyncMetaRepo: captured[0]?.driveSyncMetaRepo,
       mockDriveSyncClient: captured[0]?.driveSyncClient,
+      coverExtractionScheduler: captured[0]?.coverExtractionScheduler,
+      setTestCoverExtractionAutoRun: expect.any(Function),
     });
 
     // 再レンダー時も同一のサービスインスタンスを維持すること
@@ -203,6 +234,9 @@ describe("ServiceProvider", () => {
     expect(captured[1]?.driveSyncMetaRepo).toBe(captured[0]?.driveSyncMetaRepo);
     expect(captured[1]?.driveSyncClient).toBe(captured[0]?.driveSyncClient);
     expect(captured[1]?.driveSyncEngine).toBe(captured[0]?.driveSyncEngine);
+    expect(captured[1]?.coverExtractionScheduler).toBe(
+      captured[0]?.coverExtractionScheduler,
+    );
 
     // 公開モック経由のシード後に createCoordinatorSession() を呼ぶと authBridge 経由でトークンが Worker へ同期されること
     window.__exLibrisServices!.mockGoogleAuthAdapter!.seedLinkedSession({
@@ -327,6 +361,12 @@ describe("ServiceProvider", () => {
     expect("seriesRepo" in window.__exLibrisServices!).toBe(false);
     expect("volumesRepo" in window.__exLibrisServices!).toBe(false);
     expect("driveSyncMetaRepo" in window.__exLibrisServices!).toBe(false);
+    expect("coverExtractionScheduler" in window.__exLibrisServices!).toBe(
+      false,
+    );
+    expect("setTestCoverExtractionAutoRun" in window.__exLibrisServices!).toBe(
+      false,
+    );
   });
 
   it("DI props指定時は注入された各種Bridge・Repository・Clientを使用・更新しモック非該当時はグローバル公開しないこと", () => {
@@ -488,10 +528,32 @@ describe("ServiceProvider", () => {
         syncedAt: 1,
       })),
     };
+    const createMockCoverScheduler = (): CoverExtractionScheduler => ({
+      syncQueue: vi.fn(async () => {}),
+      setViewportVolumeIds: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      retryFailedCovers: vi.fn(async () => 0),
+      getSnapshot: vi.fn(() => ({
+        phase: "idle" as const,
+        totalCount: 0,
+        readyCount: 0,
+        pendingCount: 0,
+        errorCount: 0,
+        activeVolumeId: null,
+        pauseReasons: [],
+      })),
+      subscribeProgress: vi.fn(() => () => {}),
+      subscribeVolumeUpdated: vi.fn(() => () => {}),
+      resetForTest: vi.fn(async () => {}),
+      dispose: vi.fn(),
+    });
+    const customCoverScheduler1 = createMockCoverScheduler();
+    const customCoverScheduler2 = createMockCoverScheduler();
 
     const captured: ServiceContextValue[] = [];
 
-    const { rerender } = render(
+    const { rerender, unmount } = render(
       <ServiceProvider
         appBridge={customBridge1}
         createCoordinatorSession={customFactory}
@@ -506,6 +568,7 @@ describe("ServiceProvider", () => {
         driveSyncMetaRepo={customSyncMetaRepo1}
         driveSyncClient={customSyncClient1}
         driveSyncEngine={customSyncEngine1}
+        coverExtractionScheduler={customCoverScheduler1}
       >
         <ServicesProbe onCapture={(s) => captured.push(s)} />
       </ServiceProvider>,
@@ -524,6 +587,7 @@ describe("ServiceProvider", () => {
     expect(captured[0]?.driveSyncMetaRepo).toBe(customSyncMetaRepo1);
     expect(captured[0]?.driveSyncClient).toBe(customSyncClient1);
     expect(captured[0]?.driveSyncEngine).toBe(customSyncEngine1);
+    expect(captured[0]?.coverExtractionScheduler).toBe(customCoverScheduler1);
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: customBridge1,
@@ -532,6 +596,8 @@ describe("ServiceProvider", () => {
       seriesRepo: customSeriesRepo1,
       volumesRepo: customVolumesRepo1,
       driveSyncMetaRepo: customSyncMetaRepo1,
+      coverExtractionScheduler: customCoverScheduler1,
+      setTestCoverExtractionAutoRun: expect.any(Function),
     });
     expect("mockGoogleAuthAdapter" in window.__exLibrisServices!).toBe(false);
     expect("mockDriveFolderClient" in window.__exLibrisServices!).toBe(false);
@@ -552,6 +618,7 @@ describe("ServiceProvider", () => {
         driveSyncMetaRepo={customSyncMetaRepo2}
         driveSyncClient={customSyncClient2}
         driveSyncEngine={customSyncEngine2}
+        coverExtractionScheduler={customCoverScheduler2}
       >
         <ServicesProbe onCapture={(s) => captured.push(s)} />
       </ServiceProvider>,
@@ -569,6 +636,7 @@ describe("ServiceProvider", () => {
     expect(captured[1]?.driveSyncMetaRepo).toBe(customSyncMetaRepo2);
     expect(captured[1]?.driveSyncClient).toBe(customSyncClient2);
     expect(captured[1]?.driveSyncEngine).toBe(customSyncEngine2);
+    expect(captured[1]?.coverExtractionScheduler).toBe(customCoverScheduler2);
     expect(window.__exLibrisServices).toEqual({
       isReady: true,
       appBridge: customBridge2,
@@ -579,11 +647,18 @@ describe("ServiceProvider", () => {
       volumesRepo: customVolumesRepo2,
       driveSyncMetaRepo: customSyncMetaRepo2,
       mockDriveSyncClient: customSyncClient2,
+      coverExtractionScheduler: customCoverScheduler2,
+      setTestCoverExtractionAutoRun: expect.any(Function),
     });
     expect("mockGoogleAuthAdapter" in window.__exLibrisServices!).toBe(false);
+
+    // 外部注入されたスケジューラはアンマウント時に勝手に dispose しないこと
+    unmount();
+    expect(customCoverScheduler1.dispose).not.toHaveBeenCalled();
+    expect(customCoverScheduler2.dispose).not.toHaveBeenCalled();
   });
 
-  it("window.__exLibrisServices.resetTestDbが公開され呼び出しによりsyncMeta等のDBテーブル・mockDriveSyncClient・UI/同期ストアを初期化できること (R1-17)", async () => {
+  it("window.__exLibrisServices.resetTestDbが公開され呼び出しによりsyncMeta等のDBテーブル・mockDriveSyncClient・UI/同期/表紙ストアを初期化できること (R1-17)", async () => {
     render(
       <ServiceProvider>
         <div>ready</div>
@@ -593,6 +668,16 @@ describe("ServiceProvider", () => {
     await db.syncMeta.put({
       key: "itPollutionGuard",
       value: "stale-record",
+    });
+    window.sessionStorage.setItem("exLibris:test:coverExtractionAutoRun", "1");
+    useCoverExtractionStateStore.getState().applySnapshot({
+      phase: "running",
+      totalCount: 5,
+      readyCount: 2,
+      pendingCount: 2,
+      errorCount: 1,
+      activeVolumeId: "vol-1",
+      pauseReasons: [],
     });
     useBookshelfUiStateStore.setState({
       scrollY: 320,
@@ -610,13 +695,30 @@ describe("ServiceProvider", () => {
       window.__exLibrisServices!.mockDriveSyncClient!,
       "reset",
     );
+    const schedulerResetSpy = vi.spyOn(
+      window.__exLibrisServices!.coverExtractionScheduler!,
+      "resetForTest",
+    );
 
     const resetFn = window.__exLibrisServices?.resetTestDb;
     expect(resetFn).toEqual(expect.any(Function));
     await resetFn!();
 
     expect(await db.syncMeta.count()).toBe(0);
+    expect(
+      window.sessionStorage.getItem("exLibris:test:coverExtractionAutoRun"),
+    ).toBeNull();
+    expect(schedulerResetSpy).toHaveBeenCalledTimes(1);
     expect(mockSyncResetSpy).toHaveBeenCalledTimes(1);
+    expect(useCoverExtractionStateStore.getState()).toMatchObject({
+      phase: "idle",
+      totalCount: 0,
+      readyCount: 0,
+      pendingCount: 0,
+      errorCount: 0,
+      activeVolumeId: null,
+      pauseReasons: [],
+    });
     expect(useBookshelfUiStateStore.getState()).toMatchObject({
       scrollY: 0,
       sortOrder: "lastReadDesc",
@@ -858,5 +960,513 @@ describe("ServiceProvider", () => {
       </ServiceProvider>,
     );
     await window.__exLibrisServices?.resetTestDb?.();
+  });
+
+  it("Worker利用可能環境でネイティブ・通常Webプレビュー・WebDriver別のCoverExtractionSchedulerを構築し、アンマウント解放およびWebDriver制御を行うこと (AC-COV-02, AC-COV-07)", async () => {
+    const coverBlob = new Blob(["webp-bytes"], { type: "image/webp" });
+    let workerCreatedCount = 0;
+    let workerTerminatedCount = 0;
+
+    class MockCoverWorker {
+      private readonly port1: MessagePort;
+      private readonly port2: MessagePort;
+
+      constructor() {
+        workerCreatedCount += 1;
+        const channel = new MessageChannel();
+        this.port1 = channel.port1;
+        this.port2 = channel.port2;
+        this.port2.start();
+        const remoteImpl: CoverResizeWorkerApi = {
+          async encodeCoverWebp() {
+            return { blob: coverBlob, width: 1, height: 1 };
+          },
+        };
+        Comlink.expose(remoteImpl, this.port1);
+      }
+
+      postMessage(message: unknown, transfer: Transferable[] = []): void {
+        this.port2.postMessage(message, transfer);
+      }
+
+      addEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+      ): void {
+        this.port2.addEventListener(type, listener);
+      }
+
+      removeEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+      ): void {
+        this.port2.removeEventListener(type, listener);
+      }
+
+      terminate(): void {
+        workerTerminatedCount += 1;
+        this.port1.close();
+        this.port2.close();
+      }
+    }
+
+    vi.stubGlobal("Worker", MockCoverWorker);
+    const fetchSpy = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const seedOnePendingVolume = async () => {
+      await db.driveSyncRoots.put({
+        folderId: "root-1",
+        folderName: "Comics",
+        enabled: 1,
+        addedAt: 1,
+        updatedAt: 1,
+        deletedAt: null,
+      });
+      await db.series.put({
+        id: "series-1",
+        title: "テスト作品",
+        titleReading: "てすとさくひん",
+        authors: [],
+        publisher: "",
+        label: "",
+        tags: [],
+        synopsis: "",
+        publicationStatus: "unknown",
+        knownTotalVolumes: null,
+        externalIds: {},
+        metadataLocked: false,
+        representativeVolumeId: "vol-1",
+        readerPresetJson: null,
+        lastReadAt: null,
+        addedAt: 1,
+        updatedAt: 1,
+        deletedAt: null,
+      });
+      await db.volumes.put({
+        id: "vol-1",
+        seriesId: "series-1",
+        volumeNumber: 1,
+        volumeLabel: "第01巻",
+        rawFileName: "test_01.zip",
+        driveFileId: "drive-file-1",
+        parentFolderId: "root-1",
+        rootFolderId: "root-1",
+        fileSize: 4096,
+        md5Checksum: "md5-1",
+        driveModifiedTime: 1,
+        coverBlob: null,
+        coverStatus: "pending",
+        coverCropMode: "auto",
+        coverPageIndex: 0,
+        coverUpdatedAt: null,
+        isTrashed: 0,
+        addedAt: 1,
+        updatedAt: 1,
+      });
+    };
+
+    const linkedSession: GoogleAuthSession = {
+      email: "reader@example.com",
+      accessToken: "ya29.cover-token",
+      expiresAt: Date.now() + 3_600_000,
+    };
+    const createLinkedAuth = (): GoogleAuthBridge => ({
+      getCachedSession: vi.fn(() => linkedSession),
+      getSession: vi.fn(async () => linkedSession),
+      signIn: vi.fn(async () => linkedSession),
+      signOut: vi.fn(async () => {}),
+      getValidAccessToken: vi.fn(async () => linkedSession.accessToken),
+      subscribeSession: vi.fn(() => () => {}),
+    });
+
+    // 1. 通常 Web プレビュー (!isNative && !webdriver): MockCoverArchiveRangeReader で fetch ゼロ完結 + StrictMode 再生成・アンマウント dispose
+    vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(false);
+    vi.stubGlobal("navigator", { webdriver: false });
+    await seedOnePendingVolume();
+
+    const capturedWeb: ServiceContextValue[] = [];
+    const { unmount: unmountWeb } = render(
+      <StrictMode>
+        <ServiceProvider googleAuthBridge={createLinkedAuth()}>
+          <ServicesProbe onCapture={(s) => capturedWeb.push(s)} />
+        </ServiceProvider>
+      </StrictMode>,
+    );
+
+    const webScheduler = capturedWeb.at(-1)!.coverExtractionScheduler;
+    expect(webScheduler).toBeInstanceOf(CoverExtractionSchedulerCore);
+    await vi.waitFor(async () => {
+      const vol = await db.volumes.get("vol-1");
+      expect(vol?.coverStatus).toBe("ready");
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(workerCreatedCount).toBeGreaterThanOrEqual(1);
+
+    const disposeSpy = vi.spyOn(webScheduler, "dispose");
+    unmountWeb();
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+    expect(workerTerminatedCount).toBe(workerCreatedCount);
+
+    // 2. WebDriver 環境 (!isNative && webdriver=true): 初期 pause("test-harness") -> setTestCoverExtractionAutoRun(true/false) -> reload 継続 -> resetTestDb 再適用
+    await resetTestDb();
+    await seedOnePendingVolume();
+    vi.stubGlobal("navigator", { webdriver: true });
+    fetchSpy.mockResolvedValue(new Response("not-found", { status: 404 }));
+
+    const capturedWd: ServiceContextValue[] = [];
+    const { unmount: unmountWd } = render(
+      <ServiceProvider googleAuthBridge={createLinkedAuth()}>
+        <ServicesProbe onCapture={(s) => capturedWd.push(s)} />
+      </ServiceProvider>,
+    );
+
+    const wdScheduler = capturedWd[0]!.coverExtractionScheduler;
+    expect(wdScheduler).toBeInstanceOf(CoverExtractionSchedulerCore);
+    await vi.waitFor(() => {
+      expect(wdScheduler.getSnapshot().pauseReasons).toContain("test-harness");
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // setTestCoverExtractionAutoRun(true) で sessionStorage 保存 + resume("test-harness") + syncQueue -> 実 GoogleDriveRangeReader 発火 + diagnosticLogger 記録
+    act(() => {
+      window.__exLibrisServices!.setTestCoverExtractionAutoRun!(true);
+    });
+    expect(
+      window.sessionStorage.getItem("exLibris:test:coverExtractionAutoRun"),
+    ).toBe("1");
+    await vi.waitFor(async () => {
+      const vol = await db.volumes.get("vol-1");
+      expect(vol?.coverStatus).toBe("error");
+    });
+    expect(fetchSpy).toHaveBeenCalled();
+    expect(
+      diagnosticLogger
+        .getEntries()
+        .some((entry) => entry.scope === "cover" && entry.level === "error"),
+    ).toBe(true);
+
+    // reload 相当の再マウント時は sessionStorage="1" により test-harness なしで起動すること
+    unmountWd();
+    const capturedReload: ServiceContextValue[] = [];
+    const { unmount: unmountReload } = render(
+      <ServiceProvider googleAuthBridge={createLinkedAuth()}>
+        <ServicesProbe onCapture={(s) => capturedReload.push(s)} />
+      </ServiceProvider>,
+    );
+    expect(
+      capturedReload[0]!.coverExtractionScheduler.getSnapshot().pauseReasons,
+    ).not.toContain("test-harness");
+
+    // setTestCoverExtractionAutoRun(false) でフラグ削除 + pause("test-harness")
+    act(() => {
+      window.__exLibrisServices!.setTestCoverExtractionAutoRun!(false);
+    });
+    expect(
+      window.sessionStorage.getItem("exLibris:test:coverExtractionAutoRun"),
+    ).toBeNull();
+    expect(
+      capturedReload[0]!.coverExtractionScheduler.getSnapshot().pauseReasons,
+    ).toContain("test-harness");
+
+    // resetTestDb() でフラグ消去・resetForTest・WebDriver 時 pause("test-harness") 再適用
+    window.sessionStorage.setItem("exLibris:test:coverExtractionAutoRun", "1");
+    await window.__exLibrisServices!.resetTestDb!();
+    expect(
+      window.sessionStorage.getItem("exLibris:test:coverExtractionAutoRun"),
+    ).toBeNull();
+    expect(
+      capturedReload[0]!.coverExtractionScheduler.getSnapshot().pauseReasons,
+    ).toContain("test-harness");
+    unmountReload();
+
+    // 3. Android ネイティブ環境 (isNative=true): 実 GoogleDriveRangeReader が構築され test-harness なしで稼働すること
+    await resetTestDb();
+    await seedOnePendingVolume();
+    fetchSpy.mockClear();
+    fetchSpy.mockResolvedValue(new Response("server-error", { status: 500 }));
+    vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(true);
+
+    const capturedNative: ServiceContextValue[] = [];
+    const { unmount: unmountNative } = render(
+      <ServiceProvider googleAuthBridge={createLinkedAuth()}>
+        <ServicesProbe onCapture={(s) => capturedNative.push(s)} />
+      </ServiceProvider>,
+    );
+    expect(capturedNative[0]!.coverExtractionScheduler).toBeInstanceOf(
+      CoverExtractionSchedulerCore,
+    );
+    expect(
+      capturedNative[0]!.coverExtractionScheduler.getSnapshot().pauseReasons,
+    ).not.toContain("test-harness");
+    await vi.waitFor(async () => {
+      const vol = await db.volumes.get("vol-1");
+      expect(vol?.coverStatus).toBe("error");
+    });
+    expect(fetchSpy).toHaveBeenCalled();
+    unmountNative();
+
+    // 4. sessionStorage 例外時も安全にフォールバックすること
+    vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(false);
+    vi.stubGlobal("navigator", { webdriver: true });
+    const getItemSpy = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("blocked");
+      });
+    const setItemSpy = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("blocked");
+      });
+    const removeItemSpy = vi
+      .spyOn(Storage.prototype, "removeItem")
+      .mockImplementation(() => {
+        throw new Error("blocked");
+      });
+    const { unmount: unmountStorageErr } = render(
+      <ServiceProvider googleAuthBridge={createLinkedAuth()}>
+        <div>storage-err</div>
+      </ServiceProvider>,
+    );
+    window.__exLibrisServices!.setTestCoverExtractionAutoRun!(true);
+    window.__exLibrisServices!.setTestCoverExtractionAutoRun!(false);
+    unmountStorageErr();
+    getItemSpy.mockRestore();
+    setItemSpy.mockRestore();
+    removeItemSpy.mockRestore();
+  });
+
+  it("coverExtractionStateStore・GoogleAuthBridge・driveSyncStateStoreの変化をcoverExtractionSchedulerへ自動連携すること (AC-COV-02, AC-COV-07)", async () => {
+    let progressListener:
+      ((snapshot: CoverExtractionProgressSnapshot) => void) | null = null;
+    const initialSnapshot: CoverExtractionProgressSnapshot = {
+      phase: "paused",
+      totalCount: 3,
+      readyCount: 1,
+      pendingCount: 2,
+      errorCount: 0,
+      activeVolumeId: null,
+      pauseReasons: ["unauthenticated"],
+    };
+    const scheduler: CoverExtractionScheduler = {
+      syncQueue: vi.fn(async () => {}),
+      setViewportVolumeIds: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      retryFailedCovers: vi.fn(async () => 0),
+      getSnapshot: vi.fn(() => initialSnapshot),
+      subscribeProgress: vi.fn((listener) => {
+        progressListener = listener;
+        return () => {
+          progressListener = null;
+        };
+      }),
+      subscribeVolumeUpdated: vi.fn(() => () => {}),
+      resetForTest: vi.fn(async () => {}),
+      dispose: vi.fn(),
+    };
+
+    const sessionA: GoogleAuthSession = {
+      email: "user@example.com",
+      accessToken: "ya29.auth",
+      expiresAt: Date.now() + 3_600_000,
+    };
+    let authListener: ((session: GoogleAuthSession | null) => void) | null =
+      null;
+    let resolveInitialSession!: (session: GoogleAuthSession | null) => void;
+    const initialSessionPromise = new Promise<GoogleAuthSession | null>(
+      (resolve) => {
+        resolveInitialSession = resolve;
+      },
+    );
+    const authBridge: GoogleAuthBridge = {
+      getCachedSession: vi.fn(() => null),
+      getSession: vi.fn(() => initialSessionPromise),
+      signIn: vi.fn(async () => sessionA),
+      signOut: vi.fn(async () => {}),
+      getValidAccessToken: vi.fn(async () => sessionA.accessToken),
+      subscribeSession: vi.fn((listener) => {
+        authListener = listener;
+        return () => {
+          authListener = null;
+        };
+      }),
+    };
+
+    // 初期 syncing 状態からマウント
+    useDriveSyncStateStore.setState({ phase: "syncing" });
+
+    const { unmount } = render(
+      <ServiceProvider
+        googleAuthBridge={authBridge}
+        coverExtractionScheduler={scheduler}
+      >
+        <div>sync-test</div>
+      </ServiceProvider>,
+    );
+
+    // 1. 初期スナップショット即時反映 + 以降の進捗通知反映
+    expect(useCoverExtractionStateStore.getState()).toMatchObject(
+      initialSnapshot,
+    );
+    act(() => {
+      progressListener?.({
+        phase: "running",
+        totalCount: 3,
+        readyCount: 2,
+        pendingCount: 1,
+        errorCount: 0,
+        activeVolumeId: "vol-2",
+        pauseReasons: [],
+      });
+    });
+    expect(useCoverExtractionStateStore.getState()).toMatchObject({
+      phase: "running",
+      readyCount: 2,
+      pendingCount: 1,
+      activeVolumeId: "vol-2",
+    });
+
+    // 2. 初期 syncing による pause("drive-sync") と syncing -> completed -> idle の遷移
+    expect(scheduler.pause).toHaveBeenCalledWith("drive-sync");
+    act(() => {
+      useDriveSyncStateStore.setState({ phase: "completed" });
+    });
+    expect(scheduler.resume).toHaveBeenCalledWith("drive-sync");
+    expect(scheduler.syncQueue).toHaveBeenCalledTimes(1);
+
+    // 非 syncing 間の遷移 (completed -> idle) では不要な pause/resume を呼ばない
+    act(() => {
+      useDriveSyncStateStore.setState({ phase: "idle" });
+    });
+    expect(scheduler.syncQueue).toHaveBeenCalledTimes(1);
+
+    // idle -> syncing で再度 pause("drive-sync")
+    act(() => {
+      useDriveSyncStateStore.setState({ phase: "syncing" });
+    });
+    expect(scheduler.pause).toHaveBeenLastCalledWith("drive-sync");
+
+    // 3. 初期未認証キャッシュ時の pause("unauthenticated") -> getSession 解決で resume + syncQueue
+    expect(scheduler.pause).toHaveBeenCalledWith("unauthenticated");
+    await act(async () => {
+      resolveInitialSession(sessionA);
+      await initialSessionPromise;
+    });
+    expect(scheduler.resume).toHaveBeenCalledWith("unauthenticated");
+    expect(scheduler.syncQueue).toHaveBeenCalledTimes(2);
+
+    // subscribeSession によるログアウト/再ログイン
+    act(() => {
+      authListener?.(null);
+    });
+    expect(scheduler.pause).toHaveBeenLastCalledWith("unauthenticated");
+    act(() => {
+      authListener?.(sessionA);
+    });
+    expect(scheduler.resume).toHaveBeenLastCalledWith("unauthenticated");
+    expect(scheduler.syncQueue).toHaveBeenCalledTimes(3);
+
+    unmount();
+    expect(progressListener).toBeNull();
+    expect(authListener).toBeNull();
+
+    // 4. getSession() が null 解決・失敗・アンマウント後解決のケース
+    resetDriveSyncState();
+    const scheduler2: CoverExtractionScheduler = {
+      ...scheduler,
+      pause: vi.fn(),
+      resume: vi.fn(),
+      syncQueue: vi.fn(async () => {}),
+    };
+    const failingAuth: GoogleAuthBridge = {
+      ...authBridge,
+      getCachedSession: vi.fn(() => null),
+      getSession: vi.fn(async () => {
+        throw new Error("auth failed");
+      }),
+      subscribeSession: vi.fn(() => () => {}),
+    };
+    const { unmount: unmountFail } = render(
+      <ServiceProvider
+        googleAuthBridge={failingAuth}
+        coverExtractionScheduler={scheduler2}
+      >
+        <div>fail</div>
+      </ServiceProvider>,
+    );
+    await vi.waitFor(() => {
+      expect(scheduler2.pause).toHaveBeenCalledTimes(2);
+    });
+    expect(scheduler2.pause).toHaveBeenNthCalledWith(1, "unauthenticated");
+    expect(scheduler2.pause).toHaveBeenNthCalledWith(2, "unauthenticated");
+    expect(scheduler2.resume).not.toHaveBeenCalledWith("unauthenticated");
+    unmountFail();
+
+    // アンマウント後の遅延 getSession resolve / reject は無視されること
+    const scheduler3: CoverExtractionScheduler = {
+      ...scheduler,
+      pause: vi.fn(),
+      resume: vi.fn(),
+      syncQueue: vi.fn(async () => {}),
+    };
+    let resolveLate!: (s: GoogleAuthSession | null) => void;
+    const latePromise = new Promise<GoogleAuthSession | null>((r) => {
+      resolveLate = r;
+    });
+    const lateAuth: GoogleAuthBridge = {
+      ...authBridge,
+      getCachedSession: vi.fn(() => null),
+      getSession: vi.fn(() => latePromise),
+      subscribeSession: vi.fn(() => () => {}),
+    };
+    const { unmount: unmountLate } = render(
+      <ServiceProvider
+        googleAuthBridge={lateAuth}
+        coverExtractionScheduler={scheduler3}
+      >
+        <div>late</div>
+      </ServiceProvider>,
+    );
+    unmountLate();
+    await act(async () => {
+      resolveLate(sessionA);
+      await latePromise;
+    });
+    expect(scheduler3.resume).not.toHaveBeenCalled();
+
+    let rejectLate!: (err: Error) => void;
+    const lateRejectPromise = new Promise<GoogleAuthSession | null>(
+      (_, rej) => {
+        rejectLate = rej;
+      },
+    );
+    const lateRejectAuth: GoogleAuthBridge = {
+      ...authBridge,
+      getCachedSession: vi.fn(() => null),
+      getSession: vi.fn(() => lateRejectPromise),
+      subscribeSession: vi.fn(() => () => {}),
+    };
+    const scheduler4: CoverExtractionScheduler = {
+      ...scheduler,
+      pause: vi.fn(),
+      resume: vi.fn(),
+      syncQueue: vi.fn(async () => {}),
+    };
+    const { unmount: unmountLateReject } = render(
+      <ServiceProvider
+        googleAuthBridge={lateRejectAuth}
+        coverExtractionScheduler={scheduler4}
+      >
+        <div>late-reject</div>
+      </ServiceProvider>,
+    );
+    unmountLateReject();
+    await act(async () => {
+      rejectLate(new Error("late boom"));
+      await lateRejectPromise.catch(() => {});
+    });
+    expect(scheduler4.pause).toHaveBeenCalledTimes(1);
   });
 });

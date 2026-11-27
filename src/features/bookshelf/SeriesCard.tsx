@@ -47,6 +47,11 @@ export function SeriesCard({
     <article
       data-testid="series-card"
       data-series-id={item.seriesId}
+      data-cover-volume-id={
+        item.representativeVolume.coverStatus === "pending"
+          ? item.representativeVolume.id
+          : undefined
+      }
       className="flex flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-md transition-colors hover:border-slate-700"
     >
       <button

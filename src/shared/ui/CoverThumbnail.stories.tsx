@@ -61,7 +61,18 @@ export const ReadyImage: Story = {
   },
 };
 
-/** 表紙抽出失敗（error）時のプレースホルダフォールバック表示 */
+/** 表紙抽出失敗（error）時の取得失敗バッジ付き表示 */
+export const Error: Story = {
+  name: "取得失敗（error）",
+  args: {
+    coverBlob: null,
+    coverStatus: "error",
+    title: "葬送のフリーレン",
+    badgeText: "全 12 巻",
+  },
+};
+
+/** 表紙抽出失敗（error）時のタイトル空プレースホルダフォールバック表示 */
 export const ErrorFallback: Story = {
   name: "抽出エラー時フォールバック",
   args: {

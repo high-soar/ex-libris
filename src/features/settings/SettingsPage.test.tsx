@@ -21,6 +21,7 @@ import {
   createDiagnosticLogger,
   diagnosticLogger,
 } from "../../diagnostics/diagnosticLogger";
+import type { CoverExtractionScheduler } from "../../engine/cover/types";
 import { DriveApiError } from "../../providers/gdrive/driveApiErrors";
 import type {
   DriveApiErrorCode,
@@ -31,6 +32,10 @@ import type {
 import { RouterProvider } from "../../shared/router/RouterProvider";
 import { useRouter } from "../../shared/router/routerContext";
 import {
+  INITIAL_COVER_EXTRACTION_SNAPSHOT,
+  resetCoverExtractionState,
+} from "../../shared/sync/coverExtractionStateStore";
+import {
   resetDriveSyncState,
   useDriveSyncStateStore,
 } from "../../shared/sync/driveSyncStateStore";
@@ -38,6 +43,7 @@ import { resetTestDb } from "../../storage/db";
 import type { DriveSyncMetaRepository } from "../../storage/repositories/driveSyncMetaRepository";
 import type { DriveSyncRootsRepository } from "../../storage/repositories/driveSyncRootsRepository";
 import type { DriveSyncRootRecord } from "../../storage/types";
+import * as CoverExtractionSectionModule from "./CoverExtractionSection";
 import * as DiagnosticsSectionModule from "./DiagnosticsSection";
 import * as DriveFolderPickerModalModule from "./DriveFolderPickerModal";
 import * as DriveSyncExecutionSectionModule from "./DriveSyncExecutionSection";
@@ -190,6 +196,24 @@ function createMockDriveSyncEngine(
   };
 }
 
+function createMockCoverExtractionScheduler(
+  overrides: Partial<CoverExtractionScheduler> = {},
+): CoverExtractionScheduler {
+  return {
+    syncQueue: vi.fn(async () => undefined),
+    setViewportVolumeIds: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    retryFailedCovers: vi.fn(async () => 0),
+    getSnapshot: vi.fn(() => INITIAL_COVER_EXTRACTION_SNAPSHOT),
+    subscribeProgress: vi.fn(() => () => undefined),
+    subscribeVolumeUpdated: vi.fn(() => () => undefined),
+    resetForTest: vi.fn(async () => undefined),
+    dispose: vi.fn(),
+    ...overrides,
+  };
+}
+
 describe("SettingsPage", () => {
   const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
     navigator,
@@ -207,6 +231,9 @@ describe("SettingsPage", () => {
   let syncExecSpy: MockInstance<
     typeof DriveSyncExecutionSectionModule.DriveSyncExecutionSection
   >;
+  let coverExtractionSpy: MockInstance<
+    typeof CoverExtractionSectionModule.CoverExtractionSection
+  >;
   let pickerSpy: MockInstance<
     typeof DriveFolderPickerModalModule.DriveFolderPickerModal
   >;
@@ -218,6 +245,7 @@ describe("SettingsPage", () => {
     await resetTestDb();
     diagnosticLogger.clear();
     resetDriveSyncState();
+    resetCoverExtractionState();
     window.history.replaceState(null, "", "/settings");
 
     headerSpy = vi
@@ -232,6 +260,9 @@ describe("SettingsPage", () => {
     syncExecSpy = vi
       .spyOn(DriveSyncExecutionSectionModule, "DriveSyncExecutionSection")
       .mockImplementation(() => null);
+    coverExtractionSpy = vi
+      .spyOn(CoverExtractionSectionModule, "CoverExtractionSection")
+      .mockImplementation(() => null);
     pickerSpy = vi
       .spyOn(DriveFolderPickerModalModule, "DriveFolderPickerModal")
       .mockImplementation(() => null);
@@ -244,6 +275,7 @@ describe("SettingsPage", () => {
     vi.restoreAllMocks();
     await resetTestDb();
     resetDriveSyncState();
+    resetCoverExtractionState();
     window.history.replaceState(null, "", originalUrl || "/");
     if (originalClipboardDescriptor) {
       Object.defineProperty(
@@ -283,6 +315,13 @@ describe("SettingsPage", () => {
       return call![0] as DriveSyncExecutionSectionModule.DriveSyncExecutionSectionProps;
     };
 
+  const getCoverExtractionProps =
+    (): CoverExtractionSectionModule.CoverExtractionSectionProps => {
+      const call = coverExtractionSpy.mock.calls.at(-1);
+      expect(call).toBeDefined();
+      return call![0] as CoverExtractionSectionModule.CoverExtractionSectionProps;
+    };
+
   const getPickerProps =
     (): DriveFolderPickerModalModule.DriveFolderPickerModalProps => {
       const call = pickerSpy.mock.calls.at(-1);
@@ -312,6 +351,7 @@ describe("SettingsPage", () => {
       readonly folderClient?: DriveFolderClient;
       readonly syncMetaRepo?: DriveSyncMetaRepository;
       readonly syncEngine?: DriveSyncEngine;
+      readonly coverExtractionScheduler?: CoverExtractionScheduler;
       readonly initialPath?: string;
       readonly routerProbe?: (blocked: boolean) => void;
     } = {},
@@ -330,6 +370,9 @@ describe("SettingsPage", () => {
         driveFolderClient={deps.folderClient ?? createMockDriveFolderClient()}
         driveSyncMetaRepo={deps.syncMetaRepo ?? createMockDriveSyncMetaRepo()}
         driveSyncEngine={deps.syncEngine ?? createMockDriveSyncEngine()}
+        coverExtractionScheduler={
+          deps.coverExtractionScheduler ?? createMockCoverExtractionScheduler()
+        }
       >
         <RouterProvider initialPath={deps.initialPath ?? "/settings"}>
           <RouterObserver />
@@ -1782,5 +1825,139 @@ describe("SettingsPage", () => {
     });
     expect(syncEngine.sync).toHaveBeenNthCalledWith(2, { forceFullScan: true });
     expect(getSyncExecProps().lastResult?.mode).toBe("full");
+  });
+
+  it("CoverExtractionSectionへストアおよびinitialSnapshotの表紙抽出状態を配線し、再試行操作とルート変更時のsyncQueue呼び出しを連携すること (AC-ST-04, AC-ST-09)", async () => {
+    // 1. ConnectedWithRoots ストーリー: initialSnapshot.coverExtractionState が渡ること
+    const { unmount: u1 } = await renderAndFlush(<ConnectedWithRoots />);
+    expect(getCoverExtractionProps()).toMatchObject({
+      authStatus: "connected",
+      enabledRootCount: 1,
+      syncPhase: "completed",
+      isBackBlocked: false,
+      extractionState: {
+        phase: "running",
+        totalCount: 12,
+        readyCount: 8,
+        pendingCount: 3,
+        errorCount: 1,
+      },
+    });
+    u1();
+
+    // 2. Unlinked ストーリー: initialSnapshot.coverExtractionState 省略時は既定スナップショットへフォールバック
+    const { unmount: u2 } = await renderAndFlush(<Unlinked />);
+    expect(getCoverExtractionProps().extractionState).toEqual(
+      INITIAL_COVER_EXTRACTION_SNAPSHOT,
+    );
+    u2();
+
+    // 3. 通常マウント時: useCoverExtractionStateStore 参照・retryFailedCovers 呼出・ルート追加/切替/削除時の syncQueue 呼出
+    const initialCoverSnapshot = {
+      phase: "idle" as const,
+      totalCount: 10,
+      readyCount: 7,
+      pendingCount: 0,
+      errorCount: 3,
+      activeVolumeId: null,
+      pauseReasons: [],
+    };
+    const coverExtractionScheduler = createMockCoverExtractionScheduler({
+      getSnapshot: vi.fn(() => initialCoverSnapshot),
+    });
+    const authBridge = createMockGoogleAuthBridge({
+      getCachedSession: vi.fn(() => ({
+        email: "reader@example.com",
+        accessToken: "ya29.ok",
+        expiresAt: Date.now() + 3_600_000,
+      })),
+    });
+    const syncRootsRepo = createMockSyncRootsRepo({
+      listActive: vi
+        .fn()
+        .mockResolvedValueOnce([
+          createSampleRoot({ folderId: "folder-a", enabled: 1 }),
+        ])
+        .mockResolvedValueOnce([
+          createSampleRoot({ folderId: "folder-a", enabled: 1 }),
+          createSampleRoot({ folderId: "folder-b", enabled: 1 }),
+        ])
+        .mockResolvedValueOnce([
+          createSampleRoot({ folderId: "folder-a", enabled: 1 }),
+          createSampleRoot({ folderId: "folder-b", enabled: 1 }),
+          createSampleRoot({ folderId: "folder-c", enabled: 1 }),
+        ])
+        .mockResolvedValueOnce([
+          createSampleRoot({ folderId: "folder-a", enabled: 0 }),
+          createSampleRoot({ folderId: "folder-b", enabled: 1 }),
+          createSampleRoot({ folderId: "folder-c", enabled: 1 }),
+        ])
+        .mockResolvedValueOnce([
+          createSampleRoot({ folderId: "folder-b", enabled: 1 }),
+          createSampleRoot({ folderId: "folder-c", enabled: 1 }),
+        ]),
+    });
+
+    await renderSettings({
+      authBridge,
+      syncRootsRepo,
+      coverExtractionScheduler,
+    });
+
+    expect(getCoverExtractionProps()).toMatchObject({
+      authStatus: "connected",
+      enabledRootCount: 1,
+      extractionState: {
+        phase: "idle",
+        totalCount: 10,
+        readyCount: 7,
+        pendingCount: 0,
+        errorCount: 3,
+      },
+    });
+
+    // 再試行ボタンコールバック
+    act(() => {
+      getCoverExtractionProps().onRetryFailedCovers();
+    });
+    expect(coverExtractionScheduler.retryFailedCovers).toHaveBeenCalledTimes(1);
+
+    const syncQueueMock = vi.mocked(coverExtractionScheduler.syncQueue);
+    syncQueueMock.mockClear();
+
+    // URL/ID によるルート追加 -> syncQueue
+    act(() => {
+      getSyncRootsProps().onChangeFolderInput("folder-b");
+    });
+    await act(async () => {
+      getSyncRootsProps().onAddFolderByInput();
+      await flushMicrotasks();
+      await flushMicrotasks();
+    });
+    expect(syncQueueMock).toHaveBeenCalledTimes(1);
+
+    // ピッカー確定によるルート追加 -> syncQueue
+    await act(async () => {
+      getPickerProps().onSelectFolder({ id: "folder-c", name: "Folder C" });
+      await flushMicrotasks();
+      await flushMicrotasks();
+    });
+    expect(syncQueueMock).toHaveBeenCalledTimes(2);
+
+    // 有効/無効トグル -> syncQueue
+    await act(async () => {
+      getSyncRootsProps().onToggleRootEnabled("folder-a", false);
+      await flushMicrotasks();
+      await flushMicrotasks();
+    });
+    expect(syncQueueMock).toHaveBeenCalledTimes(3);
+
+    // ルート登録解除 -> syncQueue
+    await act(async () => {
+      getSyncRootsProps().onRemoveRoot("folder-a");
+      await flushMicrotasks();
+      await flushMicrotasks();
+    });
+    expect(syncQueueMock).toHaveBeenCalledTimes(4);
   });
 });

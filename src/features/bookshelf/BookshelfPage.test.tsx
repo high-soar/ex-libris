@@ -20,11 +20,20 @@ import type {
   GoogleAuthSession,
 } from "../../bridges/oauth/types";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
+import type {
+  CoverExtractionScheduler,
+  CoverExtractionVolumeUpdateEvent,
+} from "../../engine/cover/types";
 import { RouterProvider } from "../../shared/router/RouterProvider";
+import {
+  INITIAL_COVER_EXTRACTION_SNAPSHOT,
+  resetCoverExtractionState,
+} from "../../shared/sync/coverExtractionStateStore";
 import {
   resetDriveSyncState,
   useDriveSyncStateStore,
 } from "../../shared/sync/driveSyncStateStore";
+import * as ViewportObserverModule from "../../shared/ui/useViewportVolumeObserver";
 import { resetTestDb } from "../../storage/db";
 import type { DriveSyncMetaRepository } from "../../storage/repositories/driveSyncMetaRepository";
 import type { DriveSyncRootsRepository } from "../../storage/repositories/driveSyncRootsRepository";
@@ -59,6 +68,7 @@ import { useLocalReaderSessionStore } from "../reader/localReaderSessionStore";
 const {
   Default,
   WithSeriesGrid,
+  WithCoverExtraction,
   OfflineCachedSeries,
   Unauthenticated,
   NoDriveRoots,
@@ -275,6 +285,39 @@ function createMockDriveSyncEngine(
   };
 }
 
+function createMockCoverExtractionScheduler(
+  overrides: Partial<CoverExtractionScheduler> = {},
+): CoverExtractionScheduler & {
+  emitVolumeUpdated: (event: CoverExtractionVolumeUpdateEvent) => void;
+} {
+  const volumeListeners = new Set<
+    (event: CoverExtractionVolumeUpdateEvent) => void
+  >();
+  return {
+    syncQueue: vi.fn(async () => undefined),
+    setViewportVolumeIds: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    retryFailedCovers: vi.fn(async () => 0),
+    getSnapshot: vi.fn(() => INITIAL_COVER_EXTRACTION_SNAPSHOT),
+    subscribeProgress: vi.fn(() => () => undefined),
+    subscribeVolumeUpdated: vi.fn((listener) => {
+      volumeListeners.add(listener);
+      return () => {
+        volumeListeners.delete(listener);
+      };
+    }),
+    emitVolumeUpdated: (event) => {
+      for (const listener of [...volumeListeners]) {
+        listener(event);
+      }
+    },
+    resetForTest: vi.fn(async () => undefined),
+    dispose: vi.fn(),
+    ...overrides,
+  };
+}
+
 function TestServiceProvider({ children, ...props }: ServiceProviderProps) {
   const defaultsRef = useRef<{
     readingProgressRepo: ReadingProgressRepository;
@@ -284,6 +327,7 @@ function TestServiceProvider({ children, ...props }: ServiceProviderProps) {
     volumesRepo: VolumesRepository;
     driveSyncMetaRepo: DriveSyncMetaRepository;
     driveSyncEngine: DriveSyncEngine;
+    coverExtractionScheduler: CoverExtractionScheduler;
   } | null>(null);
   if (defaultsRef.current === null) {
     defaultsRef.current = {
@@ -294,6 +338,7 @@ function TestServiceProvider({ children, ...props }: ServiceProviderProps) {
       volumesRepo: createMockVolumesRepo(),
       driveSyncMetaRepo: createMockDriveSyncMetaRepo(),
       driveSyncEngine: createMockDriveSyncEngine(),
+      coverExtractionScheduler: createMockCoverExtractionScheduler(),
     };
   }
   const defaults = defaultsRef.current;
@@ -311,6 +356,9 @@ function TestServiceProvider({ children, ...props }: ServiceProviderProps) {
       volumesRepo={props.volumesRepo ?? defaults.volumesRepo}
       driveSyncMetaRepo={props.driveSyncMetaRepo ?? defaults.driveSyncMetaRepo}
       driveSyncEngine={props.driveSyncEngine ?? defaults.driveSyncEngine}
+      coverExtractionScheduler={
+        props.coverExtractionScheduler ?? defaults.coverExtractionScheduler
+      }
       {...props}
     >
       {children}
@@ -342,6 +390,9 @@ describe("BookshelfPage", () => {
   let recentHistorySpy: MockInstance<
     typeof RecentLocalHistorySectionModule.RecentLocalHistorySection
   >;
+  let viewportObserverSpy: MockInstance<
+    typeof ViewportObserverModule.useViewportVolumeObserver
+  >;
 
   beforeEach(async () => {
     await resetTestDb();
@@ -349,6 +400,7 @@ describe("BookshelfPage", () => {
     useLocalReaderSessionStore.setState({ session: null });
     resetBookshelfUiState();
     resetDriveSyncState();
+    resetCoverExtractionState();
     window.history.replaceState(null, "", "/");
 
     headerSpy = vi
@@ -372,6 +424,10 @@ describe("BookshelfPage", () => {
     recentHistorySpy = vi
       .spyOn(RecentLocalHistorySectionModule, "RecentLocalHistorySection")
       .mockImplementation(() => null);
+    viewportObserverSpy = vi.spyOn(
+      ViewportObserverModule,
+      "useViewportVolumeObserver",
+    );
   });
 
   afterEach(async () => {
@@ -379,6 +435,7 @@ describe("BookshelfPage", () => {
     await resetTestDb();
     resetBookshelfUiState();
     resetDriveSyncState();
+    resetCoverExtractionState();
     window.history.replaceState(null, "", originalUrl || "/");
     if (originalClipboardDescriptor) {
       Object.defineProperty(
@@ -1792,5 +1849,202 @@ describe("BookshelfPage", () => {
     );
     expect(progressRepo.listRecentLocal).not.toHaveBeenCalled();
     expect(getLatestRecentHistoryProps().items).toEqual([fallbackItem]);
+  });
+
+  it("表紙抽出のビューポート監視・インプレース差分更新・再試行配線・TR-02a/TR-02b同期プリエンプションを検証すること (AC-BS-04, AC-BS-11, AC-BS-13)", async () => {
+    // 1. WithCoverExtraction ストーリー（initialSnapshot 指定時は非同期購読・ビューポート監視を無効化）
+    const { unmount: unmountStory } = await renderAndFlush(
+      <WithCoverExtraction />,
+    );
+    expect(getLatestToolbarProps()).toMatchObject({
+      coverExtractionState: {
+        phase: "running",
+        totalCount: 32,
+        readyCount: 20,
+        pendingCount: 10,
+        errorCount: 2,
+      },
+      canRetryCovers: true,
+    });
+    expect(viewportObserverSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        screenKey: "bookshelf",
+        enabled: false,
+      }),
+    );
+    unmountStory();
+
+    // 2. 通常マウント時: 2シリーズ表示 -> インプレース更新で他カードの参照を維持 + 再試行 + プリエンプション
+    const existingBlob = new Blob(["existing"], { type: "image/webp" });
+    const seriesA = createSampleSeriesRecord({
+      id: "series-a",
+      title: "作品A",
+      titleReading: "さくひんa",
+      addedAt: 200,
+    });
+    const seriesB = createSampleSeriesRecord({
+      id: "series-b",
+      title: "作品B",
+      titleReading: "さくひんb",
+      addedAt: 100,
+    });
+    const volA = createSampleVolumeRecord({
+      id: "vol-a1",
+      seriesId: "series-a",
+      rootFolderId: "root-1",
+      coverStatus: "pending",
+      coverBlob: null,
+      addedAt: 200,
+    });
+    const volB = createSampleVolumeRecord({
+      id: "vol-b1",
+      seriesId: "series-b",
+      rootFolderId: "root-1",
+      coverStatus: "ready",
+      coverBlob: existingBlob,
+      coverUpdatedAt: 1000,
+      addedAt: 100,
+    });
+
+    const scheduler = createMockCoverExtractionScheduler({
+      getSnapshot: vi.fn(() => ({
+        phase: "idle" as const,
+        totalCount: 2,
+        readyCount: 1,
+        pendingCount: 0,
+        errorCount: 1,
+        activeVolumeId: null,
+        pauseReasons: [],
+      })),
+    });
+
+    const { unmount } = await renderAndFlush(
+      <TestServiceProvider
+        driveSyncRootsRepo={createMockDriveSyncRootsRepo({
+          listActive: vi.fn(async () => [
+            {
+              folderId: "root-1",
+              folderName: "Comics",
+              enabled: 1 as const,
+              addedAt: 1,
+              updatedAt: 1,
+              deletedAt: null,
+            },
+          ]),
+        })}
+        seriesRepo={createMockSeriesRepo({
+          listActive: vi.fn(async () => [seriesA, seriesB]),
+        })}
+        volumesRepo={createMockVolumesRepo({
+          listVisibleByEnabledRoots: vi.fn(async () => [volA, volB]),
+        })}
+        coverExtractionScheduler={scheduler}
+      >
+        <RouterProvider initialPath="/">
+          <BookshelfPage
+            initialDriveSetupState={{ kind: "ready" }}
+            initialRecentHistory={[]}
+          />
+        </RouterProvider>
+      </TestServiceProvider>,
+    );
+
+    expect(scheduler.subscribeVolumeUpdated).toHaveBeenCalledTimes(1);
+    expect(viewportObserverSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        screenKey: "bookshelf",
+        scheduler,
+        pendingVolumeIds: ["vol-a1"],
+        enabled: true,
+      }),
+    );
+
+    // Toolbar へストア状態と再試行コールバックが渡ること
+    expect(getLatestToolbarProps()).toMatchObject({
+      coverExtractionState: {
+        phase: "idle",
+        totalCount: 2,
+        readyCount: 1,
+        pendingCount: 0,
+        errorCount: 1,
+      },
+      canRetryCovers: true,
+    });
+    act(() => {
+      getLatestToolbarProps().onRetryFailedCovers?.();
+    });
+    expect(scheduler.retryFailedCovers).toHaveBeenCalledTimes(1);
+
+    const beforeItems = getLatestSeriesGridProps().items;
+    const beforeCardB = beforeItems.find((i) => i.seriesId === "series-b")!;
+
+    // 非該当 volumeId の更新では参照が変わらないこと
+    act(() => {
+      scheduler.emitVolumeUpdated({
+        volumeId: "vol-unmatched",
+        seriesId: "series-a",
+        coverStatus: "ready",
+        coverBlob: new Blob(["other"]),
+        coverUpdatedAt: 2000,
+      });
+    });
+    expect(getLatestSeriesGridProps().items).toBe(beforeItems);
+
+    // 該当代表巻の ready 更新 -> カードAのみインプレース更新しカードBの Blob 参照とオブジェクト参照を維持
+    const readyBlob = new Blob(["new-webp"], { type: "image/webp" });
+    act(() => {
+      scheduler.emitVolumeUpdated({
+        volumeId: "vol-a1",
+        seriesId: "series-a",
+        coverStatus: "ready",
+        coverBlob: readyBlob,
+        coverUpdatedAt: 2001,
+      });
+    });
+    const afterReadyItems = getLatestSeriesGridProps().items;
+    const afterReadyA = afterReadyItems.find((i) => i.seriesId === "series-a")!;
+    const afterReadyB = afterReadyItems.find((i) => i.seriesId === "series-b")!;
+    expect(afterReadyA.representativeVolume.coverStatus).toBe("ready");
+    expect(afterReadyA.representativeVolume.coverBlob).toBe(readyBlob);
+    expect(afterReadyB).toBe(beforeCardB);
+    expect(afterReadyB.representativeVolume.coverBlob).toBe(existingBlob);
+
+    // pending 復帰イベントもインプレース反映されること
+    act(() => {
+      scheduler.emitVolumeUpdated({
+        volumeId: "vol-a1",
+        seriesId: "series-a",
+        coverStatus: "pending",
+        coverBlob: null,
+        coverUpdatedAt: 2002,
+      });
+    });
+    const afterPendingA = getLatestSeriesGridProps().items.find(
+      (i) => i.seriesId === "series-a",
+    )!;
+    expect(afterPendingA.representativeVolume.coverStatus).toBe("pending");
+    expect(afterPendingA.representativeVolume.coverBlob).toBeNull();
+
+    // TR-02b クイック起動時に同期 pause("reader") が呼ばれること
+    vi.mocked(scheduler.pause).mockClear();
+    act(() => {
+      getLatestSeriesGridProps().onQuickRead("series-a", "vol-a1");
+    });
+    expect(scheduler.pause).toHaveBeenCalledWith("reader");
+    expect(window.location.pathname).toBe("/read/volume/vol-a1");
+
+    // TR-02a ローカル ZIP 選択時に同期 pause("reader") が呼ばれること
+    vi.mocked(scheduler.pause).mockClear();
+    window.history.replaceState(null, "", "/");
+    const input = screen.getByTestId("local-zip-file-input");
+    fireEvent.change(input, {
+      target: {
+        files: [new File(["zip"], "preempt.cbz", { type: "application/zip" })],
+      },
+    });
+    expect(scheduler.pause).toHaveBeenCalledWith("reader");
+    expect(window.location.pathname).toBe("/read/local");
+
+    unmount();
   });
 });

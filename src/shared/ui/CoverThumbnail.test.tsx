@@ -4,8 +4,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CoverThumbnail } from "./CoverThumbnail";
 import * as stories from "./CoverThumbnail.stories";
 
-const { PendingPlaceholder, ReadyImage, ErrorFallback } =
-  composeStories(stories);
+const {
+  PendingPlaceholder,
+  ReadyImage,
+  Error: ErrorStory,
+  ErrorFallback,
+} = composeStories(stories);
 
 describe("CoverThumbnail", () => {
   afterEach(() => {
@@ -13,7 +17,7 @@ describe("CoverThumbnail", () => {
     vi.restoreAllMocks();
   });
 
-  it("未抽出プレースホルダおよびエラーフォールバックのストーリーを描画できること (AC-BS-12)", () => {
+  it("未抽出プレースホルダおよびエラーフォールバックのストーリーを描画できること (AC-BS-12, AC-COV-02)", () => {
     const { unmount } = render(<PendingPlaceholder />);
     expect(screen.getByTestId("cover-thumbnail")).toBeInTheDocument();
     expect(
@@ -25,17 +29,36 @@ describe("CoverThumbnail", () => {
     expect(screen.getByTestId("cover-thumbnail-badge")).toHaveTextContent(
       "全 12 巻",
     );
+    expect(screen.queryByTestId("cover-thumbnail-error-badge")).toBeNull();
     expect(screen.queryByTestId("cover-thumbnail-image")).toBeNull();
     unmount();
+
+    const { unmount: unmountError } = render(<ErrorStory />);
+    expect(
+      screen.getByTestId("cover-thumbnail-placeholder"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("cover-thumbnail-initial")).toHaveTextContent(
+      "葬",
+    );
+    expect(screen.getByTestId("cover-thumbnail-error-badge")).toHaveTextContent(
+      "取得失敗",
+    );
+    expect(screen.getByTestId("cover-thumbnail-badge")).toHaveTextContent(
+      "全 12 巻",
+    );
+    unmountError();
 
     render(<ErrorFallback />);
     expect(screen.getByTestId("cover-thumbnail-initial")).toHaveTextContent(
       "?",
     );
+    expect(screen.getByTestId("cover-thumbnail-error-badge")).toHaveTextContent(
+      "取得失敗",
+    );
     expect(screen.queryByTestId("cover-thumbnail-badge")).toBeNull();
   });
 
-  it("ready かつ coverBlob ありの場合に createObjectURL で画像を表示し、変更・アンマウント時に revokeObjectURL を厳格実行すること (AC-BS-12)", () => {
+  it("ready かつ coverBlob ありの場合に createObjectURL で lazy/async 属性付き画像を表示し、変更・アンマウント時に revokeObjectURL を厳格実行すること (AC-BS-12)", () => {
     let urlSeq = 0;
     const originalCreate = URL.createObjectURL;
     const originalRevoke = URL.revokeObjectURL;
@@ -58,6 +81,9 @@ describe("CoverThumbnail", () => {
       const storyImage = screen.getByTestId("cover-thumbnail-image");
       expect(storyImage).toHaveAttribute("src", "blob:mock-cover-1");
       expect(storyImage).toHaveAttribute("alt", "ダンジョン飯 の表紙");
+      expect(storyImage).toHaveAttribute("loading", "lazy");
+      expect(storyImage).toHaveAttribute("decoding", "async");
+      expect(screen.queryByTestId("cover-thumbnail-error-badge")).toBeNull();
       expect(screen.getByTestId("cover-thumbnail-badge")).toHaveTextContent(
         "全 14 巻",
       );

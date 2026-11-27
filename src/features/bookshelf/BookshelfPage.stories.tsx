@@ -173,6 +173,30 @@ export const WithSeriesGrid: Story = {
   },
 };
 
+/** 表紙 WebP 自動抽出進行中・未取得エラーありの Drive 蔵書表示状態 */
+export const WithCoverExtraction: Story = {
+  name: "表紙抽出中・未取得エラーあり",
+  args: {
+    initialSnapshot: {
+      driveSetupState: { kind: "ready" },
+      seriesItems: SAMPLE_SERIES_ITEMS,
+      sortOrder: "lastReadDesc",
+      syncPhase: "completed",
+      lastSyncedAt: FIXED_SYNCED_AT,
+      coverExtractionState: {
+        phase: "running",
+        totalCount: 32,
+        readyCount: 20,
+        pendingCount: 10,
+        errorCount: 2,
+        activeVolumeId: "vol-f1",
+        pauseReasons: [],
+      },
+      recentHistory: [],
+    },
+  },
+};
+
 /** 未連携でもローカル IndexedDB に残る同期済み蔵書を閲覧維持する状態 */
 export const OfflineCachedSeries: Story = {
   name: "未連携・同期済み蔵書閲覧維持状態",

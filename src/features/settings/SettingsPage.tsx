@@ -15,6 +15,7 @@ import type {
   DiagnosticEntry,
   DiagnosticLogger,
 } from "../../diagnostics/types";
+import type { CoverExtractionProgressSnapshot } from "../../engine/cover/types";
 import { isAbortError } from "../../engine/zip/errors";
 import { DriveApiError } from "../../providers/gdrive/driveApiErrors";
 import { parseDriveFolderInput } from "../../providers/gdrive/driveFolderInput";
@@ -23,8 +24,13 @@ import type {
   DriveFolderMetadata,
 } from "../../providers/gdrive/types";
 import { useRouter } from "../../shared/router/routerContext";
+import {
+  INITIAL_COVER_EXTRACTION_SNAPSHOT,
+  useCoverExtractionStateStore,
+} from "../../shared/sync/coverExtractionStateStore";
 import { useDriveSyncStateStore } from "../../shared/sync/driveSyncStateStore";
 import type { DriveSyncRootRecord } from "../../storage/types";
+import { CoverExtractionSection } from "./CoverExtractionSection";
 import { DiagnosticsSection } from "./DiagnosticsSection";
 import { DriveFolderPickerModal } from "./DriveFolderPickerModal";
 import { DriveSyncExecutionSection } from "./DriveSyncExecutionSection";
@@ -97,6 +103,7 @@ export function SettingsPage({
     driveFolderClient,
     driveSyncMetaRepo,
     driveSyncEngine,
+    coverExtractionScheduler,
   } = useServices();
   const { back, setBackBlocked } = useRouter();
 
@@ -117,6 +124,26 @@ export function SettingsPage({
     (state) => state.hydrateLastSyncedAt,
   );
   const runDriveSync = useDriveSyncStateStore((state) => state.runDriveSync);
+
+  const storeCoverPhase = useCoverExtractionStateStore((state) => state.phase);
+  const storeCoverTotalCount = useCoverExtractionStateStore(
+    (state) => state.totalCount,
+  );
+  const storeCoverReadyCount = useCoverExtractionStateStore(
+    (state) => state.readyCount,
+  );
+  const storeCoverPendingCount = useCoverExtractionStateStore(
+    (state) => state.pendingCount,
+  );
+  const storeCoverErrorCount = useCoverExtractionStateStore(
+    (state) => state.errorCount,
+  );
+  const storeCoverActiveVolumeId = useCoverExtractionStateStore(
+    (state) => state.activeVolumeId,
+  );
+  const storeCoverPauseReasons = useCoverExtractionStateStore(
+    (state) => state.pauseReasons,
+  );
 
   const [authStatus, setAuthStatus] = useState<GoogleAccountAuthStatus>(() => {
     if (initialSnapshot !== undefined) {
@@ -201,6 +228,19 @@ export function SettingsPage({
   const effectiveSyncErrorMessage = hasSnapshot
     ? (initialSnapshot.syncState?.errorMessage ?? null)
     : storeSyncErrorMessage;
+  const effectiveCoverExtractionState: CoverExtractionProgressSnapshot =
+    hasSnapshot
+      ? (initialSnapshot.coverExtractionState ??
+        INITIAL_COVER_EXTRACTION_SNAPSHOT)
+      : {
+          phase: storeCoverPhase,
+          totalCount: storeCoverTotalCount,
+          readyCount: storeCoverReadyCount,
+          pendingCount: storeCoverPendingCount,
+          errorCount: storeCoverErrorCount,
+          activeVolumeId: storeCoverActiveVolumeId,
+          pauseReasons: storeCoverPauseReasons,
+        };
   const isSyncing = effectiveSyncPhase === "syncing";
   const enabledRootCount = syncRoots.filter(
     (root) => root.enabled === 1,
@@ -545,6 +585,7 @@ export function SettingsPage({
       }
       setSyncRoots(nextRoots);
       setFolderInput("");
+      void coverExtractionScheduler.syncQueue();
     } catch (error: unknown) {
       if (!isMountedRef.current || isAbortError(error)) {
         return;
@@ -566,6 +607,7 @@ export function SettingsPage({
       }
     }
   }, [
+    coverExtractionScheduler,
     driveFolderClient,
     driveSyncRootsRepo,
     logger,
@@ -606,6 +648,7 @@ export function SettingsPage({
           return;
         }
         setSyncRoots(nextRoots);
+        void coverExtractionScheduler.syncQueue();
       } catch (error: unknown) {
         if (
           !isMountedRef.current ||
@@ -625,7 +668,12 @@ export function SettingsPage({
         syncDiagnosticsFromLogger();
       }
     },
-    [driveSyncRootsRepo, logger, syncDiagnosticsFromLogger],
+    [
+      coverExtractionScheduler,
+      driveSyncRootsRepo,
+      logger,
+      syncDiagnosticsFromLogger,
+    ],
   );
 
   const handleRemoveRoot = useCallback(
@@ -656,6 +704,7 @@ export function SettingsPage({
           return;
         }
         setSyncRoots(nextRoots);
+        void coverExtractionScheduler.syncQueue();
       } catch (error: unknown) {
         if (
           !isMountedRef.current ||
@@ -673,7 +722,12 @@ export function SettingsPage({
         syncDiagnosticsFromLogger();
       }
     },
-    [driveSyncRootsRepo, logger, syncDiagnosticsFromLogger],
+    [
+      coverExtractionScheduler,
+      driveSyncRootsRepo,
+      logger,
+      syncDiagnosticsFromLogger,
+    ],
   );
 
   const loadFolderPage = useCallback(
@@ -823,6 +877,7 @@ export function SettingsPage({
           return;
         }
         setSyncRoots(nextRoots);
+        void coverExtractionScheduler.syncQueue();
         pickerEpochRef.current += 1;
         pickerAbortRef.current?.abort();
         pickerAbortRef.current = null;
@@ -848,7 +903,12 @@ export function SettingsPage({
         }
       }
     },
-    [driveSyncRootsRepo, logger, syncDiagnosticsFromLogger],
+    [
+      coverExtractionScheduler,
+      driveSyncRootsRepo,
+      logger,
+      syncDiagnosticsFromLogger,
+    ],
   );
 
   const handleSelectFolder = useCallback(
@@ -886,6 +946,10 @@ export function SettingsPage({
   const handleRunFullScan = useCallback(() => {
     runManualSync(true);
   }, [runManualSync]);
+
+  const handleRetryFailedCovers = useCallback(() => {
+    void coverExtractionScheduler.retryFailedCovers();
+  }, [coverExtractionScheduler]);
 
   const handleCopyDiagnostics = useCallback(async () => {
     const report = logger.formatReport();
@@ -956,6 +1020,14 @@ export function SettingsPage({
             isBackBlocked={isBackBlocked}
             onRunIncrementalSync={handleRunIncrementalSync}
             onRunFullScan={handleRunFullScan}
+          />
+          <CoverExtractionSection
+            authStatus={authStatus}
+            enabledRootCount={enabledRootCount}
+            syncPhase={effectiveSyncPhase}
+            isBackBlocked={isBackBlocked}
+            extractionState={effectiveCoverExtractionState}
+            onRetryFailedCovers={handleRetryFailedCovers}
           />
           <DiagnosticsSection
             entries={diagnosticEntries}

@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { ServiceProvider } from "./app/ServiceProvider";
 import type { CoordinatorSessionHandle } from "./app/coordinatorClient";
 import { useServices } from "./app/serviceContext";
 import type { AppBridge } from "./bridges/app/types";
 import { diagnosticLogger } from "./diagnostics/diagnosticLogger";
 import type { DiagnosticLogger } from "./diagnostics/types";
+import type { CoverExtractionScheduler } from "./engine/cover/types";
 import type { CopyStatus as BookshelfCopyStatus } from "./features/bookshelf/BookshelfHeader";
 import {
   BookshelfPage,
@@ -25,6 +26,7 @@ export interface AppProps {
   readonly initialPath?: string;
   readonly appBridge?: AppBridge;
   readonly createCoordinatorSession?: () => CoordinatorSessionHandle;
+  readonly coverExtractionScheduler?: CoverExtractionScheduler;
   readonly initialCopyStatus?: CopyStatus;
   readonly initialDriveSetupState?: DriveSetupBannerState;
   readonly initialBookshelfSnapshot?: BookshelfPageInitialSnapshot;
@@ -50,7 +52,7 @@ function AppShell({
   initialSettingsSnapshot,
   settingsLogger,
 }: AppShellProps) {
-  const { appBridge } = useServices();
+  const { appBridge, coverExtractionScheduler } = useServices();
   const { route, back, isBackBlocked } = useRouter();
   const readerExitRef = useRef<(() => void) | null>(null);
   const settingsModalBackRef = useRef<(() => void) | null>(null);
@@ -60,6 +62,14 @@ function AppShell({
   isBackBlockedRef.current = isBackBlocked;
   const backRef = useRef(back);
   backRef.current = back;
+
+  useLayoutEffect(() => {
+    if (route.name === "reader-local" || route.name === "reader-volume") {
+      coverExtractionScheduler.pause("reader");
+      return;
+    }
+    coverExtractionScheduler.resume("reader");
+  }, [coverExtractionScheduler, route.name]);
 
   useEffect(() => {
     diagnosticLogger.info("app", "ExLibris shell initialized");
@@ -152,6 +162,7 @@ export function App({
   initialPath,
   appBridge,
   createCoordinatorSession,
+  coverExtractionScheduler,
   initialCopyStatus = "idle",
   initialDriveSetupState,
   initialBookshelfSnapshot,
@@ -163,6 +174,7 @@ export function App({
     <ServiceProvider
       appBridge={appBridge}
       createCoordinatorSession={createCoordinatorSession}
+      coverExtractionScheduler={coverExtractionScheduler}
     >
       <RouterProvider initialPath={initialPath}>
         <AppShell
