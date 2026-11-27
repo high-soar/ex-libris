@@ -34,7 +34,6 @@ import { useRouter } from "../../shared/router/routerContext";
 import {
   INITIAL_COVER_EXTRACTION_SNAPSHOT,
   resetCoverExtractionState,
-  useCoverExtractionStateStore,
 } from "../../shared/sync/coverExtractionStateStore";
 import {
   resetDriveSyncState,
@@ -1854,17 +1853,18 @@ describe("SettingsPage", () => {
     u2();
 
     // 3. 通常マウント時: useCoverExtractionStateStore 参照・retryFailedCovers 呼出・ルート追加/切替/削除時の syncQueue 呼出
-    useCoverExtractionStateStore.getState().applySnapshot({
-      phase: "idle",
+    const initialCoverSnapshot = {
+      phase: "idle" as const,
       totalCount: 10,
       readyCount: 7,
       pendingCount: 0,
       errorCount: 3,
       activeVolumeId: null,
       pauseReasons: [],
+    };
+    const coverExtractionScheduler = createMockCoverExtractionScheduler({
+      getSnapshot: vi.fn(() => initialCoverSnapshot),
     });
-
-    const coverExtractionScheduler = createMockCoverExtractionScheduler();
     const authBridge = createMockGoogleAuthBridge({
       getCachedSession: vi.fn(() => ({
         email: "reader@example.com",
