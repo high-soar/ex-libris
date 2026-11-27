@@ -13,6 +13,7 @@ import {
 } from "./helpers";
 
 interface RecordedCoverMediaRequest {
+  readonly seq: number;
   readonly url: string;
   readonly fileId: string;
   readonly start: number | null;
@@ -39,6 +40,7 @@ interface NextFileHoldGate {
 
 interface CoverDriveMediaRouteController {
   readonly requests: RecordedCoverMediaRequest[];
+  readonly getLatestSeq: () => number;
   readonly clearRequests: () => void;
   readonly setArchive: (fileId: string, bytes: Uint8Array | null) => void;
   readonly queueFault: (fileId: string, fault: QueuedRouteFault) => void;
@@ -132,6 +134,7 @@ async function installCoverDriveMediaRoute(
     release: () => void;
   } | null = null;
   const requests: RecordedCoverMediaRequest[] = [];
+  let requestSeq = 0;
 
   await context.route(
     "https://www.googleapis.com/drive/v3/files/**",
@@ -149,6 +152,7 @@ async function installCoverDriveMediaRoute(
         return;
       }
 
+      const seq = ++requestSeq;
       const receivedAt = Date.now();
       const parsedUrl = new URL(url);
       const segments = parsedUrl.pathname.split("/").filter(Boolean);
@@ -177,6 +181,7 @@ async function installCoverDriveMediaRoute(
       if (queuedFaults && queuedFaults.length > 0) {
         const fault = queuedFaults.shift()!;
         requests.push({
+          seq,
           url,
           fileId,
           start: null,
@@ -203,6 +208,7 @@ async function installCoverDriveMediaRoute(
       const archive = archives.get(fileId);
       if (!archive) {
         requests.push({
+          seq,
           url,
           fileId,
           start: null,
@@ -226,6 +232,7 @@ async function installCoverDriveMediaRoute(
       const parsedRange = parseRangeHeader(rangeHeader, archive.byteLength);
       if (!parsedRange) {
         requests.push({
+          seq,
           url,
           fileId,
           start: null,
@@ -250,6 +257,7 @@ async function installCoverDriveMediaRoute(
 
       const slice = archive.subarray(parsedRange.start, parsedRange.end + 1);
       requests.push({
+        seq,
         url,
         fileId,
         start: parsedRange.start,
@@ -279,6 +287,7 @@ async function installCoverDriveMediaRoute(
 
   return {
     requests,
+    getLatestSeq: () => requestSeq,
     clearRequests: () => {
       requests.length = 0;
     },
@@ -909,7 +918,7 @@ test.describe("SCN-06: 2段優先度・表紙WebP自動抽出＆閲覧優先プ�
     const heldFileA = await holdTr02b.arrived;
 
     // A) SCR-01 -> SCR-03 (/read/volume/:volumeId) (TR-02b): 進行中表紙通信が即時 abort され pause("reader") になること
-    const tr02bStartedAt = Date.now();
+    const seqBeforeTr02b = routeController.getLatestSeq();
     routeController.clearRequests();
     const onePieceCard = page
       .getByTestId("series-card")
@@ -937,8 +946,7 @@ test.describe("SCN-06: 2段優先度・表紙WebP自動抽出＆閲覧優先プ�
 
     // リーダー閲覧中に他巻の表紙 Range リクエストが新規発火していないこと
     const nonReaderRequestsDuringTr02b = routeController.requests.filter(
-      (req) =>
-        req.receivedAt >= tr02bStartedAt && req.fileId !== "preempt-op-1",
+      (req) => req.seq > seqBeforeTr02b && req.fileId !== "preempt-op-1",
     );
     expect(nonReaderRequestsDuringTr02b).toEqual([]);
 
@@ -962,7 +970,7 @@ test.describe("SCN-06: 2段優先度・表紙WebP自動抽出＆閲覧優先プ�
     // B) SCR-01 -> SCR-02 -> SCR-03 (/read/volume/:volumeId) (TR-04): シリーズ詳細からも即時プリエンプションされること
     await onePieceCard.getByTestId("series-card-open-detail").click();
     await expect(page).toHaveURL(/\/series\/.+/);
-    const tr04StartedAt = Date.now();
+    const seqBeforeTr04 = routeController.getLatestSeq();
     routeController.clearRequests();
 
     await page
@@ -988,8 +996,7 @@ test.describe("SCN-06: 2段優先度・表紙WebP自動抽出＆閲覧優先プ�
     });
     expect(
       routeController.requests.filter(
-        (req) =>
-          req.receivedAt >= tr04StartedAt && req.fileId !== "preempt-op-1",
+        (req) => req.seq > seqBeforeTr04 && req.fileId !== "preempt-op-1",
       ),
     ).toEqual([]);
 
@@ -1013,7 +1020,7 @@ test.describe("SCN-06: 2段優先度・表紙WebP自動抽出＆閲覧優先プ�
     const heldFileC = await holdTr02a.arrived;
 
     // C) SCR-01 -> SCR-03 (/read/local) (TR-02a): ローカル ZIP 閲覧でもプリエンプションされること
-    const tr02aStartedAt = Date.now();
+    const seqBeforeTr02a = routeController.getLatestSeq();
     routeController.clearRequests();
     const localZipTransfer = await createFileDataTransfer(page, {
       name: "local-preempt-check.cbz",
@@ -1043,9 +1050,7 @@ test.describe("SCN-06: 2段優先度・表紙WebP自動抽出＆閲覧優先プ�
     await expect(canvas).toHaveAttribute("data-rendered-page", "0");
     // ローカル閲覧中は Drive への新規 Range リクエストが一切発生しないこと
     expect(
-      routeController.requests.filter(
-        (req) => req.receivedAt >= tr02aStartedAt,
-      ),
+      routeController.requests.filter((req) => req.seq > seqBeforeTr02a),
     ).toEqual([]);
 
     // TR-08 で SCR-01 へ復帰後、残りの全 pending 巻が自動再開して完了すること
