@@ -21,6 +21,26 @@ export interface UpsertVolumeFromDriveSyncResult {
   readonly invalidatedCacheKey: string | null;
 }
 
+export interface SaveCoverReadyInput {
+  readonly volumeId: string;
+  readonly expectedMd5Checksum: string | null;
+  readonly expectedFileSize: number;
+  readonly coverBlob: Blob;
+  readonly coverUpdatedAt?: number;
+}
+
+export interface SaveCoverErrorInput {
+  readonly volumeId: string;
+  readonly expectedMd5Checksum: string | null;
+  readonly expectedFileSize: number;
+  readonly coverUpdatedAt?: number;
+}
+
+export interface ResetErrorCoversToPendingInput {
+  readonly enabledRootIds: ReadonlySet<string>;
+  readonly seriesId?: string;
+}
+
 export interface VolumesRepository {
   getById(id: string): Promise<VolumeRecord | null>;
   getByDriveFileId(driveFileId: string): Promise<VolumeRecord | null>;
@@ -35,6 +55,11 @@ export interface VolumesRepository {
     input: UpsertVolumeFromDriveSyncInput,
   ): Promise<UpsertVolumeFromDriveSyncResult>;
   markTrashedByDriveFileIds(driveFileIds: readonly string[]): Promise<number>;
+  saveCoverReady(input: SaveCoverReadyInput): Promise<VolumeRecord | null>;
+  saveCoverError(input: SaveCoverErrorInput): Promise<VolumeRecord | null>;
+  resetErrorCoversToPending(
+    input: ResetErrorCoversToPendingInput,
+  ): Promise<readonly VolumeRecord[]>;
 }
 
 export interface DexieVolumesRepositoryOptions {
@@ -429,5 +454,26 @@ export class DexieVolumesRepository implements VolumesRepository {
         },
       );
     });
+  }
+
+  async saveCoverReady(
+    _input: SaveCoverReadyInput,
+  ): Promise<VolumeRecord | null> {
+    void _input;
+    return null;
+  }
+
+  async saveCoverError(
+    _input: SaveCoverErrorInput,
+  ): Promise<VolumeRecord | null> {
+    void _input;
+    return null;
+  }
+
+  async resetErrorCoversToPending(
+    _input: ResetErrorCoversToPendingInput,
+  ): Promise<readonly VolumeRecord[]> {
+    void _input;
+    return [];
   }
 }

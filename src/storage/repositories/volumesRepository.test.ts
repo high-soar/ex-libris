@@ -693,4 +693,303 @@ describe("DexieVolumesRepository", () => {
     await expect(failingList).rejects.toThrow("transient volumes error");
     await expect(followingGet).resolves.toMatchObject({ id: "fifo-vol" });
   });
+
+  it("saveCoverReady/saveCoverErrorは整合ガード(isTrashed/md5/fileSize)とupdatedAt非汚染を厳守すること (AC-COV-05)", async () => {
+    let clock = 10_000;
+    const repo = new DexieVolumesRepository(db, { now: () => clock });
+    const webpBlob = new Blob([new Uint8Array([1, 2, 3])], {
+      type: "image/webp",
+    });
+
+    await db.volumes.bulkPut([
+      createValidVolume({
+        id: "vol-ok",
+        driveFileId: "df-ok",
+        md5Checksum: "md5-ok",
+        fileSize: 2048,
+        isTrashed: 0,
+        coverStatus: "pending",
+        coverBlob: null,
+        coverUpdatedAt: null,
+        addedAt: 1000,
+        updatedAt: 1500,
+      }),
+      createValidVolume({
+        id: "vol-trashed",
+        driveFileId: "df-trashed",
+        md5Checksum: "md5-t",
+        fileSize: 2048,
+        isTrashed: 1,
+        coverStatus: "pending",
+        updatedAt: 1500,
+      }),
+      createValidVolume({
+        id: "vol-corrupt",
+        driveFileId: "df-corrupt",
+        fileSize: -1,
+        md5Checksum: "md5-c",
+        updatedAt: 1500,
+      }),
+    ]);
+
+    // 空 ID / 未存在 / 破損レコード / ゴミ箱化 / md5不一致 / fileSize不一致 は上書きせず null
+    expect(
+      await repo.saveCoverReady({
+        volumeId: "   ",
+        expectedMd5Checksum: "md5-ok",
+        expectedFileSize: 2048,
+        coverBlob: webpBlob,
+      }),
+    ).toBeNull();
+    expect(
+      await repo.saveCoverReady({
+        volumeId: "missing",
+        expectedMd5Checksum: "md5-ok",
+        expectedFileSize: 2048,
+        coverBlob: webpBlob,
+      }),
+    ).toBeNull();
+    expect(
+      await repo.saveCoverReady({
+        volumeId: "vol-corrupt",
+        expectedMd5Checksum: "md5-c",
+        expectedFileSize: -1,
+        coverBlob: webpBlob,
+      }),
+    ).toBeNull();
+    expect(await db.volumes.get("vol-corrupt")).toBeUndefined();
+
+    expect(
+      await repo.saveCoverReady({
+        volumeId: "vol-trashed",
+        expectedMd5Checksum: "md5-t",
+        expectedFileSize: 2048,
+        coverBlob: webpBlob,
+      }),
+    ).toBeNull();
+    expect(
+      await repo.saveCoverReady({
+        volumeId: "vol-ok",
+        expectedMd5Checksum: "md5-diff",
+        expectedFileSize: 2048,
+        coverBlob: webpBlob,
+      }),
+    ).toBeNull();
+    expect(
+      await repo.saveCoverReady({
+        volumeId: "vol-ok",
+        expectedMd5Checksum: "md5-ok",
+        expectedFileSize: 9999,
+        coverBlob: webpBlob,
+      }),
+    ).toBeNull();
+
+    // 整合一致時のみ ready 保存・updatedAt 非変更
+    const savedReady = await repo.saveCoverReady({
+      volumeId: " vol-ok ",
+      expectedMd5Checksum: " md5-ok ",
+      expectedFileSize: 2048,
+      coverBlob: webpBlob,
+    });
+    expect(savedReady).not.toBeNull();
+    expect(savedReady?.coverStatus).toBe("ready");
+    expect(savedReady?.coverBlob).not.toBeNull();
+    expect(savedReady?.coverUpdatedAt).toBe(10_000);
+    expect(savedReady?.updatedAt).toBe(1500);
+
+    // 明示的 coverUpdatedAt 指定時はその値を採用しつつ updatedAt 非変更
+    const savedReadyExplicit = await repo.saveCoverReady({
+      volumeId: "vol-ok",
+      expectedMd5Checksum: "md5-ok",
+      expectedFileSize: 2048,
+      coverBlob: webpBlob,
+      coverUpdatedAt: 12_345,
+    });
+    expect(savedReadyExplicit?.coverUpdatedAt).toBe(12_345);
+    expect(savedReadyExplicit?.updatedAt).toBe(1500);
+
+    // saveCoverError: 空ID/未存在/破損/不整合は null、整合一致時は coverBlob=null・error 化・updatedAt 非変更
+    await db.volumes.put(
+      createValidVolume({
+        id: "vol-corrupt-err",
+        driveFileId: "df-corrupt-err",
+        fileSize: -5,
+      }),
+    );
+    expect(
+      await repo.saveCoverError({
+        volumeId: "  ",
+        expectedMd5Checksum: "md5-ok",
+        expectedFileSize: 2048,
+      }),
+    ).toBeNull();
+    expect(
+      await repo.saveCoverError({
+        volumeId: "missing",
+        expectedMd5Checksum: "md5-ok",
+        expectedFileSize: 2048,
+      }),
+    ).toBeNull();
+    expect(
+      await repo.saveCoverError({
+        volumeId: "vol-corrupt-err",
+        expectedMd5Checksum: null,
+        expectedFileSize: -5,
+      }),
+    ).toBeNull();
+    expect(await db.volumes.get("vol-corrupt-err")).toBeUndefined();
+    expect(
+      await repo.saveCoverError({
+        volumeId: "vol-ok",
+        expectedMd5Checksum: null,
+        expectedFileSize: 2048,
+      }),
+    ).toBeNull();
+
+    clock = 20_000;
+    const savedErr = await repo.saveCoverError({
+      volumeId: "vol-ok",
+      expectedMd5Checksum: "md5-ok",
+      expectedFileSize: 2048,
+    });
+    expect(savedErr?.coverStatus).toBe("error");
+    expect(savedErr?.coverBlob).toBeNull();
+    expect(savedErr?.coverUpdatedAt).toBe(20_000);
+    expect(savedErr?.updatedAt).toBe(1500);
+
+    const savedErrExplicit = await repo.saveCoverError({
+      volumeId: "vol-ok",
+      expectedMd5Checksum: "md5-ok",
+      expectedFileSize: 2048,
+      coverUpdatedAt: 25_000,
+    });
+    expect(savedErrExplicit?.coverUpdatedAt).toBe(25_000);
+    expect(savedErrExplicit?.updatedAt).toBe(1500);
+  });
+
+  it("resetErrorCoversToPendingは有効ルート・非ゴミ箱・error巻のみをupdatedAt非汚染でpendingへ戻し表示順ソート済み配列を返すこと (AC-COV-05)", async () => {
+    const repo = new DexieVolumesRepository(db);
+    const dummyBlob = new Blob([new Uint8Array([9])], { type: "image/webp" });
+
+    await db.volumes.bulkPut([
+      createValidVolume({
+        id: "v-s1-2",
+        seriesId: "s-1",
+        volumeNumber: 2,
+        volumeLabel: "第02巻",
+        driveFileId: "df-s1-2",
+        rootFolderId: "root-1",
+        coverStatus: "error",
+        coverBlob: dummyBlob,
+        coverUpdatedAt: 5000,
+        updatedAt: 1111,
+      }),
+      createValidVolume({
+        id: "v-s1-1",
+        seriesId: "s-1",
+        volumeNumber: 1,
+        volumeLabel: "第01巻",
+        driveFileId: "df-s1-1",
+        rootFolderId: "root-1",
+        coverStatus: "error",
+        coverBlob: null,
+        coverUpdatedAt: 5000,
+        updatedAt: 2222,
+      }),
+      createValidVolume({
+        id: "v-s1-ready",
+        seriesId: "s-1",
+        volumeNumber: 3,
+        volumeLabel: "第03巻",
+        driveFileId: "df-s1-3",
+        rootFolderId: "root-1",
+        coverStatus: "ready",
+        coverBlob: dummyBlob,
+        coverUpdatedAt: 5000,
+        updatedAt: 3333,
+      }),
+      createValidVolume({
+        id: "v-s1-trashed",
+        seriesId: "s-1",
+        volumeNumber: 4,
+        volumeLabel: "第04巻",
+        driveFileId: "df-s1-4",
+        rootFolderId: "root-1",
+        coverStatus: "error",
+        isTrashed: 1,
+        updatedAt: 4444,
+      }),
+      createValidVolume({
+        id: "v-s2-1",
+        seriesId: "s-2",
+        volumeNumber: 1,
+        volumeLabel: "第01巻",
+        driveFileId: "df-s2-1",
+        rootFolderId: "root-1",
+        coverStatus: "error",
+        updatedAt: 5555,
+      }),
+      createValidVolume({
+        id: "v-disabled-root",
+        seriesId: "s-1",
+        volumeNumber: 5,
+        volumeLabel: "第05巻",
+        driveFileId: "df-disabled",
+        rootFolderId: "root-2",
+        coverStatus: "error",
+        updatedAt: 6666,
+      }),
+    ]);
+
+    // 空ルート集合 / 空 seriesId は空配列
+    expect(
+      await repo.resetErrorCoversToPending({ enabledRootIds: new Set() }),
+    ).toEqual([]);
+    expect(
+      await repo.resetErrorCoversToPending({
+        enabledRootIds: new Set(["root-1"]),
+        seriesId: "   ",
+      }),
+    ).toEqual([]);
+
+    // seriesId 指定時は当該シリーズのみリセット・updatedAt 非変更・表示順ソート
+    const resetS1 = await repo.resetErrorCoversToPending({
+      enabledRootIds: new Set(["root-1"]),
+      seriesId: " s-1 ",
+    });
+    expect(resetS1.map((v) => v.id)).toEqual(["v-s1-1", "v-s1-2"]);
+    expect(resetS1[0]).toMatchObject({
+      coverStatus: "pending",
+      coverBlob: null,
+      coverUpdatedAt: null,
+      updatedAt: 2222,
+    });
+    expect(resetS1[1]).toMatchObject({
+      coverStatus: "pending",
+      coverBlob: null,
+      coverUpdatedAt: null,
+      updatedAt: 1111,
+    });
+
+    // 対象 0 件時は空配列
+    expect(
+      await repo.resetErrorCoversToPending({
+        enabledRootIds: new Set(["root-1"]),
+        seriesId: "s-1",
+      }),
+    ).toEqual([]);
+
+    // seriesId 省略時は有効ルート配下の残り error 巻（s-2）をリセットし、無効ルート・trashed・ready は非変更
+    const resetAll = await repo.resetErrorCoversToPending({
+      enabledRootIds: new Set(["root-1"]),
+    });
+    expect(resetAll.map((v) => v.id)).toEqual(["v-s2-1"]);
+    expect(resetAll[0]?.updatedAt).toBe(5555);
+
+    expect((await db.volumes.get("v-s1-ready"))?.coverStatus).toBe("ready");
+    expect((await db.volumes.get("v-s1-trashed"))?.coverStatus).toBe("error");
+    expect((await db.volumes.get("v-disabled-root"))?.coverStatus).toBe(
+      "error",
+    );
+  });
 });
