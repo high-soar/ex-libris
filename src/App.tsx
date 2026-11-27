@@ -5,6 +5,7 @@ import { useServices } from "./app/serviceContext";
 import type { AppBridge } from "./bridges/app/types";
 import { diagnosticLogger } from "./diagnostics/diagnosticLogger";
 import type { DiagnosticLogger } from "./diagnostics/types";
+import type { CoverExtractionScheduler } from "./engine/cover/types";
 import type { CopyStatus as BookshelfCopyStatus } from "./features/bookshelf/BookshelfHeader";
 import {
   BookshelfPage,
@@ -25,6 +26,7 @@ export interface AppProps {
   readonly initialPath?: string;
   readonly appBridge?: AppBridge;
   readonly createCoordinatorSession?: () => CoordinatorSessionHandle;
+  readonly coverExtractionScheduler?: CoverExtractionScheduler;
   readonly initialCopyStatus?: CopyStatus;
   readonly initialDriveSetupState?: DriveSetupBannerState;
   readonly initialBookshelfSnapshot?: BookshelfPageInitialSnapshot;
@@ -152,6 +154,7 @@ export function App({
   initialPath,
   appBridge,
   createCoordinatorSession,
+  coverExtractionScheduler,
   initialCopyStatus = "idle",
   initialDriveSetupState,
   initialBookshelfSnapshot,
@@ -163,6 +166,7 @@ export function App({
     <ServiceProvider
       appBridge={appBridge}
       createCoordinatorSession={createCoordinatorSession}
+      coverExtractionScheduler={coverExtractionScheduler}
     >
       <RouterProvider initialPath={initialPath}>
         <AppShell

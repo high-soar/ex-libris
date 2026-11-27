@@ -1,6 +1,6 @@
 import { composeStories } from "@storybook/react";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import type { ReactElement } from "react";
+import { type ReactElement, useEffect } from "react";
 import {
   afterEach,
   beforeEach,
@@ -19,6 +19,7 @@ import {
   createDiagnosticLogger,
   diagnosticLogger,
 } from "./diagnostics/diagnosticLogger";
+import type { CoverExtractionScheduler } from "./engine/cover/types";
 import type { CoordinatorWorkerApi } from "./engine/types";
 import * as BookshelfPageModule from "./features/bookshelf/BookshelfPage";
 import * as ReaderPageModule from "./features/reader/ReaderPage";
@@ -474,6 +475,119 @@ describe("App", () => {
       });
     });
     expect(bridge.getMinimizeAppCallCount()).toBe(0);
+    unmount();
+  });
+
+  it("AppShellのuseLayoutEffectで直接URL・ルート遷移・popstate時にReaderPageのuseEffectより前にpause('reader')を同期発火し、非リーダー復帰時にresume('reader')すること (AC-COV-07, AC-RD-20)", () => {
+    const events: string[] = [];
+    const scheduler: CoverExtractionScheduler = {
+      syncQueue: vi.fn(async () => {}),
+      setViewportVolumeIds: vi.fn(),
+      pause: vi.fn((reason) => {
+        events.push(`pause:${reason}`);
+      }),
+      resume: vi.fn((reason) => {
+        events.push(`resume:${reason}`);
+      }),
+      retryFailedCovers: vi.fn(async () => 0),
+      getSnapshot: vi.fn(() => ({
+        phase: "idle" as const,
+        totalCount: 0,
+        readyCount: 0,
+        pendingCount: 0,
+        errorCount: 0,
+        activeVolumeId: null,
+        pauseReasons: [],
+      })),
+      subscribeProgress: vi.fn(() => () => {}),
+      subscribeVolumeUpdated: vi.fn(() => () => {}),
+      resetForTest: vi.fn(async () => {}),
+      dispose: vi.fn(),
+    };
+
+    readerSpy.mockImplementation(() => {
+      useEffect(() => {
+        events.push("reader-effect");
+      }, []);
+      return null;
+    });
+
+    // 1. 直接 URL (/read/volume/v-1) で ReaderPage useEffect より前に pause("reader") が同期発火すること
+    const { unmount: unmountDirectVolume } = render(
+      <App
+        initialPath="/read/volume/v-1"
+        coverExtractionScheduler={scheduler}
+      />,
+    );
+    expect(events.indexOf("pause:reader")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("reader-effect")).toBeGreaterThan(
+      events.indexOf("pause:reader"),
+    );
+    unmountDirectVolume();
+
+    // 2. 直接 URL (/read/local) でも同様に pause("reader") が同期発火すること
+    events.length = 0;
+    const { unmount: unmountDirectLocal } = render(
+      <App initialPath="/read/local" coverExtractionScheduler={scheduler} />,
+    );
+    expect(events.indexOf("pause:reader")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("reader-effect")).toBeGreaterThan(
+      events.indexOf("pause:reader"),
+    );
+    unmountDirectLocal();
+
+    // 3. SCR-01 -> navigate(/read/volume/v-1) -> navigate(/series/s-1) -> popstate(/read/local) -> popstate(/)
+    events.length = 0;
+    let triggerNavigate: ((to: string) => void) | null = null;
+    bookshelfSpy.mockImplementation(() => {
+      const router = useRouter();
+      triggerNavigate = router.navigate;
+      return null as unknown as ReactElement;
+    });
+    seriesDetailSpy.mockImplementation(() => {
+      const router = useRouter();
+      triggerNavigate = router.navigate;
+      return null;
+    });
+
+    const { unmount } = render(
+      <App initialPath="/" coverExtractionScheduler={scheduler} />,
+    );
+    expect(scheduler.resume).toHaveBeenCalledWith("reader");
+
+    events.length = 0;
+    act(() => {
+      triggerNavigate?.("/read/volume/v-1");
+    });
+    expect(events.indexOf("pause:reader")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("reader-effect")).toBeGreaterThan(
+      events.indexOf("pause:reader"),
+    );
+
+    events.length = 0;
+    act(() => {
+      triggerNavigate?.("/series/s-1");
+    });
+    expect(events).toContain("resume:reader");
+
+    // popstate で /read/local へ直接戻った場合も ReaderPage useEffect より前に pause("reader")
+    events.length = 0;
+    act(() => {
+      window.history.pushState(null, "", "/read/local");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(events.indexOf("pause:reader")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("reader-effect")).toBeGreaterThan(
+      events.indexOf("pause:reader"),
+    );
+
+    // popstate で / へ戻ると resume("reader")
+    events.length = 0;
+    act(() => {
+      window.history.pushState(null, "", "/");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(events).toContain("resume:reader");
     unmount();
   });
 });
