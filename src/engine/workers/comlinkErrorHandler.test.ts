@@ -363,4 +363,68 @@ describe("comlinkErrorHandler", () => {
     const nullFallback = captureRejectedValue(() => handler.deserialize(null));
     expect(nullFallback).toBeInstanceOf(TypeError);
   });
+
+  it("ZipArchiveErrorのメタデータ(httpStatus/isRateLimited/isUnauthorized)がシリアライズ・デシリアライズ間で保持されること (AC-COV-06)", () => {
+    const baselineThrowHandler = requireOriginalThrowHandler();
+    const handlers: ComlinkTransferHandlers = new Map([
+      ["throw", baselineThrowHandler],
+    ]);
+    registerZipArchiveErrorTransferHandler(handlers);
+
+    const handler = handlers.get("throw")!;
+    const [serialized] = handler.serialize({
+      value: new ZipArchiveError("READ_ERROR", "429 Too Many Requests", null, {
+        httpStatus: 429,
+        isRateLimited: true,
+        isUnauthorized: false,
+      }),
+    });
+
+    expect(serialized).toMatchObject({
+      isError: true,
+      value: {
+        name: "ZipArchiveError",
+        code: "READ_ERROR",
+        httpStatus: 429,
+        isRateLimited: true,
+        isUnauthorized: false,
+      },
+    });
+
+    const restored = captureRejectedValue(() =>
+      handler.deserialize(serialized),
+    );
+    expect(restored).toBeInstanceOf(ZipArchiveError);
+    expect(restored).toMatchObject({
+      code: "READ_ERROR",
+      httpStatus: 429,
+      isRateLimited: true,
+      isUnauthorized: false,
+    });
+
+    // 不正な型のメタデータフィールドは無視して undefined として安全に復元されること
+    const restoredWithInvalidMeta = captureRejectedValue(() =>
+      handler.deserialize({
+        isError: true,
+        value: {
+          name: "ZipArchiveError",
+          message: "メタデータ不正型",
+          code: "READ_ERROR",
+          httpStatus: "429",
+          isRateLimited: "yes",
+          isUnauthorized: 1,
+        },
+      }),
+    );
+    expect(restoredWithInvalidMeta).toBeInstanceOf(ZipArchiveError);
+    expect(
+      (restoredWithInvalidMeta as ZipArchiveError).httpStatus,
+    ).toBeUndefined();
+    expect(
+      (restoredWithInvalidMeta as ZipArchiveError).isRateLimited,
+    ).toBeUndefined();
+    expect(
+      (restoredWithInvalidMeta as ZipArchiveError).isUnauthorized,
+    ).toBeUndefined();
+  });
 });

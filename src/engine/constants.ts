@@ -7,6 +7,10 @@ export interface EngineBudgets {
   readonly L1_MAX_PAGES: number;
   readonly DECODE_WORKER_POOL_SIZE: number;
   readonly COVER_BG_MAX_PER_SECOND: number;
+  readonly COVER_MAX_LONG_EDGE_PX: number;
+  readonly COVER_WEBP_QUALITY: number;
+  readonly COVER_RATE_LIMIT_MAX_RETRIES: number;
+  readonly COVER_RATE_LIMIT_BASE_BACKOFF_MS: number;
 }
 
 export const ENGINE_BUDGETS = {
@@ -18,4 +22,8 @@ export const ENGINE_BUDGETS = {
   L1_MAX_PAGES: 5,
   DECODE_WORKER_POOL_SIZE: 2,
   COVER_BG_MAX_PER_SECOND: 2,
+  COVER_MAX_LONG_EDGE_PX: 0,
+  COVER_WEBP_QUALITY: 0,
+  COVER_RATE_LIMIT_MAX_RETRIES: 0,
+  COVER_RATE_LIMIT_BASE_BACKOFF_MS: 0,
 } as const satisfies EngineBudgets;
