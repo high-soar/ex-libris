@@ -691,6 +691,8 @@ describe("SeriesDetailPage", () => {
       }),
     );
     unmountStory();
+    volumeListSpy.mockClear();
+    summarySpy.mockClear();
 
     // 2. 通常マウント時: getSession・subscribeSession・syncPhase・インプレース更新・TR-04 pause("reader")
     const session: GoogleAuthSession = {
