@@ -31,12 +31,24 @@ related_specs:
   - docs/specs/providers/google-drive.md
   - docs/guidelines/testing.md
 related_tests:
+  - src/App.test.tsx
+  - src/app/ServiceProvider.test.tsx
+  - src/app/coverWorkerClient.test.ts
   - src/engine/constants.test.ts
+  - src/engine/cover/CoverExtractionSchedulerCore.test.ts
+  - src/engine/cover/CoverResizeWorkerCore.test.ts
+  - src/engine/cover/MockCoverArchiveRangeReader.test.ts
   - src/engine/io/GoogleDriveRangeReader.test.ts
+  - src/engine/workers/comlinkErrorHandler.test.ts
+  - src/engine/zip/decompressSlice.test.ts
+  - src/engine/zip/errors.test.ts
   - src/engine/zip/zipParser.test.ts
+  - src/shared/sync/coverExtractionStateStore.test.ts
+  - src/shared/ui/CoverThumbnail.test.tsx
+  - src/shared/ui/useViewportVolumeObserver.test.ts
   - src/storage/repositories/volumesRepository.test.ts
   - src/storage/repositories/zipIndexCacheRepository.test.ts
-  - src/shared/ui/CoverThumbnail.test.tsx
+  - test/it/cover-extraction.spec.ts
 ---
 
 # 2段優先度・表紙 WebP 自動抽出スケジューラ ＆ 閲覧優先プリエンプション仕様書

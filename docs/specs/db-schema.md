@@ -37,6 +37,7 @@ related_tests:
   - test/it/local-reader.spec.ts
   - test/it/drive-sync.spec.ts
   - test/it/bookshelf-drive-reader.spec.ts
+  - test/it/cover-extraction.spec.ts
 ---
 
 # ExLibris Dexie.js（IndexedDB）ローカルDBスキーマ定義

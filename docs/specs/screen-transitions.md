@@ -47,6 +47,7 @@ related_tests:
   - src/features/series-detail/SeriesDetailPage.test.tsx
   - src/features/series-detail/SeriesSummaryCard.test.tsx
   - src/features/series-detail/SeriesVolumeListSection.test.tsx
+  - src/features/settings/CoverExtractionSection.test.tsx
   - src/features/settings/DriveFolderPickerModal.test.tsx
   - src/features/settings/DriveSyncExecutionSection.test.tsx
   - src/features/settings/SettingsHeader.test.tsx
@@ -54,8 +55,10 @@ related_tests:
   - src/shared/router/RouterProvider.test.tsx
   - src/shared/router/routeMatcher.test.ts
   - src/shared/router/routerContext.test.ts
+  - src/shared/sync/coverExtractionStateStore.test.ts
   - src/shared/sync/driveSyncStateStore.test.ts
   - src/shared/ui/CoverThumbnail.test.tsx
+  - src/shared/ui/useViewportVolumeObserver.test.ts
   - src/storage/repositories/readingProgressRepository.test.ts
   - src/storage/repositories/readerSettingsRepository.test.ts
   - src/webgl/ReaderCanvas.test.tsx
@@ -65,6 +68,7 @@ related_tests:
   - test/it/settings-oauth.spec.ts
   - test/it/drive-sync.spec.ts
   - test/it/bookshelf-drive-reader.spec.ts
+  - test/it/cover-extraction.spec.ts
 ---
 
 # ExLibris 主要画面一覧（`SCR-xx`）と画面遷移（`TR-xx`）

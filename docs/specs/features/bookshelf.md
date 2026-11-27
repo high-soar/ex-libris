@@ -49,8 +49,10 @@ related_tests:
   - src/features/bookshelf/bookshelfUiStateStore.test.ts
   - src/features/bookshelf/bookshelfViewModel.test.ts
   - src/features/reader/localReaderSessionStore.test.ts
+  - src/shared/sync/coverExtractionStateStore.test.ts
   - src/shared/sync/driveSyncStateStore.test.ts
   - src/shared/ui/CoverThumbnail.test.tsx
+  - src/shared/ui/useViewportVolumeObserver.test.ts
   - src/storage/repositories/readingProgressRepository.test.ts
   - src/storage/repositories/seriesRepository.test.ts
   - src/storage/repositories/volumesRepository.test.ts
@@ -61,6 +63,7 @@ related_tests:
   - test/it/settings-oauth.spec.ts
   - test/it/drive-sync.spec.ts
   - test/it/bookshelf-drive-reader.spec.ts
+  - test/it/cover-extraction.spec.ts
 ---
 
 # 仮想本棚ホーム画面仕様書（`SCR-01`: Bookshelf）

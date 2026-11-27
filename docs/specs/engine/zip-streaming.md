@@ -35,6 +35,7 @@ related_tests:
   - src/engine/constants.test.ts
   - src/engine/io/GoogleDriveRangeReader.test.ts
   - src/engine/io/LocalFileReader.test.ts
+  - src/engine/zip/decompressSlice.test.ts
   - src/engine/zip/errors.test.ts
   - src/engine/zip/zipIndexValidation.test.ts
   - src/engine/zip/zipParser.test.ts
@@ -49,6 +50,7 @@ related_tests:
   - src/storage/repositories/zipIndexCacheRepository.test.ts
   - test/it/local-reader.spec.ts
   - test/it/bookshelf-drive-reader.spec.ts
+  - test/it/cover-extraction.spec.ts
 ---
 
 # ZIP ストリーミング・I/O・Worker エンジン仕様書
