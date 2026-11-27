@@ -72,7 +72,7 @@ related_tests:
 
 ## 1. ルート別ソース解決・閲覧優先プリエンプション・優先度付き終了シーケンス（`TR-07` / `TR-08` / `TR-10`）・自動レジューム＆先読み連携
 
-0. **閲覧最優先プリエンプション制御（`NFR-04` / [cover-extraction.md §4.5](../engine/cover-extraction.md#45-プリエンプションと一時停止理由pausereasonsの連携規約)）**:
+0. **閲覧最優先プリエンプション制御（`NFR-04` / [cover-extraction.md §4.5](../engine/cover-extraction.md#45-実行環境境界プリエンプション一時停止理由pausereasonsの連携規約)）**:
    - `TR-02a` / `TR-02b` / `TR-04` の遷移ハンドラおよび `AppShell`（`src/App.tsx`）の `useLayoutEffect`（`route.name === "reader-local" || route.name === "reader-volume"` 判定）により、直接 URL アクセスやブラウザ `popstate` 遷移を含め **`ReaderPage` の `useEffect` が Coordinator セッション（`openArchive`）を開始するよりも前に必ず同期的に `coverExtractionScheduler.pause("reader")` が発火** し、進行中の表紙 Range `fetch` が即座に `abort()` されてリーダー通信帯域が 100% 確保される。
    - `TR-07` / `TR-08` / `TR-10` により非リーダー画面（`SCR-01` / `SCR-02` / `SCR-04`）へ復帰した時点で、`AppShell` `useLayoutEffect` から `coverExtractionScheduler.resume("reader")` が呼び出され、未抽出（`pending`）巻の表紙抽出が自動再開する。
 1. **ルート別アーカイブソース解決とセッション保護**:

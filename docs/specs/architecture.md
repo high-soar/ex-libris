@@ -478,7 +478,7 @@ export interface PageDimensions {
    - Coordinator Worker は古い世代に紐づく進行中 `fetch` の `AbortController.abort()` を即時呼び出し、Decode Worker から返却された古い世代の `ImageBitmap` は UI スレッドへ渡さずその場で `bitmap.close()` して破棄する。
 2. **閲覧最優先のバックグラウンド・プリエンプション（詳細は [cover-extraction.md](engine/cover-extraction.md)）**:
    - 表紙 WebP 抽出スケジューラ（`CoverExtractionScheduler`）は `viewport-high`（現在 `SCR-01` / `SCR-02` で `IntersectionObserver` 可視判定された `pending` 巻：待機 `0ms` 即時優先・画面外離脱時は降格）と `background-low`（①シリーズ代表表紙巻→②収録巻、最終通信完了時刻基準で最大 `2` 冊/秒）の 2 段キューを持ち、伸長・`createImageBitmap`・長辺上限 `350px` WebP 生成（`finally` 即時 `bitmap.close()`）はリーダー用 Worker とは独立した専用単一 Worker（`cover.worker.ts`）で実行する。
-   - 一時停止理由を `"reader" | "drive-sync" | "unauthenticated"` の集合で管理する。ユーザーがリーダー（`SCR-03`：`/read/local` または `/read/volume/:volumeId`）へ遷移した瞬間（遷移ハンドラおよび `AppShell` `useLayoutEffect`）、または手動 Drive 同期実行中は即座に `CoverExtractionScheduler.pause(...)` を同期呼び出しして進行中の表紙 Range `fetch`（`AbortController.abort()`）およびバックオフ／レート待機タイマーを完全中断し（中断巻は `pending` 維持）、リーダー終了（`TR-07` / `TR-08` / `TR-10`）・同期完了時に `resume(...)` で自動再開する。
+   - 一時停止理由を `"reader" | "drive-sync" | "unauthenticated" | "test-harness"`（`"test-harness"` は WebDriver E2E 分離専用）の集合で管理する。ユーザーがリーダー（`SCR-03`：`/read/local` または `/read/volume/:volumeId`）へ遷移した瞬間（遷移ハンドラおよび `AppShell` `useLayoutEffect`）、または手動 Drive 同期実行中は即座に `CoverExtractionScheduler.pause(...)` を同期呼び出しして進行中の表紙 Range `fetch`（`AbortController.abort()`）およびバックオフ／レート待機タイマーを完全中断し（中断巻は `pending` 維持）、リーダー終了（`TR-07` / `TR-08` / `TR-10`）・同期完了時に `resume(...)` で自動再開する。
 
 ---
 

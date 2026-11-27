@@ -87,7 +87,7 @@ related_tests:
    - 同時実行数は `1`（直列）とし、`viewport-high` は待機 `0ms` で連続実行（着手前に可視領域から外れた巻は `background-low` へ降格）、`background-low` は最終通信完了時刻基準で最小 `500ms` 間隔（最大 `2` 冊/秒、`viewport-high` 到着時は待機を即時起床）とする（[testing.md §3.1](../../guidelines/testing.md#3-単体テストvrt結合テストitの衛生非同期規律継承-kaizen)）。
    - `429` および Rate Limit 系 `403` 応答時はキュー全体を指数バックオフ（`1s → 2s → 4s`、同一巻最大 `3` 回リトライ後に `error` 化）し、未認証（`401` Single-Flight 再試行失敗 / `AUTH_REQUIRED`）時は蔵書を `error` 化せず `pending` 維持のまま一時停止する。
 4. **理由別プリエンプションと Drive 同期・ルート変更連携（Q4）**:
-   - 一時停止理由を `"reader" | "drive-sync" | "unauthenticated"` の集合で管理し、`SCR-03` 表示中（`TR-02a`/`02b`/`04`・直接 URL・`popstate` 含む）および手動 Drive 同期実行中（`phase === "syncing"`）は進行中通信・スリープを即座に `abort()` して一時停止する（中断巻は `pending` 維持）。
+   - 一時停止理由を `"reader" | "drive-sync" | "unauthenticated" | "test-harness"`（`"test-harness"` は WebDriver E2E 分離専用）の集合で管理し、`SCR-03` 表示中（`TR-02a`/`02b`/`04`・直接 URL・`popstate` 含む）および手動 Drive 同期実行中（`phase === "syncing"`）は進行中通信・スリープを即座に `abort()` して一時停止する（中断巻は `pending` 維持）。
    - 同期完了時および `SCR-04` でのルート登録/有効切替/削除時に `syncQueue()` で対象を再計算し、DB 保存時も `md5Checksum` / `fileSize` / `isTrashed === 0` 一致を検証して古い結果の上書きを防止する。
 5. **進捗表示・エラー識別・再試行 UI の配置（Q5）**:
    - `SCR-01`（`BookshelfToolbar`）は抽出稼働中または `errorCount > 0` のときのみコンパクトに進捗／エラー件数＋「再試行」ボタンを表示し、全件完了（`pending === 0 && error === 0`）時は非表示でスッキリ維持する。
