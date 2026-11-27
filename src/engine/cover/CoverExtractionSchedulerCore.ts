@@ -63,7 +63,10 @@ const BG_MIN_INTERVAL_MS = Math.ceil(
   1_000 / ENGINE_BUDGETS.COVER_BG_MAX_PER_SECOND,
 );
 
-function defaultAbortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+export function defaultAbortableSleep(
+  ms: number,
+  signal: AbortSignal,
+): Promise<void> {
   if (ms <= 0 || signal.aborted) {
     return Promise.resolve();
   }
@@ -86,6 +89,12 @@ function buildZipIndexCacheKey(volume: VolumeRecord): string {
 
 function formatErrorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function prependUnique(queue: string[], volumeId: string): void {
+  if (!queue.includes(volumeId)) {
+    queue.unshift(volumeId);
+  }
 }
 
 function buildPriorityOrder(
@@ -127,7 +136,7 @@ function buildPriorityOrder(
   }
 
   for (const item of seriesItems) {
-    const seriesVolumes = volumesBySeries.get(item.seriesId) ?? [];
+    const seriesVolumes = volumesBySeries.get(item.seriesId)!;
     for (const volume of seriesVolumes) {
       if (volume.coverStatus === "pending" && !placedIds.has(volume.id)) {
         otherIds.push(volume.id);
@@ -308,20 +317,14 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
     }
     const activeViewportIds = this.getActiveViewportIds();
     if (activeViewportIds.has(volumeId)) {
-      if (!this.viewportHighQueue.includes(volumeId)) {
-        this.viewportHighQueue.unshift(volumeId);
-      }
+      prependUnique(this.viewportHighQueue, volumeId);
       return;
     }
     if (this.representativeSet.has(volumeId)) {
-      if (!this.backgroundRepQueue.includes(volumeId)) {
-        this.backgroundRepQueue.unshift(volumeId);
-      }
+      prependUnique(this.backgroundRepQueue, volumeId);
       return;
     }
-    if (!this.backgroundOtherQueue.includes(volumeId)) {
-      this.backgroundOtherQueue.unshift(volumeId);
-    }
+    prependUnique(this.backgroundOtherQueue, volumeId);
   }
 
   private ensureWorkerClient(): CoverWorkerClientHandle {
@@ -372,34 +375,23 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
     );
   }
 
-  private takeNextVolumeId(): {
-    readonly volumeId: string;
-    readonly fromViewportHigh: boolean;
-  } | null {
-    const highId = this.viewportHighQueue.shift();
-    if (highId !== undefined) {
-      return { volumeId: highId, fromViewportHigh: true };
+  private assertEpochActive(epoch: number, signal: AbortSignal): void {
+    if (!this.isEpochActive(epoch, signal)) {
+      throw new DOMException("Aborted", "AbortError");
     }
-    const repId = this.backgroundRepQueue.shift();
-    if (repId !== undefined) {
-      return { volumeId: repId, fromViewportHigh: false };
-    }
-    const otherId = this.backgroundOtherQueue.shift();
-    if (otherId !== undefined) {
-      return { volumeId: otherId, fromViewportHigh: false };
-    }
-    return null;
+  }
+
+  private takeNextVolumeId(): string {
+    return (
+      this.viewportHighQueue.shift() ??
+      this.backgroundRepQueue.shift() ??
+      this.backgroundOtherQueue.shift()!
+    );
   }
 
   private async runLoop(epoch: number): Promise<void> {
-    while (this.isEpochActive(epoch)) {
+    while (this.isEpochActive(epoch) && this.hasQueuedWork()) {
       if (this.viewportHighQueue.length === 0) {
-        if (
-          this.backgroundRepQueue.length === 0 &&
-          this.backgroundOtherQueue.length === 0
-        ) {
-          break;
-        }
         const waitMs =
           this.lastNetworkCompletedAt === null
             ? 0
@@ -423,18 +415,14 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
         }
       }
 
-      const next = this.takeNextVolumeId();
-      if (next === null) {
-        break;
-      }
-
-      this.activeVolumeId = next.volumeId;
+      const nextVolumeId = this.takeNextVolumeId();
+      this.activeVolumeId = nextVolumeId;
       this.phase = "running";
       this.emitProgress();
 
-      const backoffMs = await this.processVolume(next.volumeId, epoch);
+      const backoffMs = await this.processVolume(nextVolumeId, epoch);
 
-      if (this.activeVolumeId === next.volumeId) {
+      if (this.activeVolumeId === nextVolumeId) {
         this.activeVolumeId = null;
       }
 
@@ -472,18 +460,14 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
       targetEntry,
       signal,
     );
-    if (!this.isEpochActive(epoch, signal)) {
-      throw new DOMException("Aborted", "AbortError");
-    }
+    this.assertEpochActive(epoch, signal);
 
     const workerClient = this.ensureWorkerClient();
     const encoded = await workerClient.api.encodeCoverWebp(
       compressedSlice,
       targetEntry.compressionMethod,
     );
-    if (!this.isEpochActive(epoch, signal)) {
-      throw new DOMException("Aborted", "AbortError");
-    }
+    this.assertEpochActive(epoch, signal);
 
     return encoded;
   }
@@ -494,17 +478,36 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
   ): Promise<number | null> {
     const controller = new AbortController();
     this.activeAbortController = controller;
-    const { signal } = controller;
+    const networkState = { didRead: false };
 
-    let didNetworkRead = false;
+    try {
+      return await this.executeVolumeExtraction(
+        volumeId,
+        epoch,
+        controller.signal,
+        networkState,
+      );
+    } finally {
+      if (this.activeAbortController === controller) {
+        this.activeAbortController = null;
+      }
+      if (networkState.didRead) {
+        this.lastNetworkCompletedAt = this.now();
+      }
+    }
+  }
+
+  private async executeVolumeExtraction(
+    volumeId: string,
+    epoch: number,
+    signal: AbortSignal,
+    networkState: { didRead: boolean },
+  ): Promise<number | null> {
     let latest: VolumeRecord | null = null;
 
     try {
       latest = await this.deps.volumesRepo.getById(volumeId);
-      if (!this.isEpochActive(epoch, signal)) {
-        this.requeueFront(volumeId);
-        return null;
-      }
+      this.assertEpochActive(epoch, signal);
 
       if (
         latest === null ||
@@ -524,7 +527,7 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
         sourceId: baseReader.sourceId,
         totalSize: baseReader.totalSize,
         readRange: async (offset, length, readSignal) => {
-          didNetworkRead = true;
+          networkState.didRead = true;
           return baseReader.readRange(offset, length, readSignal);
         },
       };
@@ -537,20 +540,14 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
       const cachedEntries = isExactSizeReader
         ? await this.deps.zipIndexCacheRepo.get(cacheKey)
         : null;
-      if (!this.isEpochActive(epoch, signal)) {
-        this.requeueFront(volumeId);
-        return null;
-      }
+      this.assertEpochActive(epoch, signal);
 
       if (cachedEntries !== null && validateZipIndexEntries(cachedEntries)) {
         entries = cachedEntries;
         fromIndexCache = true;
       } else {
         entries = await parseZipDirectory(trackedReader, signal);
-        if (!this.isEpochActive(epoch, signal)) {
-          this.requeueFront(volumeId);
-          return null;
-        }
+        this.assertEpochActive(epoch, signal);
         if (isExactSizeReader) {
           void this.deps.zipIndexCacheRepo
             .put(cacheKey, entries)
@@ -575,15 +572,9 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
             extractError.code === "DECODE_FAILED")
         ) {
           await this.deps.zipIndexCacheRepo.delete(cacheKey);
-          if (!this.isEpochActive(epoch, signal)) {
-            this.requeueFront(volumeId);
-            return null;
-          }
+          this.assertEpochActive(epoch, signal);
           const freshEntries = await parseZipDirectory(trackedReader, signal);
-          if (!this.isEpochActive(epoch, signal)) {
-            this.requeueFront(volumeId);
-            return null;
-          }
+          this.assertEpochActive(epoch, signal);
           void this.deps.zipIndexCacheRepo
             .put(cacheKey, freshEntries)
             .catch(() => undefined);
@@ -677,21 +668,10 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
       }
       this.emitProgress();
       return null;
-    } finally {
-      if (this.activeAbortController === controller) {
-        this.activeAbortController = null;
-      }
-      if (didNetworkRead) {
-        this.lastNetworkCompletedAt = this.now();
-      }
     }
   }
 
   private async runSyncPass(): Promise<void> {
-    if (this.disposed) {
-      return;
-    }
-
     if (this.deps.googleAuthBridge.getCachedSession() !== null) {
       this.pauseReasons.delete("unauthenticated");
     }

@@ -17,6 +17,7 @@ import { ZipArchiveError } from "../zip/errors";
 import {
   CoverExtractionSchedulerCore,
   NoopCoverExtractionScheduler,
+  defaultAbortableSleep,
   type CoverExtractionSchedulerDeps,
 } from "./CoverExtractionSchedulerCore";
 import type {
@@ -862,5 +863,273 @@ describe("CoverExtractionSchedulerCore", () => {
     unsub2();
     await noop.resetForTest();
     noop.dispose();
+  });
+
+  it("defaultAbortableSleep・スロットル待機中pause・事前スキップ・DECODE_FAILED自己修復・非Error例外・sync中dispose・実行中resetForTestを網羅すること (AC-COV-08)", async () => {
+    // 1. defaultAbortableSleep: ms<=0 / 既abort / 通常タイマー完了 / 途中abort
+    const preAborted = new AbortController();
+    preAborted.abort();
+    await defaultAbortableSleep(0, new AbortController().signal);
+    await defaultAbortableSleep(50, preAborted.signal);
+
+    vi.useFakeTimers();
+    const normalSleep = defaultAbortableSleep(
+      100,
+      new AbortController().signal,
+    );
+    vi.advanceTimersByTime(100);
+    await normalSleep;
+
+    const midAbortCtrl = new AbortController();
+    const midSleep = defaultAbortableSleep(1000, midAbortCtrl.signal);
+    midAbortCtrl.abort();
+    await midSleep;
+    vi.useRealTimers();
+
+    // 2. 事前スキップ（getById 時点で ready 変化）＋ DECODE_FAILED キャッシュ自己修復 ＋ 非 Error 例外 ＋ saveCoverReady/saveCoverError が null を返す整合ガード
+    await seedEnabledRoot("root-1");
+    const zipBytes = makeZipBytes();
+    const zipIndexCacheRepo = new DexieZipIndexCacheRepository(db);
+    await db.series.put(makeSeries({ id: "s-1" }));
+    await db.volumes.bulkPut([
+      makeVolume(zipBytes.byteLength, {
+        id: "v-pre-ready",
+        driveFileId: "df-pre-ready",
+        volumeNumber: 1,
+      }),
+      makeVolume(zipBytes.byteLength, {
+        id: "v-decode-repair",
+        driveFileId: "df-decode-repair",
+        md5Checksum: "md5-dr",
+        volumeNumber: 2,
+      }),
+      makeVolume(zipBytes.byteLength, {
+        id: "v-string-err",
+        driveFileId: "df-str-err",
+        volumeNumber: 3,
+      }),
+      makeVolume(zipBytes.byteLength, {
+        id: "v-stale-save",
+        driveFileId: "df-stale",
+        volumeNumber: 4,
+      }),
+    ]);
+
+    await zipIndexCacheRepo.put("gdrive:df-decode-repair:md5-dr", [
+      {
+        pageIndex: 0,
+        entryName: "001.jpg",
+        entryNameByteLength: 7,
+        compressionMethod: 0,
+        compressedSize: 4,
+        uncompressedSize: 4,
+        localHeaderOffset: 0,
+        physicalEnd: 41,
+        crc32: 0,
+      },
+    ]);
+
+    let decodeRepairCount = 0;
+    const baseVolumesRepo = new DexieVolumesRepository(db);
+    const wrappedVolumesRepo: CoverExtractionSchedulerDeps["volumesRepo"] = {
+      getById: async (id) => {
+        if (id === "v-pre-ready") {
+          await db.volumes.update("v-pre-ready", { coverStatus: "ready" });
+        }
+        return baseVolumesRepo.getById(id);
+      },
+      listVisibleByEnabledRoots: (ids) =>
+        baseVolumesRepo.listVisibleByEnabledRoots(ids),
+      saveCoverReady: async (input) => {
+        if (input.volumeId === "v-stale-save") {
+          return null;
+        }
+        return baseVolumesRepo.saveCoverReady(input);
+      },
+      saveCoverError: async (input) => {
+        if (input.volumeId === "v-string-err") {
+          return null;
+        }
+        return baseVolumesRepo.saveCoverError(input);
+      },
+      resetErrorCoversToPending: (input) =>
+        baseVolumesRepo.resetErrorCoversToPending(input),
+    };
+
+    const scheduler1 = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        volumesRepo: wrappedVolumesRepo,
+        zipIndexCacheRepo,
+        createWorkerClient: () =>
+          createMockWorkerClient(async () => {
+            decodeRepairCount += 1;
+            if (decodeRepairCount === 1) {
+              throw new ZipArchiveError("DECODE_FAILED", "stale decode");
+            }
+            return {
+              blob: new Blob([new Uint8Array([1, 2])], { type: "image/webp" }),
+              width: 100,
+              height: 100,
+            };
+          }).handle,
+        createRangeReader: (volume) => {
+          if (volume.id === "v-string-err") {
+            return {
+              sourceId: `gdrive:${volume.driveFileId}`,
+              totalSize: volume.fileSize,
+              async readRange() {
+                throw "non-error-string-failure";
+              },
+            };
+          }
+          return createMemoryReader(zipBytes, `gdrive:${volume.driveFileId}`);
+        },
+      }),
+    );
+
+    await scheduler1.syncQueue();
+    await waitForIdle(scheduler1);
+    expect((await db.volumes.get("v-decode-repair"))?.coverStatus).toBe(
+      "ready",
+    );
+    scheduler1.dispose();
+    scheduler1.dispose(); // 2回目 dispose は冪等
+
+    // 3. スロットル待機中に pause() で throttleAbortController.abort() ＋ 実行中ループありで resetForTest()
+    await resetTestDb();
+    await seedEnabledRoot("root-1");
+    await db.series.put(makeSeries({ id: "s-1" }));
+    await db.volumes.bulkPut([
+      makeVolume(zipBytes.byteLength, {
+        id: "v-t1",
+        driveFileId: "df-t1",
+        volumeNumber: 1,
+      }),
+      makeVolume(zipBytes.byteLength, {
+        id: "v-t2",
+        driveFileId: "df-t2",
+        volumeNumber: 2,
+      }),
+    ]);
+
+    const throttleStarted = createDeferred<AbortSignal>();
+    const scheduler2 = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        now: () => 5_000,
+        sleep: (_ms, signal) => {
+          throttleStarted.resolve(signal);
+          return new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        },
+      }),
+    );
+
+    await scheduler2.syncQueue();
+    const throttleSignal = await throttleStarted.promise;
+    expect(throttleSignal.aborted).toBe(false);
+    scheduler2.pause("reader");
+    expect(throttleSignal.aborted).toBe(true);
+
+    // 実行中ループ中に resetForTest() を呼んで安全に停止待機できること
+    scheduler2.resume("reader");
+    await scheduler2.resetForTest();
+    expect(scheduler2.getSnapshot().phase).toBe("idle");
+
+    // 4. syncQueue の DB 読込中に dispose() された場合は安全に中断すること
+    const rootsGate = createDeferred<void>();
+    const scheduler3 = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        driveSyncRootsRepo: {
+          listActive: async () => {
+            await rootsGate.promise;
+            return [];
+          },
+        },
+      }),
+    );
+    const pendingSync = scheduler3.syncQueue();
+    scheduler3.dispose();
+    rootsGate.resolve();
+    await pendingSync;
+    expect(scheduler3.getSnapshot().totalCount).toBe(0);
+
+    // 5. 非代表巻が active 中の setViewportVolumeIds + viewport-high 巻の中断復帰 + await 解決直後の assertEpochActive 中断 + getById 例外
+    await resetTestDb();
+    await seedEnabledRoot("root-1");
+    await db.series.put(makeSeries({ id: "s-1" }));
+    await db.volumes.bulkPut([
+      makeVolume(zipBytes.byteLength, {
+        id: "v-rep",
+        driveFileId: "df-rep",
+        volumeNumber: 1,
+        coverStatus: "ready",
+      }),
+      makeVolume(zipBytes.byteLength, {
+        id: "v-other-1",
+        driveFileId: "df-other-1",
+        volumeNumber: 2,
+      }),
+      makeVolume(zipBytes.byteLength, {
+        id: "v-get-err",
+        driveFileId: "df-get-err",
+        volumeNumber: 3,
+      }),
+    ]);
+
+    const encodeGate = createDeferred<void>();
+    const encodeStarted = createDeferred<void>();
+    let firstEncode = true;
+    const baseRepo2 = new DexieVolumesRepository(db);
+    const scheduler4 = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        volumesRepo: {
+          getById: async (id) => {
+            if (id === "v-get-err") {
+              throw new Error("db read failure");
+            }
+            return baseRepo2.getById(id);
+          },
+          listVisibleByEnabledRoots: (ids) =>
+            baseRepo2.listVisibleByEnabledRoots(ids),
+          saveCoverReady: (input) => baseRepo2.saveCoverReady(input),
+          saveCoverError: (input) => baseRepo2.saveCoverError(input),
+          resetErrorCoversToPending: (input) =>
+            baseRepo2.resetErrorCoversToPending(input),
+        },
+        createWorkerClient: () =>
+          createMockWorkerClient(async () => {
+            if (firstEncode) {
+              firstEncode = false;
+              encodeStarted.resolve();
+              await encodeGate.promise;
+            }
+            return {
+              blob: new Blob([new Uint8Array([1, 2])], { type: "image/webp" }),
+              width: 100,
+              height: 100,
+            };
+          }).handle,
+      }),
+    );
+
+    scheduler4.setViewportVolumeIds("bookshelf", new Set(["v-other-1"]));
+    await scheduler4.syncQueue();
+    await encodeStarted.promise;
+
+    // 非代表巻 v-other-1 が active 中に setViewportVolumeIds を再呼び出し（otherOrder の active スキップ分岐）
+    scheduler4.setViewportVolumeIds("bookshelf", new Set(["v-other-1"]));
+    // encodeCoverWebp が通常解決した直後に assertEpochActive で中断し、viewport-high へ先頭復帰すること
+    scheduler4.pause("reader");
+    encodeGate.resolve();
+    await vi.waitFor(() => {
+      expect(scheduler4.getSnapshot().activeVolumeId).toBeNull();
+    });
+
+    // 再開すると v-other-1 が完了し、続く v-get-err は getById 例外でも安全に処理完了して idle に戻ること
+    scheduler4.resume("reader");
+    await waitForIdle(scheduler4);
+    expect((await db.volumes.get("v-other-1"))?.coverStatus).toBe("ready");
+    scheduler4.dispose();
   });
 });
