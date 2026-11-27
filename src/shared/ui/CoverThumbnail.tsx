@@ -65,15 +65,15 @@ export function CoverThumbnail({
               {trimmedTitle}
             </p>
           )}
-          {coverStatus === "error" && (
-            <span
-              data-testid="cover-thumbnail-error-badge"
-              className="mt-2 inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-200"
-            >
-              取得失敗
-            </span>
-          )}
         </div>
+      )}
+      {objectUrl === null && coverStatus === "error" && (
+        <span
+          data-testid="cover-thumbnail-error-badge"
+          className="absolute left-1 top-1 max-w-[calc(100%-0.5rem)] truncate whitespace-nowrap rounded-md border border-amber-500/50 bg-slate-950/90 px-1 py-0.5 text-[9px] font-semibold leading-none text-amber-200"
+        >
+          取得失敗
+        </span>
       )}
       {badgeText !== undefined && badgeText.length > 0 && (
         <span
