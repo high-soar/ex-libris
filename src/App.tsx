@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { ServiceProvider } from "./app/ServiceProvider";
 import type { CoordinatorSessionHandle } from "./app/coordinatorClient";
 import { useServices } from "./app/serviceContext";
@@ -52,7 +52,7 @@ function AppShell({
   initialSettingsSnapshot,
   settingsLogger,
 }: AppShellProps) {
-  const { appBridge } = useServices();
+  const { appBridge, coverExtractionScheduler } = useServices();
   const { route, back, isBackBlocked } = useRouter();
   const readerExitRef = useRef<(() => void) | null>(null);
   const settingsModalBackRef = useRef<(() => void) | null>(null);
@@ -62,6 +62,14 @@ function AppShell({
   isBackBlockedRef.current = isBackBlocked;
   const backRef = useRef(back);
   backRef.current = back;
+
+  useLayoutEffect(() => {
+    if (route.name === "reader-local" || route.name === "reader-volume") {
+      coverExtractionScheduler.pause("reader");
+      return;
+    }
+    coverExtractionScheduler.resume("reader");
+  }, [coverExtractionScheduler, route.name]);
 
   useEffect(() => {
     diagnosticLogger.info("app", "ExLibris shell initialized");
