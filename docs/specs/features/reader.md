@@ -1,15 +1,16 @@
 ---
 type: spec-feature
 title: "WebGL2 ストリーミングリーダー画面仕様書（SCR-03: Reader）"
-description: "SCR-03（/read/local および /read/volume/:volumeId）のDrive/ローカル共通ストリーミング、インテリジェント見開き、1ページずらし、右開き/左開き、シークバー、1パス画質補正シート、readingProgress＆series.lastReadAt自動更新、およびTR-07/TR-08/TR-10仕様の正本"
-status: "Review (#25)"
-updated: "2026-11-25"
+description: "SCR-03（/read/local および /read/volume/:volumeId）のDrive/ローカル共通ストリーミング、閲覧最優先の表紙抽出プリエンプション連携、インテリジェント見開き、1ページずらし、右開き/左開き、シークバー、1パス画質補正シート、readingProgress＆series.lastReadAt自動更新、およびTR-07/TR-08/TR-10仕様の正本"
+status: "Review (#26)"
+updated: "2026-11-27"
 tags:
   [
     feature,
     reader,
     scr-03,
     google-drive,
+    preemption,
     rtl,
     ltr,
     spread,
@@ -28,6 +29,7 @@ related_specs:
   - docs/specs/architecture.md
   - docs/specs/db-schema.md
   - docs/specs/screen-transitions.md
+  - docs/specs/engine/cover-extraction.md
   - docs/specs/engine/zip-streaming.md
   - docs/specs/engine/webgl2-renderer.md
   - docs/specs/features/bookshelf.md
@@ -64,12 +66,15 @@ related_tests:
 
 # WebGL2 ストリーミングリーダー画面仕様書（`SCR-03`: Reader）
 
-本ドキュメントは、ExLibris のフルスクリーンリーダー画面 **`SCR-03`（ローカル一時 ZIP ルート `/read/local`、および Google Drive 巻ルート `/read/volume/:volumeId`）** に関するアーカイブソース解決・見開きレイアウト・綴じ方向切替・シークバー・画質補正ボトムシート・`readingProgress`（および `series.lastReadAt`）自動レジューム・異常系ハンドリング・起点別終了遷移（`TR-07` / `TR-08` / `TR-10`）の正本（Single Source of Truth）です。
+本ドキュメントは、ExLibris のフルスクリーンリーダー画面 **`SCR-03`（ローカル一時 ZIP ルート `/read/local`、および Google Drive 巻ルート `/read/volume/:volumeId`）** に関するアーカイブソース解決・閲覧優先プリエンプション連携・見開きレイアウト・綴じ方向切替・シークバー・画質補正ボトムシート・`readingProgress`（および `series.lastReadAt`）自動レジューム・異常系ハンドリング・起点別終了遷移（`TR-07` / `TR-08` / `TR-10`）の正本（Single Source of Truth）です。
 
 ---
 
-## 1. ルート別ソース解決・優先度付き終了シーケンス（`TR-07` / `TR-08` / `TR-10`）・自動レジューム＆先読み連携
+## 1. ルート別ソース解決・閲覧優先プリエンプション・優先度付き終了シーケンス（`TR-07` / `TR-08` / `TR-10`）・自動レジューム＆先読み連携
 
+0. **閲覧最優先プリエンプション制御（`NFR-04` / [cover-extraction.md §4.5](../engine/cover-extraction.md#45-プリエンプションと一時停止理由pausereasonsの連携規約)）**:
+   - `TR-02a` / `TR-02b` / `TR-04` の遷移ハンドラおよび `AppShell`（`src/App.tsx`）の `useLayoutEffect`（`route.name === "reader-local" || route.name === "reader-volume"` 判定）により、直接 URL アクセスやブラウザ `popstate` 遷移を含め **`ReaderPage` の `useEffect` が Coordinator セッション（`openArchive`）を開始するよりも前に必ず同期的に `coverExtractionScheduler.pause("reader")` が発火** し、進行中の表紙 Range `fetch` が即座に `abort()` されてリーダー通信帯域が 100% 確保される。
+   - `TR-07` / `TR-08` / `TR-10` により非リーダー画面（`SCR-01` / `SCR-02` / `SCR-04`）へ復帰した時点で、`AppShell` `useLayoutEffect` から `coverExtractionScheduler.resume("reader")` が呼び出され、未抽出（`pending`）巻の表紙抽出が自動再開する。
 1. **ルート別アーカイブソース解決とセッション保護**:
    - **ローカル一時 ZIP ルート（`/read/local` / `route.name === "reader-local"`：`TR-10`）**:
      - マウント時にオンメモリセッション（`useLocalReaderSessionStore.session`）が `null` の場合（リロードや URL 直接入力時）、エラー画面や空白で停止せず、即座に `router.replace("/")` で `SCR-01` へ遷移する（`TR-10`）。
@@ -80,7 +85,7 @@ related_tests:
        2. `DriveSyncRootsRepository.listActive()` から有効ルート（`enabled === 1`）を照合し、`volume.isTrashed === 1` または対象 `volume.rootFolderId` が有効ルートに含まれない場合は致命的エラー **`VOLUME_UNAVAILABLE`** とする（なお `volume.seriesId` は戻り先フォールバック用に保持する）。
        3. `GoogleAuthBridge.getCachedSession() ?? (await GoogleAuthBridge.getSession())` で認証セッションを確認する。`null`（未連携）の場合は致命的エラー **`AUTH_REQUIRED`** とする。
        4. `SeriesRepository.getById(volume.seriesId)` を参照する（既存契約により Tombstone も返却されるため `const activeSeries = rawSeries !== null && rawSeries.deletedAt === null ? rawSeries : null` と判定し、取得失敗・`null`・論理削除済み時はフォールバック）。上部 HUD 表示タイトルを **`activeSeries !== null && volume.volumeLabel.trim().length > 0 ? "${activeSeries.title} ${volume.volumeLabel}" : (activeSeries?.title ?? volume.rawFileName)`** と決定する。
-     - 構築する `ArchiveSourceDescriptor` は `{ kind: "gdrive", volumeId: volume.id, driveFileId: volume.driveFileId, fileSize: volume.fileSize, md5Checksum: volume.md5Checksum, indexCacheKey: "gdrive:${volume.driveFileId}:${volume.md5Checksum ?? volume.fileSize}", progressTargetKey: "vol:${volume.id}" }` とする。
+     - 構築する `ArchiveSourceDescriptor` は `{ kind: "gdrive", volumeId: volume.id, driveFileId: volume.driveFileId, fileSize: volume.fileSize, md5Checksum: volume.md5Checksum, indexCacheKey: "gdrive:${volume.driveFileId}:${volume.md5Checksum ?? volume.fileSize}", progressTargetKey: "vol:${volume.id}" }` とする（事前に表紙 WebP 抽出が完了している巻では `indexCacheKey` が既に `zipIndexCache` に格納済みであるため、初回閲覧時から Central Directory 通信ゼロの `fromIndexCache: true` 0 RTT オープンとなる）。
 2. **優先度 2（画質補正シート閉鎖）と起点別リーダー終了・完全リソース解放（優先度 3: `TR-07` / `TR-08`）**:
    - **優先度 2 戻る制御**: 致命的エラーが発生しておらず画質補正ボトムシート（`ReaderShaderSheet`）が開いている状態（`activeFatalError === null && isShaderSheetOpen`）で Android ハードウェア戻るボタン（`AppBridge` `backButton`）、キーボード `Escape` キー、またはシート外バックドロップタップが発生した場合は、**終了遷移を発火せず `isShaderSheetOpen = false` のみを実行してフルスクリーン閲覧状態へ戻る**。
    - **優先度 3 リーダー終了（`TR-07` / `TR-08`）**: 上部 HUD の「戻る」ボタン、エラー画面の戻るボタン、ボトムシート非表示時（または致命的エラー表示中）の `Escape` キー／Android ハードウェア戻るボタン、またはブラウザ戻る（`popstate`）によるルート離脱で発動し、以下の順序でリソースを確定解放して遷移元へ戻る：
@@ -254,24 +259,25 @@ related_tests:
 
 ## 6. 受け入れ条件（`AC-RD-xx`）
 
-|   AC ID    | 受け入れ条件                                                                                                                                                                                                                                             |
-| :--------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AC-RD-01` | `/read/local` でメモリ上の `File` セッションが不在の場合、エラー停止せず即時 `/` へフォールバックする（`TR-10`）。                                                                                                                                       |
-| `AC-RD-02` | オープン直後は HUD 非表示のフルスクリーンで開始し、中央 40% タップで上下 HUD を開閉できる。                                                                                                                                                              |
-| `AC-RD-03` | `ReadingDirection` に応じて、右開き（`rtl`：左 30% タップ／左→右スワイプ／`ArrowLeft`＝次）と左開き（`ltr`：右 30% タップ／右→左スワイプ／`ArrowRight`＝次）が完全反転して動作する。                                                                     |
-| `AC-RD-04` | 下部 HUD 中段にページ表記（`1 / 24` または `2-3 / 24`）と開き方向対応「次へ」「前へ」ボタンが表示され、先頭・最終表示ページ/見開きで適切に `disabled` になる。                                                                                           |
-| `AC-RD-05` | ページ遷移ごとに閲覧優先順の `prefetchIndices`（`+1..+20`, `-1..-2`）および L1 近傍バッチ要求を 1 `epoch` 単位で連携し、連続めくり時の古い `requestEpoch` 進行中 I/O 中断および遅延到着 `ImageBitmap` の即時 `close()` が行われる。                      |
-| `AC-RD-06` | 破損・空・暗号化・未対応圧縮・読込失敗（`READ_ERROR`）・WebGL2 失敗時は診断ログ記録の上で理由別エラー画面と戻り導線を表示する。                                                                                                                          |
-| `AC-RD-07` | 個別ページのみのデコード失敗時は当該ページのみエラー表示とし、前後ページへの移動を阻害しない。                                                                                                                                                           |
-| `AC-RD-08` | ボトムシート非表示時の戻るボタン・`Escape` キー・Android ハードウェア戻るボタンで進捗フラッシュ・Worker 停止・L1 `bitmap.close()`・WebGL 破棄・セッションクリアを実行し、遷移元画面（`TR-07` または `TR-08`）へ戻る。                                    |
-| `AC-RD-09` | 対象 TSX/TS ファイルすべてが 1 対 1 Story/UT・親子分離・C0/C1/Functions/Lines 100%・1280px/375px VRT を PASS する。                                                                                                                                      |
-| `AC-RD-10` | `SpreadMode`（`"auto" \| "single" \| "spread"`）が画面向きに追従し、表紙 0P（`offset === 0`）および自身/隣接横長画像（`width > height`）を自動単独中央表示した上で、後続ページから自動再ペアリング・`1ページずらし` 1頁シフトが機能する。                |
-| `AC-RD-11` | 下部 HUD 下段に表示モード循環・1ページずらし（単ページ時 `disabled`）・右/左開き切替を備え、375px 縦幅・1280px 横幅ともに崩れず操作できる。                                                                                                              |
-| `AC-RD-12` | 見開き時の Fast-Path（`[N, N+1]`）・L1 5 枚保護窓が連携し、片側ページエラー時は正常側スロットをそのまま WebGL2 描画したまま失敗側半面のみにエラーを表示する。                                                                                            |
-| `AC-RD-13` | 上部 HUD から開閉する画質補正ボトムシートで 4 スライダーのリアルタイム反映・ワンタップリセット・`syncMeta['defaultReaderSettingsJson']` デフォルト保存が機能し、シート表示中の Android 戻る・`Escape`・背景タップはシートのみを閉じる。                  |
-| `AC-RD-14` | 下部 HUD のシークバーが `rtl`（右端 1P）／`ltr`（左端 1P）に視覚連動し、ドラッグ中は Worker 通信を行わずページ番号プレビューのみを表示し、確定時に新 `requestEpoch` で指定ページへジャンプする。                                                         |
-| `AC-RD-15` | ページ遷移・ずらし変更・終了遷移・`popstate`・`pagehide`・`visibilitychange(hidden)` 時に `readingProgress`（`reading` / `completed`・`spreadPageOffset`）を保存し、同一アーカイブ再オープン時に保存位置から自動レジュームする。                         |
-| `AC-RD-16` | `/read/volume/:volumeId` にて `gdrive:${driveFileId}:${md5Checksum ?? fileSize}`（`zipIndexCache` 0 RTT ＆自己修復対応）および `GoogleDriveRangeReader` を用いて Google Drive 巻をストリーミング閲覧でき、上部 HUD に「`作品名 巻ラベル`」が表示される。 |
-| `AC-RD-17` | `/read/volume/:volumeId` での進捗保存時に `vol:${volumeId}`（`volumeId` 設定）へ永続化されるとともに、`SeriesRepository.updateLastReadAt(seriesId, now)` が `series.updatedAt` を汚染せず連動更新される。                                                |
-| `AC-RD-18` | `TR-02b`（`bookshelf` 起点）からは `TR-08`（`/`）、`TR-04`（`series-detail` 起点）からは `TR-07`（`/series/:seriesId`）へ終了遷移し、直接 URL アクセス等で起点不在時は実在巻なら `/series/:seriesId`・未存在巻なら `/` へ安全にフォールバックする。      |
-| `AC-RD-19` | `/read/volume/:volumeId` で未存在 `volumeId`（`VOLUME_NOT_FOUND`）・ゴミ箱または無効ルート配下（`VOLUME_UNAVAILABLE`）・Google 未連携（`AUTH_REQUIRED`）を検知した場合は Worker を起動せず理由別エラー画面と戻りボタンを表示する。                       |
+|   AC ID    | 受け入れ条件                                                                                                                                                                                                                                                                                                                                                                        |
+| :--------: | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AC-RD-01` | `/read/local` でメモリ上の `File` セッションが不在の場合、エラー停止せず即時 `/` へフォールバックする（`TR-10`）。                                                                                                                                                                                                                                                                  |
+| `AC-RD-02` | オープン直後は HUD 非表示のフルスクリーンで開始し、中央 40% タップで上下 HUD を開閉できる。                                                                                                                                                                                                                                                                                         |
+| `AC-RD-03` | `ReadingDirection` に応じて、右開き（`rtl`：左 30% タップ／左→右スワイプ／`ArrowLeft`＝次）と左開き（`ltr`：右 30% タップ／右→左スワイプ／`ArrowRight`＝次）が完全反転して動作する。                                                                                                                                                                                                |
+| `AC-RD-04` | 下部 HUD 中段にページ表記（`1 / 24` または `2-3 / 24`）と開き方向対応「次へ」「前へ」ボタンが表示され、先頭・最終表示ページ/見開きで適切に `disabled` になる。                                                                                                                                                                                                                      |
+| `AC-RD-05` | ページ遷移ごとに閲覧優先順の `prefetchIndices`（`+1..+20`, `-1..-2`）および L1 近傍バッチ要求を 1 `epoch` 単位で連携し、連続めくり時の古い `requestEpoch` 進行中 I/O 中断および遅延到着 `ImageBitmap` の即時 `close()` が行われる。                                                                                                                                                 |
+| `AC-RD-06` | 破損・空・暗号化・未対応圧縮・読込失敗（`READ_ERROR`）・WebGL2 失敗時は診断ログ記録の上で理由別エラー画面と戻り導線を表示する。                                                                                                                                                                                                                                                     |
+| `AC-RD-07` | 個別ページのみのデコード失敗時は当該ページのみエラー表示とし、前後ページへの移動を阻害しない。                                                                                                                                                                                                                                                                                      |
+| `AC-RD-08` | ボトムシート非表示時の戻るボタン・`Escape` キー・Android ハードウェア戻るボタンで進捗フラッシュ・Worker 停止・L1 `bitmap.close()`・WebGL 破棄・セッションクリアを実行し、遷移元画面（`TR-07` または `TR-08`）へ戻る。                                                                                                                                                               |
+| `AC-RD-09` | 対象 TSX/TS ファイルすべてが 1 対 1 Story/UT・親子分離・C0/C1/Functions/Lines 100%・1280px/375px VRT を PASS する。                                                                                                                                                                                                                                                                 |
+| `AC-RD-10` | `SpreadMode`（`"auto" \| "single" \| "spread"`）が画面向きに追従し、表紙 0P（`offset === 0`）および自身/隣接横長画像（`width > height`）を自動単独中央表示した上で、後続ページから自動再ペアリング・`1ページずらし` 1頁シフトが機能する。                                                                                                                                           |
+| `AC-RD-11` | 下部 HUD 下段に表示モード循環・1ページずらし（単ページ時 `disabled`）・右/左開き切替を備え、375px 縦幅・1280px 横幅ともに崩れず操作できる。                                                                                                                                                                                                                                         |
+| `AC-RD-12` | 見開き時の Fast-Path（`[N, N+1]`）・L1 5 枚保護窓が連携し、片側ページエラー時は正常側スロットをそのまま WebGL2 描画したまま失敗側半面のみにエラーを表示する。                                                                                                                                                                                                                       |
+| `AC-RD-13` | 上部 HUD から開閉する画質補正ボトムシートで 4 スライダーのリアルタイム反映・ワンタップリセット・`syncMeta['defaultReaderSettingsJson']` デフォルト保存が機能し、シート表示中の Android 戻る・`Escape`・背景タップはシートのみを閉じる。                                                                                                                                             |
+| `AC-RD-14` | 下部 HUD のシークバーが `rtl`（右端 1P）／`ltr`（左端 1P）に視覚連動し、ドラッグ中は Worker 通信を行わずページ番号プレビューのみを表示し、確定時に新 `requestEpoch` で指定ページへジャンプする。                                                                                                                                                                                    |
+| `AC-RD-15` | ページ遷移・ずらし変更・終了遷移・`popstate`・`pagehide`・`visibilitychange(hidden)` 時に `readingProgress`（`reading` / `completed`・`spreadPageOffset`）を保存し、同一アーカイブ再オープン時に保存位置から自動レジュームする。                                                                                                                                                    |
+| `AC-RD-16` | `/read/volume/:volumeId` にて `gdrive:${driveFileId}:${md5Checksum ?? fileSize}`（`zipIndexCache` 0 RTT ＆自己修復対応）および `GoogleDriveRangeReader` を用いて Google Drive 巻をストリーミング閲覧でき、上部 HUD に「`作品名 巻ラベル`」が表示される。                                                                                                                            |
+| `AC-RD-17` | `/read/volume/:volumeId` での進捗保存時に `vol:${volumeId}`（`volumeId` 設定）へ永続化されるとともに、`SeriesRepository.updateLastReadAt(seriesId, now)` が `series.updatedAt` を汚染せず連動更新される。                                                                                                                                                                           |
+| `AC-RD-18` | `TR-02b`（`bookshelf` 起点）からは `TR-08`（`/`）、`TR-04`（`series-detail` 起点）からは `TR-07`（`/series/:seriesId`）へ終了遷移し、直接 URL アクセス等で起点不在時は実在巻なら `/series/:seriesId`・未存在巻なら `/` へ安全にフォールバックする。                                                                                                                                 |
+| `AC-RD-19` | `/read/volume/:volumeId` で未存在 `volumeId`（`VOLUME_NOT_FOUND`）・ゴミ箱または無効ルート配下（`VOLUME_UNAVAILABLE`）・Google 未連携（`AUTH_REQUIRED`）を検知した場合は Worker を起動せず理由別エラー画面と戻りボタンを表示する。                                                                                                                                                  |
+| `AC-RD-20` | `SCR-03`（`/read/local` および `/read/volume/:volumeId`）への進入瞬間（直接 URL・`popstate` 含む）に `coverExtractionScheduler.pause("reader")` が `openArchive` より前に同期実行されて表紙通信を即時遮断し、退場時（`TR-07` / `TR-08` / `TR-10`）に `resume("reader")` で再開する（また表紙抽出完了済みの Drive 巻は初回閲覧時から `fromIndexCache: true` 0 RTT オープンとなる）。 |

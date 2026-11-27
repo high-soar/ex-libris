@@ -2,8 +2,8 @@
 type: spec-provider
 title: "Google OAuth（Single-Flight）・Google Drive フォルダ参照 ＆ 差分同期プロバイダ仕様書"
 description: "Android ネイティブ GoogleAuthPlugin・Web モック自動フォールバック、Single-Flight トークン管理、機密マスク、Drive ルートフォルダ参照、および指定ルート配下フルスキャン＆changes.list 増分差分同期エンジンの正本"
-status: "Review (#25)"
-updated: "2026-11-25"
+status: "Review (#26)"
+updated: "2026-11-27"
 tags:
   [
     provider,
@@ -23,6 +23,7 @@ related_specs:
   - docs/specs/architecture.md
   - docs/specs/db-schema.md
   - docs/specs/screen-transitions.md
+  - docs/specs/engine/cover-extraction.md
   - docs/specs/engine/zip-streaming.md
   - docs/specs/features/bookshelf.md
   - docs/specs/features/series-detail.md

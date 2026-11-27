@@ -2,8 +2,8 @@
 type: spec-db-schema
 title: "Dexie.js（IndexedDB）ローカルDBスキーマ・インデックス定義"
 description: "仮想本棚、指定ルートフォルダ同期、ZIP目次キャッシュ、ローカル一時ZIP共用レジューム、および appDataFolder LWW 端末間同期を支える全9テーブル定義の正本"
-status: "Review (#25)"
-updated: "2026-11-25"
+status: "Review (#26)"
+updated: "2026-11-27"
 tags:
   [database, dexie, indexeddb, schema, bookshelf, lww-sync, reading-progress]
 related_specs:
@@ -11,6 +11,7 @@ related_specs:
   - docs/specs/requirements.md
   - docs/specs/architecture.md
   - docs/specs/screen-transitions.md
+  - docs/specs/engine/cover-extraction.md
   - docs/specs/engine/zip-streaming.md
   - docs/specs/features/bookshelf.md
   - docs/specs/features/series-detail.md
@@ -214,10 +215,14 @@ erDiagram
 | `updatedAt`         | `number`                                          |       Yes        | ユーザーの巻番号・所属シリーズ・表紙設定変更日時（UNIX ms、LWW 同期用）  |
 
 - **`VolumesRepository` 契約（`src/storage/repositories/volumesRepository.ts` / `v0.2 [2/4]`〜）**:
-  - **FIFO 直列化 ＆ 有効ルートクエリフィルタ**: 内部 Promise キューで全メソッド（`getById`, `getByDriveFileId`, `listBySeriesId`, `listVisibleByEnabledRoots`, `listByRootFolderIds`, `upsertFromDriveSync`, `markTrashedByDriveFileIds`）を FIFO 直列実行する。
+  - **FIFO 直列化 ＆ 有効ルートクエリフィルタ**: 内部 Promise キューで全メソッド（`getById`, `getByDriveFileId`, `listBySeriesId`, `listVisibleByEnabledRoots`, `listByRootFolderIds`, `upsertFromDriveSync`, `markTrashedByDriveFileIds`, `saveCoverReady`, `saveCoverError`, `resetErrorCoversToPending`）を FIFO 直列実行する。
   - **巻表示ソート順（決定論的）**: `listBySeriesId` / `listVisibleByEnabledRoots` では `volumeNumber` 昇順（`null` は末尾）→ 同一 `volumeNumber` 時は単巻優先（`volumeLabel.includes("合本")` を合本とみなし `false < true` で単巻を先）→ `volumeLabel` 昇順 → `rawFileName` 昇順 → `id` 昇順の決定論ソートで返却する（`VolumeRecord` スキーマ維持）。
   - **有効ルート所属フィルタと既存データ保護**: `SCR-04` でルートフォルダが一時無効化（`enabled: 0`）または論理削除（`deletedAt !== null`）された場合も、既存 `volumes` レコードや `coverBlob` は破壊せず保持し、`listVisibleByEnabledRoots(enabledRootIds)` 側で **`enabledRootIds.has(volume.rootFolderId) && volume.isTrashed === 0`** を満たす巻のみを本棚表示対象として返す。
   - **同期反映時の LWW `updatedAt` 保護 ＆ MD5 変化リセット**: `upsertFromDriveSync` で既存 `driveFileId` を更新する際は **`updatedAt` を一切変更せず維持** する。また `prev.md5Checksum !== next.md5Checksum || prev.fileSize !== next.fileSize` を検知した場合は戻り値に `invalidatedCacheKey: "gdrive:${driveFileId}:${prev.md5Checksum ?? prev.fileSize}"` を含めるとともに `coverBlob = null`, `coverStatus = "pending"`, `coverUpdatedAt = null` へリセットする。新規作成時のみ `addedAt = updatedAt = now`, `coverBlob = null`, `coverStatus = "pending"`, `coverCropMode = "auto"`, `coverPageIndex = 0`, `coverUpdatedAt = null`, `isTrashed = 0` で初期化する。
+  - **表紙抽出結果保存・エラー再試行リセット時の LWW `updatedAt` 保護 ＆ 整合ガード（`v0.2 [4/4]`〜）**:
+    - `saveCoverReady({ volumeId, expectedMd5Checksum, expectedFileSize, coverBlob, coverUpdatedAt? })`: 対象レコードが有効かつ `isTrashed === 0` かつ `md5Checksum === expectedMd5Checksum && fileSize === expectedFileSize` を満たす場合のみ、`{ ...existing, coverBlob, coverStatus: "ready", coverUpdatedAt: coverUpdatedAt ?? now }` を保存して更新後レコードを返す（条件不一致・未存在時は上書きせず `null` を返す。**`existing.updatedAt` は一切更新しない**）。
+    - `saveCoverError({ volumeId, expectedMd5Checksum, expectedFileSize, coverUpdatedAt? })`: 上記と同一の整合ガードの下で `{ ...existing, coverBlob: null, coverStatus: "error", coverUpdatedAt: coverUpdatedAt ?? now }` を保存して更新後レコードを返す（条件不一致時は `null`、**`existing.updatedAt` は一切更新しない**）。
+    - `resetErrorCoversToPending({ enabledRootIds, seriesId? })`: 単一 `rw` トランザクション内で `isTrashed === 0 && enabledRootIds.has(rootFolderId) && coverStatus === "error"`（`seriesId` 指定時は `record.seriesId === seriesId` も満たす）の有効レコードを抽出し、`{ ...record, coverBlob: null, coverStatus: "pending", coverUpdatedAt: null }` へ一括更新（**`record.updatedAt` は一切更新しない**）して表示順ソート済み配列を返却する。
 
 ### 3.7 `collections` / `seriesCollections` / `bookmarks`（`v0.3`〜`v0.4`）
 
@@ -238,4 +243,4 @@ erDiagram
    - `v0.2` では第 1 弾の `#23` で `version(3)`（`driveSyncRoots`, `series`, `volumes`）の 3 テーブル定義を先行確定させて `DriveSyncRootsRepository`（および `SCR-04` ルートフォルダ管理 UI）を有効化し、続く `#24` で `series` / `volumes` の Repository および Drive スキャン・差分同期を有効化する。以降、`v0.3` で `version(4)`（`collections`, `seriesCollections`）、`v0.4` で `version(5)`（`bookmarks`）を加算的に定義する。
 2. **`resetTestDb()` の不変契約**:
    - `resetTestDb(targetDb = db)` は、その時点で `ExLibrisDatabase` に定義されている **`targetDb.tables` 全件に対して `table.clear()` をトランザクションまたは並列で実行** し、テスト間の状態汚染を完全にゼロにする。
-   - `ServiceProvider` による `window.__exLibrisServices.resetTestDb` への公開は `!Capacitor.isNativePlatform() && (import.meta.env.DEV || import.meta.env.MODE === "test" || navigator.webdriver === true)`（`shouldExposeResetTestDb`）を満たす開発・テスト・E2E（WebDriver）環境のみに限定し（モックアダプタ初期化に加えて `resetBookshelfUiState()` および `resetDriveSyncState()` も同時実行してオンメモリ UI/同期状態も完全初期化する）、Android ネイティブ実機および通常の本番ブラウザ環境ではプロパティを省略（`undefined`）して誤削除経路を公開しない。
+   - `ServiceProvider` による `window.__exLibrisServices.resetTestDb` への公開は `!Capacitor.isNativePlatform() && (import.meta.env.DEV || import.meta.env.MODE === "test" || navigator.webdriver === true)`（`shouldExposeResetTestDb`）を満たす開発・テスト・E2E（WebDriver）環境のみに限定し（モックアダプタ初期化に加えて `coverExtractionScheduler.resetForTest()`・`resetCoverExtractionState()`・`resetBookshelfUiState()`・`resetDriveSyncState()` も同時実行して進行中バックグラウンドジョブとオンメモリ UI/同期/表紙状態を完全初期化する）、Android ネイティブ実機および通常の本番ブラウザ環境ではプロパティを省略（`undefined`）して誤削除経路を公開しない。

@@ -1,9 +1,9 @@
 ---
 type: spec-feature
 title: "仮想本棚ホーム画面仕様書（SCR-01: Bookshelf）"
-description: "SCR-01（/）のダークテーマシェル、手動Drive同期トリガー、4軸基本ソート対応シリーズカードグリッド、「続きを読む」クイック起動（TR-02b）、設定導線・段階別ガイドバナー、ローカルZIP/CBZ選択導線・閲覧履歴、診断ログコピー、およびTR-01/TR-02a/TR-02b/TR-03/TR-05/TR-08/TR-09仕様の正本"
-status: "Review (#25)"
-updated: "2026-11-25"
+description: "SCR-01（/）のダークテーマシェル、手動Drive同期トリガー、4軸基本ソート対応シリーズカードグリッド、「続きを読む」クイック起動（TR-02b）、ビューポート優先の表紙WebP自動抽出・進捗/再試行表示、設定導線・段階別ガイドバナー、ローカルZIP/CBZ選択導線・閲覧履歴、診断ログコピー、およびTR-01/TR-02a/TR-02b/TR-03/TR-05/TR-08/TR-09仕様の正本"
+status: "Review (#26)"
+updated: "2026-11-27"
 tags:
   [
     feature,
@@ -11,6 +11,8 @@ tags:
     scr-01,
     series-grid,
     sorting,
+    cover,
+    webp,
     local-zip,
     saf,
     reading-progress,
@@ -25,6 +27,7 @@ related_specs:
   - docs/specs/architecture.md
   - docs/specs/db-schema.md
   - docs/specs/screen-transitions.md
+  - docs/specs/engine/cover-extraction.md
   - docs/specs/features/series-detail.md
   - docs/specs/features/reader.md
   - docs/specs/features/settings.md
@@ -62,14 +65,14 @@ related_tests:
 
 # 仮想本棚ホーム画面仕様書（`SCR-01`: Bookshelf）
 
-本ドキュメントは、ExLibris のホーム画面 **`SCR-01`（ルートパス `/`）** に関する機能仕様・UI コンポーネント構成・受け入れ条件（`AC-BS-xx`）の正本（Single Source of Truth）です。Phase 3〜`v0.1` の「ローカル ZIP オープン導線 ＋ 最近のローカル閲覧履歴 ＋ 診断ログコピー」および `v0.2 [1/4]`（`#23`）の設定導線・Google Drive 段階別連携バナーを土台に、`v0.2 [3/4]`（`#25`）で **100% ローカル IndexedDB 完結のシリーズカードグリッド・4軸基本ソート・「続きを読む」クイック起動（`TR-02b`）・手動 Drive 同期トリガー** を統合します。
+本ドキュメントは、ExLibris のホーム画面 **`SCR-01`（ルートパス `/`）** に関する機能仕様・UI コンポーネント構成・受け入れ条件（`AC-BS-xx`）の正本（Single Source of Truth）です。Phase 3〜`v0.1` の「ローカル ZIP オープン導線 ＋ 最近のローカル閲覧履歴 ＋ 診断ログコピー」および `v0.2 [1/4]`（`#23`）の設定導線・Google Drive 段階別連携バナー、`v0.2 [3/4]`（`#25`）のシリーズカードグリッド・4軸基本ソート・「続きを読む」クイック起動（`TR-02b`）・手動 Drive 同期トリガーの上に、`v0.2 [4/4]`（`#26`）で **ビューポート即時優先の表紙 WebP 自動抽出連携・インプレース差分反映・コンパクト進捗／エラー再試行導線・リーダー遷移時プリエンプション** を統合します。
 
 > [!NOTE]
 > `v0.2`（日常実用 MVP）では全有効シリーズのフラットグリッド＋4軸ソート構成とし、1,000 シリーズ規模でのアクセス性を高める UI（インクリメンタル複合検索、カスタム/スマートコレクション棚タブ、五十音インデックスジャンプ、作者／レーベル別グルーピング表示切替、Virtual Grid 等）は `v0.3` で詳細設計・実装します（[requirements.md §4](../requirements.md#4-全機能カタログとマイルストーン割当マトリクス)）。
 
 ---
 
-## 1. 画面責務とレイアウト構成（`v0.1` 〜 `v0.2 [3/4]`）
+## 1. 画面責務とレイアウト構成（`v0.1` 〜 `v0.2 [4/4]`）
 
 1. **テーマ・シェル**:
    - ダークテーマ統一（背景 `bg-slate-950`、ヘッダー/カード `bg-slate-900`、境界 `border-slate-800`）。下部タブバーは配置しない。
@@ -100,20 +103,24 @@ related_tests:
      - **`DriveSyncEmptyState`**（`data-testid="drive-sync-empty-state"`）を表示する：「マンガ保管フォルダが設定されています。同期を実行して本棚を作成してください」の案内、プライマリ **「今すぐ同期」ボタン**（`data-testid="empty-state-sync-drive-button"`、同期中はスピナー＆`disabled`）、およびサブ導線の **「ローカル ZIP を開く（.zip / .cbz）」ボタン**（`data-testid="open-local-zip-button"`）を配置する（下部に `local:*` 履歴が 1 件以上あれば `RecentLocalHistorySection` を表示する）。
    - **分岐 C：有効な Drive シリーズが 0 件 かつ 未連携／ルート未設定（`isShelfDataSettled && visibleSeries.length === 0 && driveSetupState.kind !== "ready" && driveSetupState.kind !== "loading"`）**:
      - 従来通り `LocalArchiveEmptyState`（`data-testid="bookshelf-empty"`、目立つ **「ローカル ZIP を開く（.zip / .cbz）」ボタン** `data-testid="open-local-zip-button"` 付き）＋ `RecentLocalHistorySection`（1 件以上時）を表示する。
-5. **本棚ツールバー・4軸基本ソート・シリーズカードグリッド（`BookshelfToolbar` / `SeriesGridSection` / `SeriesCard`）**:
+5. **本棚ツールバー・4軸基本ソート・シリーズカードグリッド・表紙自動抽出連携（`BookshelfToolbar` / `SeriesGridSection` / `SeriesCard`）**:
    - **`BookshelfToolbar`（`data-testid="bookshelf-toolbar"`）**:
      - 蔵書件数表示（`data-testid="bookshelf-series-count"`：全 `${visibleSeries.length} 作品 / ${totalVisibleVolumes} 冊`）
      - 最終同期日時表示（`data-testid="bookshelf-last-synced"`：`driveSyncStateStore.lastSyncedAt` が存在する場合は `Asia/Tokyo` 固定タイムゾーン `YYYY/MM/DD HH:mm` 形式で表示、未実行時は `"未同期"`、同期完了直後は結果件数サマリを併記、同期失敗時は `role="alert"` `data-testid="bookshelf-sync-error"` を表示）
+     - **表紙抽出コンパクトステータス＆再試行導線**（`v0.2 [4/4]`〜）：
+       - 全有効巻の表紙抽出が完了かつエラー 0 件（`pendingCount === 0 && errorCount === 0`）の通常時は非表示とし、ツールバーをスッキリ保つ。
+       - `pendingCount > 0` または `errorCount > 0` のときのみ、ステータス行（`data-testid="bookshelf-cover-status"`）を表示する：`pendingCount > 0` 時は進捗テキスト（例: `表紙抽出中: ${readyCount} / ${totalCount} 冊`、バックオフ・一時停止中は状態併記）、`errorCount > 0` 時はエラー件数（`表紙未取得: ${errorCount} 冊`）と **「再試行」ボタン**（`data-testid="bookshelf-retry-failed-covers-button"`：Google 連携済み かつ 非同期実行中のとき活性、`coverExtractionScheduler.retryFailedCovers()` を実行）を並置する。
      - **基本ソート切替セレクト**（`<select data-testid="bookshelf-sort-select" aria-label="並び順">`）：選択状態は `bookshelfUiStateStore.sortOrder`（オンメモリ）で保持し、以下の 4 軸を決定論的タイブレーク付きで提供する：
        1. **`"lastReadDesc"`（最終読書順：初期値）**: `series.lastReadAt` が非 `null` のシリーズを先に `lastReadAt` 降順で並べ、未読シリーズ（`lastReadAt === null`）は後ろに回して最新追加日時（所属有効巻の最大 `addedAt`、同値時 `series.addedAt`）降順 → `titleReading` 昇順 → `title` 昇順 → `id` 昇順で並べる。
        2. **`"addedDesc"`（追加順）**: 所属有効巻の最大 `addedAt`（同値時 `series.addedAt`）降順 → `titleReading` 昇順 → `title` 昇順 → `id` 昇順。
        3. **`"titleAsc"`（タイトル順）**: `series.titleReading` 昇順 → `series.title` 昇順 → `id` 昇順。
        4. **`"volumeCountDesc"`（巻数順）**: 所属有効巻数（`visibleVolumes.length`）降順 → `titleReading` 昇順 → `title` 昇順 → `id` 昇順。
-   - **`SeriesCard`（`data-testid="series-card"`, `data-series-id={item.seriesId}`）**:
-     - **代表表紙サムネイル（`CoverThumbnail`）**: `series.representativeVolumeId` が所属有効巻内に存在する場合はその巻、なければ所属有効巻の先頭巻（`visibleVolumes[0]`）を採用する。`coverStatus === "ready" && coverBlob !== null` の場合は `URL.createObjectURL(coverBlob)` 画像を表示し（アンマウント・Blob 変化時に `URL.revokeObjectURL` 必須）、それ以外はタイトル・巻数バッジ付きのプレースホルダを表示する。
+   - **`SeriesCard`（`data-testid="series-card"`, `data-series-id={item.seriesId}`）とビューポート優先抽出・インプレース反映**:
+     - **代表表紙サムネイル（`CoverThumbnail`）**: `series.representativeVolumeId` が所属有効巻内に存在する場合はその巻、なければ所属有効巻の先頭巻（`visibleVolumes[0]`）を採用する。`coverStatus === "ready" && coverBlob !== null` の場合は `URL.createObjectURL(coverBlob)` 画像（`loading="lazy"`, `decoding="async"`）を表示し（アンマウント・Blob 変化時に `URL.revokeObjectURL` 必須）、それ以外はタイトル・巻数バッジ付きのプレースホルダ（`coverStatus === "error"` 時は `"取得失敗"` バッジ `data-testid="cover-thumbnail-error-badge"` 付き）を表示する。
+     - **`IntersectionObserver` 昇格とインプレース差分反映**: 代表表紙巻が `coverStatus === "pending"` のカードには `data-cover-volume-id={representativeVolume.id}` を付与し、`IntersectionObserver`（`rootMargin: "200px 0px"`、未定義環境は no-op）で可視集合を `coverExtractionScheduler.setViewportVolumeIds("bookshelf", visibleIds)` へ通知して `viewport-high` で即時優先抽出させる。`BookshelfPage` は `subscribeVolumeUpdated` で完了・失敗通知を受け取り、IndexedDB 全件再取得を行わず該当 `representativeVolume.id` を持つカードのみインプレース更新することで、他カードの `Blob` 参照変化による `ObjectURL` 再生成チラつきを防ぐ。
      - **カード情報**: 作品タイトル、著者名（存在時 1 行省略）、所持巻数バッジ（`全 ${volumeCount} 巻`）、およびシリーズ読書ステータスバッジ（`data-testid="series-read-status"`：全有効巻未読＝`未読`、全有効巻読了＝`読了`、それ以外＝`読書中 (${completedCount}/${volumeCount})`）。
      - **カード本体タップ（`data-testid="series-card-open-detail"` → `TR-01`）**: 所持巻数が 1 冊か複数冊かを問わず、現在の `window.scrollY` を `bookshelfUiStateStore` に保存し、`clearSeriesDetailScroll()` で過去の未消費詳細スクロール状態をクリアした上で `/series/:seriesId`（`SCR-02`）へ遷移する。
-     - **カード上のクイック起動ボタン（`data-testid="series-card-quick-read"` → `TR-02b`）**: クリックバブリングを抑止（`stopPropagation`）し、全シリーズカードに配置する。対象巻は以下の決定論的優先順位（`resolveQuickLaunchVolume`）で選び、`window.scrollY` を保存した上で起点 `readerOrigin: "bookshelf"` として `/read/volume/:volumeId`（`SCR-03`）を直接開く：
+     - **カード上のクイック起動ボタン（`data-testid="series-card-quick-read"` → `TR-02b`）**: クリックバブリングを抑止（`stopPropagation`）し、全シリーズカードに配置する。対象巻は以下の決定論的優先順位（`resolveQuickLaunchVolume`）で選び、`window.scrollY` を保存し `coverExtractionScheduler.pause("reader")` を同期実行した上で起点 `readerOrigin: "bookshelf"` として `/read/volume/:volumeId`（`SCR-03`）を直接開く：
        1. 所属有効巻のうち `readStatus === "reading"` が 1 冊以上ある場合：`lastReadAt` が最大の巻（同値時は巻順先頭）、ラベル **`「続きを読む (${volumeLabel})」`**。
        2. `"reading"` が無く未読了（`"unread"` または進捗未保存）の巻がある場合：巻順先頭の未読了巻、ラベルは既読了巻 0 冊なら **`「読む (${volumeLabel})」`**、1 冊以上なら **`「次を読む (${volumeLabel})」`**。
        3. 全有効巻が `"completed"` の場合：巻順先頭巻（`visibleVolumes[0]`）、ラベル **`「最初から読む」`**。
@@ -127,57 +134,59 @@ related_tests:
 
 ---
 
-## 2. ローカル ZIP 選択・Android SAF 互換・遷移＆状態復元契約（`TR-01`〜`TR-03` / `TR-05` / `TR-08` / `TR-09`）
+## 2. ローカル ZIP 選択・Android SAF 互換・プリエンプション・状態復元契約（`TR-01`〜`TR-03` / `TR-05` / `TR-08` / `TR-09`）
 
 1. **Android WebView（SAF）互換の `<input type="file">`**:
    - Android のファイルピッカー（SAF）では MIME タイプとして `.cbz`（`application/x-cbz` や `application/vnd.comicbook+zip`）が認識されずグレーアウトする端末が存在する。
    - これを防ぐため、隠し `<input type="file" data-testid="local-zip-file-input" />` の `accept` 属性は `.zip,.cbz,application/zip,application/x-zip-compressed,application/x-cbz,application/octet-stream`（または SAF 環境で `.cbz` が選択不能にならない安全な指定）とし、**最終的な拡張子検証は JS 側で `file.name.toLowerCase().endsWith(".zip") || file.name.toLowerCase().endsWith(".cbz")` により厳格判定** する。
    - 連続で同一ファイルを再選択できるよう、選択処理後に `input.value = ""` をリセットする。
-2. **ローカル一時 ZIP セッション保持と即時遷移（`TR-02a`）**:
-   - 有効な `.zip` / `.cbz` `File` が選択されたら、オンメモリセッションストア（`useLocalReaderSessionStore`）へ `{ file, fileName: file.name, fileSize: file.size }` を格納し、直ちに `/read/local` へ遷移（`router.navigate("/read/local")`）する。
+2. **ローカル一時 ZIP セッション保持と即時プリエンプション遷移（`TR-02a`）**:
+   - 有効な `.zip` / `.cbz` `File` が選択されたら、オンメモリセッションストア（`useLocalReaderSessionStore`）へ `{ file, fileName: file.name, fileSize: file.size }` を格納し、`coverExtractionScheduler.pause("reader")` を同期呼び出ししてバックグラウンド表紙通信を即座に中断した上で、直ちに `/read/local` へ遷移（`router.navigate("/read/local")`）する。
    - 遷移先の `ReaderPage` にて `local:${file.name}:${file.size}` をキーに `zipIndexCache`（0 RTT 目次復元）および `readingProgress`（保存済み `currentPageIndex` と `spreadPageOffset` の自動レジューム）を参照・更新する。
 3. **サブ画面・リーダー遷移とソート順・スクロール位置復元（`TR-01` / `TR-02b` / `TR-03` ↔ `TR-05` / `TR-08` / `TR-09`）**:
-   - `SCR-01` からシリーズ詳細（`TR-01`：あわせて `clearSeriesDetailScroll()` を実行）、クイック起動リーダー（`TR-02b`）、または設定画面（`TR-03`）へ遷移する際、オンメモリ UI 状態ストア（`bookshelfUiStateStore`）に現在の `window.scrollY` を保存する（選択中の `sortOrder` も同ストアで継続保持される）。
-   - `SCR-02`（`TR-05`）・`SCR-03`（`TR-08`）・`SCR-04`（`TR-09`）から `/` へ復帰した際、`BookshelfPage` は **Drive 連携状態確認（`isDriveSetupSettled`）・ローカル履歴取得（`isRecentHistorySettled`）・仮想本棚データ取得（`isShelfDataSettled`）の 3 つすべてが完了した時点** で `window.scrollTo(0, savedScrollY)` を実行し、`clearScrollY()` で消費クリアする（グリッド描画完了前の高さ不足によるスクロール位置ロストを防止する）。
+   - `SCR-01` からシリーズ詳細（`TR-01`：あわせて `clearSeriesDetailScroll()` を実行）、クイック起動リーダー（`TR-02b`：あわせて `coverExtractionScheduler.pause("reader")` を実行）、または設定画面（`TR-03`）へ遷移する際、オンメモリ UI 状態ストア（`bookshelfUiStateStore`）に現在の `window.scrollY` を保存する（選択中の `sortOrder` も同ストアで継続保持される）。
+   - `SCR-02`（`TR-05`）・`SCR-03`（`TR-08`：`AppShell` で `coverExtractionScheduler.resume("reader")` が連動実行）・`SCR-04`（`TR-09`）から `/` へ復帰した際、`BookshelfPage` は **Drive 連携状態確認（`isDriveSetupSettled`）・ローカル履歴取得（`isRecentHistorySettled`）・仮想本棚データ取得（`isShelfDataSettled`）の 3 つすべてが完了した時点** で `window.scrollTo(0, savedScrollY)` を実行し、`clearScrollY()` で消費クリアする（グリッド描画完了前の高さ不足によるスクロール位置ロストを防止する）。
 
 ---
 
 ## 3. コンポーネント構成と親子分離（1対1 Story / UT 対象）
 
-| モジュール / コンポーネント | ファイルパス                                           | 責務（テスト分離方針）                                                                                                     |
-| :-------------------------- | :----------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------- |
-| `bookshelfViewModel`        | `src/features/bookshelf/bookshelfViewModel.ts`         | シリーズカード集約、代表表紙解決、`resolveQuickLaunchVolume`、4軸決定論ソート、同期日時/バイトサイズ整形純関数群           |
-| `bookshelfUiStateStore`     | `src/features/bookshelf/bookshelfUiStateStore.ts`      | `SCR-01` `scrollY`・`sortOrder` および `SCR-02` `seriesDetailScroll` を保持するオンメモリ Zustand ストア                   |
-| `driveSyncStateStore`       | `src/shared/sync/driveSyncStateStore.ts`               | `SCR-01` / `SCR-04` 横断の Drive 手動同期状態（実行中・最終同期日時・結果・エラー・完了カウンタ）を管理する Zustand ストア |
-| `CoverThumbnail`            | `src/shared/ui/CoverThumbnail.tsx`                     | `coverBlob` の `URL.createObjectURL` / `URL.revokeObjectURL` 厳格管理と未抽出時プレースホルダ描画                          |
-| `BookshelfPage`             | `src/features/bookshelf/BookshelfPage.tsx`             | ローカル ZIP 検証、`TR-01`〜`TR-03` スクロール保持、Drive 連携・同期状態・IndexedDB 本棚＆履歴取得統合                     |
-| `BookshelfHeader`           | `src/features/bookshelf/BookshelfHeader.tsx`           | タイトル、バージョン、手動「同期」ボタン、「ローカル ZIP を開く」、診断ログコピー、「設定」ボタン（Pure Presentational）   |
-| `DriveSetupBanner`          | `src/features/bookshelf/DriveSetupBanner.tsx`          | Google 未連携／有効ルートフォルダ 0 件時の段階別ガイドバナー（準備完了・初期確認中は `null`、Pure Presentational）         |
-| `BookshelfToolbar`          | `src/features/bookshelf/BookshelfToolbar.tsx`          | 作品・冊数サマリ、最終同期日時・同期エラー表示、4軸ソート切替セレクト（Pure Presentational）                               |
-| `SeriesGridSection`         | `src/features/bookshelf/SeriesGridSection.tsx`         | レスポンシブシリーズカードグリッド描画（Pure Presentational）                                                              |
-| `SeriesCard`                | `src/features/bookshelf/SeriesCard.tsx`                | 代表表紙、作品名・著者・巻数・進捗バッジ、詳細遷移（`TR-01`）＆クイック起動ボタン（`TR-02b`）（Pure Presentational）       |
-| `DriveSyncEmptyState`       | `src/features/bookshelf/DriveSyncEmptyState.tsx`       | Drive 準備完了かつ有効蔵書 0 件時の「今すぐ同期」CTA カード＋ローカル ZIP サブ導線（Pure Presentational）                  |
-| `LocalArchiveEmptyState`    | `src/features/bookshelf/LocalArchiveEmptyState.tsx`    | 未連携/未設定時の空本棚カード、目立つ「ローカル ZIP を開く」CTA、D&D ガイド、不正拡張子エラー表示                          |
-| `RecentLocalHistorySection` | `src/features/bookshelf/RecentLocalHistorySection.tsx` | 直近ローカル閲覧履歴（最大10件、0件時 `null`、進捗バー、再選択導線、個別削除・一括クリア）                                 |
+| モジュール / コンポーネント | ファイルパス                                           | 責務（テスト分離方針）                                                                                                       |
+| :-------------------------- | :----------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------- |
+| `bookshelfViewModel`        | `src/features/bookshelf/bookshelfViewModel.ts`         | シリーズカード集約、代表表紙解決、`resolveQuickLaunchVolume`、4軸決定論ソート、同期日時/バイトサイズ整形純関数群             |
+| `bookshelfUiStateStore`     | `src/features/bookshelf/bookshelfUiStateStore.ts`      | `SCR-01` `scrollY`・`sortOrder` および `SCR-02` `seriesDetailScroll` を保持するオンメモリ Zustand ストア                     |
+| `driveSyncStateStore`       | `src/shared/sync/driveSyncStateStore.ts`               | `SCR-01` / `SCR-04` 横断の Drive 手動同期状態（実行中・最終同期日時・結果・エラー・完了カウンタ）を管理する Zustand ストア   |
+| `coverExtractionStateStore` | `src/shared/sync/coverExtractionStateStore.ts`         | `SCR-01` / `SCR-02` / `SCR-04` 横断の表紙 WebP 自動抽出進捗・待機/エラー冊数スナップショットを保持する Zustand ストア        |
+| `CoverThumbnail`            | `src/shared/ui/CoverThumbnail.tsx`                     | `coverBlob` の `URL.createObjectURL` / `URL.revokeObjectURL` 厳格管理、`error` 識別バッジ、未抽出時プレースホルダ描画        |
+| `BookshelfPage`             | `src/features/bookshelf/BookshelfPage.tsx`             | ローカル ZIP 検証、`TR-01`〜`TR-03` スクロール保持＆プリエンプション、表紙インプレース更新・`IntersectionObserver` 統合      |
+| `BookshelfHeader`           | `src/features/bookshelf/BookshelfHeader.tsx`           | タイトル、バージョン、手動「同期」ボタン、「ローカル ZIP を開く」、診断ログコピー、「設定」ボタン（Pure Presentational）     |
+| `DriveSetupBanner`          | `src/features/bookshelf/DriveSetupBanner.tsx`          | Google 未連携／有効ルートフォルダ 0 件時の段階別ガイドバナー（準備完了・初期確認中は `null`、Pure Presentational）           |
+| `BookshelfToolbar`          | `src/features/bookshelf/BookshelfToolbar.tsx`          | 作品・冊数サマリ、最終同期日時・同期エラー表示、表紙抽出進捗／エラー再試行導線、4軸ソート切替セレクト（Pure Presentational） |
+| `SeriesGridSection`         | `src/features/bookshelf/SeriesGridSection.tsx`         | レスポンシブシリーズカードグリッド描画（Pure Presentational）                                                                |
+| `SeriesCard`                | `src/features/bookshelf/SeriesCard.tsx`                | 代表表紙、作品名・著者・巻数・進捗バッジ、詳細遷移（`TR-01`）＆クイック起動ボタン（`TR-02b`）（Pure Presentational）         |
+| `DriveSyncEmptyState`       | `src/features/bookshelf/DriveSyncEmptyState.tsx`       | Drive 準備完了かつ有効蔵書 0 件時の「今すぐ同期」CTA カード＋ローカル ZIP サブ導線（Pure Presentational）                    |
+| `LocalArchiveEmptyState`    | `src/features/bookshelf/LocalArchiveEmptyState.tsx`    | 未連携/未設定時の空本棚カード、目立つ「ローカル ZIP を開く」CTA、D&D ガイド、不正拡張子エラー表示                            |
+| `RecentLocalHistorySection` | `src/features/bookshelf/RecentLocalHistorySection.tsx` | 直近ローカル閲覧履歴（最大10件、0件時 `null`、進捗バー、再選択導線、個別削除・一括クリア）                                   |
 
 - **親子分離 UT**: 親 `BookshelfPage` の単体テストでは直下の子コンポーネント（`BookshelfHeader`, `DriveSetupBanner`, `BookshelfToolbar`, `SeriesGridSection`, `DriveSyncEmptyState`, `LocalArchiveEmptyState`, `RecentLocalHistorySection`）をすべて `vi.spyOn(...).mockImplementation(() => null)` で完全分離する。`SeriesGridSection` の単体テストでは `SeriesCard` を、`SeriesCard` の単体テストでは `CoverThumbnail` をそれぞれ `vi.spyOn` で分離する。
-- **Storybook / VRT 決定論性保証**: `BookshelfPage.stories.tsx`（および `AppProps.initialBookshelfSnapshot` 経由の `App.stories.tsx` ホーム表示ストーリー）では、非同期 IndexedDB / Auth 解決や実時刻による VRT フレークを防ぐため、`initialDriveSetupState`・`initialRecentHistory` に加えてオプショナルな `initialSnapshot?: BookshelfPageInitialSnapshot`（固定 `lastSyncedAt`・シリーズ配列・ソート順・同期状態を同期注入し初期非同期フェッチをスキップする Prop）を設け、1280px / 375px VRT を 100% 決定論的に描画する。
+- **Storybook / VRT 決定論性保証**: `BookshelfPage.stories.tsx`（および `AppProps.initialBookshelfSnapshot` 経由の `App.stories.tsx` ホーム表示ストーリー）では、非同期 IndexedDB / Auth / 表紙抽出スケジューラによる VRT フレークを防ぐため、`BookshelfPageInitialSnapshot`（固定 `lastSyncedAt`・シリーズ配列・ソート順・同期状態・オプショナル `coverExtractionState` を同期注入し初期非同期フェッチおよびスケジューラ購読をスキップする Prop）を設け、1280px / 375px VRT を 100% 決定論的に描画する。
 
 ---
 
 ## 4. 受け入れ条件（`AC-BS-xx`）
 
-|   AC ID    | 受け入れ条件                                                                                                                                                                                                                                       |
-| :--------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AC-BS-01` | `SCR-01`（`/`）のヘッダー（および蔵書 0 件時のメインカード）から「ローカル ZIP を開く」操作で `.zip` / `.cbz` ファイルを選択できる。                                                                                                               |
-| `AC-BS-02` | Web ブラウザ上で `.zip` / `.cbz` ファイルをドロップゾーンへドラッグ＆ドロップして開くことができる（Drive 蔵書表示中も有効）。                                                                                                                      |
-| `AC-BS-03` | `.zip` / `.cbz` 以外のファイルが選択・ドロップされた場合は遷移せず、画面状態にかかわらずインラインエラー（`role="alert"`, `data-testid="local-zip-error"`）を表示する。                                                                            |
-| `AC-BS-04` | 有効な `.zip` / `.cbz` ファイル選択時にオンメモリセッションが更新され、`/read/local`（`SCR-03`）へ遷移する（`TR-02a`）。                                                                                                                           |
-| `AC-BS-05` | 診断ログコピー機能（`data-testid="copy-diagnostics-button"`）および VRT（1280px / 375px）が引き続き 100% 正常動作する。                                                                                                                            |
-| `AC-BS-06` | `local:*` の閲覧履歴が 1 件以上ある場合のみ最新 10 件（`lastReadAt` 降順）の進捗・ステータス一覧を表示し、行選択でのピッカー起動・個別履歴削除・一括クリアが動作する（0件時は非表示）。                                                            |
-| `AC-BS-07` | ヘッダー「設定」ボタンおよび段階別ガイドバナー（① Google 未連携、② 連携済み・有効ルートフォルダ 0 件、両方充足時は非表示）から `/settings` へ遷移（`TR-03`）でき、復帰時（`TR-09`）に `SCR-01` のスクロール位置が復元される。                      |
-| `AC-BS-08` | アプリ起動時・画面遷移時は自動通信を行わず（`NFR-03`）、Google 連携済み かつ 有効ルート 1 件以上のときヘッダー「同期」ボタン（蔵書 0 件時は `DriveSyncEmptyState` の「今すぐ同期」CTA も含む）から手動同期を実行・状態共有できる。                 |
-| `AC-BS-09` | 有効な同期ルート所属かつ `isTrashed === 0` の巻を 1 冊以上持つシリーズのみがローカル IndexedDB から高速表示され、大きな初期空本棚カードは自動的に折りたたまれる（ルート一時無効化時は該当巻・空シリーズが即座に表示対象から除外される）。          |
-| `AC-BS-10` | 「最終読書順（初期値・未読は後ろで追加順）」「追加順」「タイトル順」「巻数順」の 4 軸でシリーズ一覧を即時ソートでき、`SCR-02` / `SCR-03` / `SCR-04` との往復遷移（`TR-05` / `TR-08` / `TR-09`）後もソート順とスクロール位置が復元される。          |
-| `AC-BS-11` | 各シリーズカードの本体選択で `/series/:seriesId` へ遷移（`TR-01`）でき、カード上のクイック起動ボタン（`TR-02b`）で「①最新読書中巻 → ②最小未読巻 → ③全巻読了時は先頭巻」を決定論的に `/read/volume/:volumeId` で直接起動できる。                    |
-| `AC-BS-12` | 代表表紙（`representativeVolumeId` 優先、なければ先頭巻）について、`coverBlob` 準備完了時は `ObjectURL` 画像（厳格 `revokeObjectURL` 付き）、未抽出時はプレースホルダを表示し、全追加 TSX/TS が 1対1 Story/UT・100% カバレッジ・VRT を PASS する。 |
+|   AC ID    | 受け入れ条件                                                                                                                                                                                                                                                                                 |
+| :--------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AC-BS-01` | `SCR-01`（`/`）のヘッダー（および蔵書 0 件時のメインカード）から「ローカル ZIP を開く」操作で `.zip` / `.cbz` ファイルを選択できる。                                                                                                                                                         |
+| `AC-BS-02` | Web ブラウザ上で `.zip` / `.cbz` ファイルをドロップゾーンへドラッグ＆ドロップして開くことができる（Drive 蔵書表示中も有効）。                                                                                                                                                                |
+| `AC-BS-03` | `.zip` / `.cbz` 以外のファイルが選択・ドロップされた場合は遷移せず、画面状態にかかわらずインラインエラー（`role="alert"`, `data-testid="local-zip-error"`）を表示する。                                                                                                                      |
+| `AC-BS-04` | 有効な `.zip` / `.cbz` ファイル選択時にオンメモリセッションが更新され、表紙抽出キューを一時停止した上で `/read/local`（`SCR-03`）へ遷移する（`TR-02a`）。                                                                                                                                    |
+| `AC-BS-05` | 診断ログコピー機能（`data-testid="copy-diagnostics-button"`）および VRT（1280px / 375px）が引き続き 100% 正常動作する。                                                                                                                                                                      |
+| `AC-BS-06` | `local:*` の閲覧履歴が 1 件以上ある場合のみ最新 10 件（`lastReadAt` 降順）の進捗・ステータス一覧を表示し、行選択でのピッカー起動・個別履歴削除・一括クリアが動作する（0件時は非表示）。                                                                                                      |
+| `AC-BS-07` | ヘッダー「設定」ボタンおよび段階別ガイドバナー（① Google 未連携、② 連携済み・有効ルートフォルダ 0 件、両方充足時は非表示）から `/settings` へ遷移（`TR-03`）でき、復帰時（`TR-09`）に `SCR-01` のスクロール位置が復元される。                                                                |
+| `AC-BS-08` | アプリ起動時・画面遷移時は自動フォルダ同期を行わず（`NFR-03`）、Google 連携済み かつ 有効ルート 1 件以上のときヘッダー「同期」ボタン（蔵書 0 件時は `DriveSyncEmptyState` の「今すぐ同期」CTA も含む）から手動同期を実行・状態共有できる。                                                   |
+| `AC-BS-09` | 有効な同期ルート所属かつ `isTrashed === 0` の巻を 1 冊以上持つシリーズのみがローカル IndexedDB から高速表示され、大きな初期空本棚カードは自動的に折りたたまれる（ルート一時無効化時は該当巻・空シリーズが即座に表示対象から除外される）。                                                    |
+| `AC-BS-10` | 「最終読書順（初期値・未読は後ろで追加順）」「追加順」「タイトル順」「巻数順」の 4 軸でシリーズ一覧を即時ソートでき、`SCR-02` / `SCR-03` / `SCR-04` との往復遷移（`TR-05` / `TR-08` / `TR-09`）後もソート順とスクロール位置が復元される。                                                    |
+| `AC-BS-11` | 各シリーズカードの本体選択で `/series/:seriesId` へ遷移（`TR-01`）でき、カード上のクイック起動ボタン（`TR-02b`）で表紙抽出キューを一時停止しつつ「①最新読書中巻 → ②最小未読巻 → ③全巻読了時は先頭巻」を決定論的に `/read/volume/:volumeId` で直接起動できる。                                |
+| `AC-BS-12` | 代表表紙（`representativeVolumeId` 優先、なければ先頭巻）について、`coverBlob` 準備完了時は `ObjectURL` 画像（厳格 `revokeObjectURL` 付き）、未抽出時はプレースホルダ（`error` 時は「取得失敗」バッジ付き）を表示し、全 TSX/TS が 1対1 Story/UT・100% カバレッジ・VRT を PASS する。         |
+| `AC-BS-13` | `SCR-01` で可視領域の `pending` 代表表紙が `IntersectionObserver` により `viewport-high` へ昇格して他カードの `ObjectURL` を再生成することなくインプレース反映され、抽出中またはエラー存在時のみ `BookshelfToolbar` に進捗／エラー件数と「再試行」ボタンが表示される（全件完了時は非表示）。 |
