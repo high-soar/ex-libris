@@ -98,7 +98,7 @@ related_tests:
        - **活性条件**: 両ボタンとも **`authStatus === "connected" && enabledRootCount > 0 && syncPhase !== "syncing" && !isBackBlocked`**（`SettingsPageInitialSnapshot` 上は `authState.status === "connected"`）のときのみ活性とし、未連携時・有効ルート 0 件時・同期実行中・OAuth/ルート保存中は `disabled`（未連携または有効ルート 0 件時は理由の補足案内を表示）とする。
 6. **セクション④：表紙サムネイル自動抽出（`CoverExtractionSection` / `v0.2 [4/4]`〜）**:
    - `coverExtractionStateStore`（`CoverExtractionScheduler` と同期共有）を参照し、有効ルート配下の蔵書に対する表紙 WebP 自動抽出の進行状況とエラー再試行導線を表示する：
-     - **状態バッジ**（`data-testid="settings-cover-status-badge"`）：`totalCount === 0` 時は `対象なし`、`phase === "running"` 時は `抽出中`、`phase === "backoff"` 時は `バックオフ待機`、`phase === "paused"`（`pendingCount > 0`）時は `一時停止中`、`pendingCount === 0 && errorCount > 0` 時は `要再試行`、`pendingCount === 0 && errorCount === 0 && totalCount > 0` 時は `完了`。
+     - **状態バッジ**（`data-testid="settings-cover-status-badge"`）：全スナップショット状態を漏れ・重複なく網羅するため、上から順に ①`totalCount === 0` → `対象なし`、②`pendingCount === 0 && errorCount === 0` → `完了`、③`pendingCount === 0 && errorCount > 0` → `要再試行`、④`phase === "running"` → `抽出中`、⑤`phase === "backoff"` → `バックオフ待機`、⑥`phase === "paused"` → `一時停止中`、⑦それ以外（`phase === "idle" && pendingCount > 0`）→ `待機中` の優先順位で決定する。
      - **進捗バー＆内訳サマリ**:
        - 進捗率 `totalCount > 0 ? Math.round((readyCount / totalCount) * 100) : 0`（`%`）に基づくプログレスバー（`data-testid="settings-cover-progress-bar"`）を表示する。
        - 内訳件数（`data-testid="settings-cover-counts"`：`抽出済み ${readyCount} / ${totalCount} 冊`・`待機 ${pendingCount} 冊`・`エラー ${errorCount} 冊`）を表示する。

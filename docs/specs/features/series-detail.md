@@ -77,8 +77,8 @@ related_tests:
      2. `DriveSyncRootsRepository.listActive()` から有効ルート集合 `enabledRootIds`（`enabled === 1`）を構築し、`VolumesRepository.listBySeriesId(seriesId)` の結果から **`enabledRootIds.has(volume.rootFolderId) && volume.isTrashed === 0`** を満たす有効巻配列 `visibleVolumes`（`VolumesRepository` 決定論ソート済み）を抽出する。
      3. `activeSeries !== null && visibleVolumes.length > 0` の場合、`ReadingProgressRepository.listByVolumeIds(new Set(visibleVolumes.map(v => v.id)))` で全所属巻の読書進捗マップを単一クエリで一括取得する。
    - **表紙 WebP 自動抽出とのリアルタイム連携（`initialSnapshot === undefined` 時）**:
-     - `CoverExtractionScheduler.subscribeVolumeUpdated` を購読し、`event.seriesId === seriesId` の表紙更新イベントを受信した際は IndexedDB 全件再クエリを行わず、保持中の `viewModel` 内の該当 `volumeId`（`representativeVolume` および `volumes` 配列内要素）の `coverBlob` / `coverStatus` / `coverUpdatedAt` のみをインプレースで差分更新する（他巻の `Blob` 参照同一性とスクロール位置を保護）。
-     - `IntersectionObserver`（`rootMargin: "200px 0px"`、未定義環境は安全 no-op）により、可視領域内の `coverStatus === "pending"` 巻（サマリ代表巻および収録巻行の `data-cover-volume-id`）を `CoverExtractionScheduler.setViewportVolumeIds("series-detail", visibleIds)` へ登録して `viewport-high`（待機 0ms）へ昇格させる（アンマウント時は空 `Set` でクリア）。
+     - `CoverExtractionScheduler.subscribeVolumeUpdated` を購読し、`event.seriesId === seriesId` の表紙更新イベント（`coverStatus: "pending" | "ready" | "error"`）を受信した際は IndexedDB 全件再クエリを行わず、保持中の `viewModel` 内の該当 `volumeId`（`representativeVolume` および `volumes` 配列内要素）の `coverBlob` / `coverStatus` / `coverUpdatedAt` のみをインプレースで差分更新する（他巻の `Blob` 参照同一性とスクロール位置を保護）。
+     - `useViewportVolumeObserver`（`IntersectionObserver` `rootMargin: "200px 0px"`、未定義環境は安全 no-op、描画中 `pending` 巻集合の変化に追従して再走査・非 `pending` 化 ID を即時除外）により、可視領域内の `coverStatus === "pending"` 巻（サマリ代表巻および収録巻行の `data-cover-volume-id`）を `CoverExtractionScheduler.setViewportVolumeIds("series-detail", visibleIds)` へ登録して `viewport-high`（待機 0ms）へ昇格させる（アンマウント時は空 `Set` でクリア）。
    - IndexedDB 読み取りで例外が発生した場合は `diagnosticLogger.warn("series-detail", ...)` へ記録し、`isSettled = true` として安全な案内状態へフォールバックする。
 4. **作品サマリカード（`SeriesSummaryCard`：`isSettled && activeSeries !== null && visibleVolumes.length > 0` 時）**:
    - **代表表紙サムネイル（`CoverThumbnail`）**:
@@ -94,7 +94,7 @@ related_tests:
        2. `"reading"` が無く未読了（`"unread"` または進捗未保存）の巻がある場合：`visibleVolumes` 順で最初の未読了巻を選び、既読了巻が 0 冊なら **`「読み始める（${volumeLabel}）」`**、1 冊以上あれば **`「次を読む（${volumeLabel}）」`** とする。
        3. 全有効巻が `"completed"` の場合：`visibleVolumes[0]`（先頭巻）を選び、ラベルは **`「最初から読む（${volumeLabel}）」`** とする。
 5. **シリーズ内表紙エラー再試行バー ＆ 所属有効巻一覧セクション（`SeriesVolumeListSection`：`data-testid="series-volume-list"`）**:
-   - **シリーズ内表紙エラー再試行案内**: 所属有効巻（`visibleVolumes`）のうち `coverStatus === "error"` の巻が 1 冊以上存在する場合、コンパクトな案内バー（`data-testid="series-cover-error-banner"`：`${errorCount} 冊の表紙取得に失敗しました`）と当該シリーズ限定の **「表紙を再試行」ボタン**（`data-testid="series-retry-failed-covers-button"`：押下時に該当巻を `pending` 表示へ戻しつつ `coverExtractionScheduler.retryFailedCovers({ seriesId })` を実行）を表示する（0 件時は非表示）。
+   - **シリーズ内表紙エラー再試行案内**: 所属有効巻（`visibleVolumes`）のうち `coverStatus === "error"` の巻が 1 冊以上存在する場合、コンパクトな案内バー（`data-testid="series-cover-error-banner"`：`${errorCount} 冊の表紙取得に失敗しました`）と当該シリーズ限定の **「表紙を再試行」ボタン**（`data-testid="series-retry-failed-covers-button"`：Google 連携済み［`isGoogleConnected === true`］かつ Drive 非同期実行中［`syncPhase !== "syncing"`］のとき活性、未連携時または Drive 同期実行中は `disabled`；押下時に `coverExtractionScheduler.retryFailedCovers({ seriesId })` を実行し配信される `"pending"` イベントで表示・監視状態を即時更新）を表示する（0 件時は非表示）。
    - `visibleVolumes`（単巻・小数巻・上下巻・合本・単発本が `VolumesRepository` の決定論昇順［`volumeNumber` 昇順 → 同一 `volumeNumber` 時は単巻優先 → `volumeLabel` 昇順 → `rawFileName` 昇順 → `id` 昇順］で並んだ配列）を一覧表示する。
    - 各巻行（`data-testid="series-volume-item"`, `data-volume-id={volume.id}`, `pending` 時は `data-cover-volume-id={volume.id}` も付与）は全体をタップ可能なボタン（`data-testid="open-volume-reader-button"`）とし、以下を表示する：
      - 巻別の表紙サムネイルまたはプレースホルダ（`CoverThumbnail`）
@@ -132,7 +132,7 @@ related_tests:
 | `CoverThumbnail`          | `src/shared/ui/CoverThumbnail.tsx`                       | `SCR-01` / `SCR-02` 共用の表紙 `Blob` `ObjectURL` 表示（厳格 `revokeObjectURL`）・`error` バッジ・タイポグラフィプレースホルダコンポーネント     |
 
 - **親子分離 UT**: 親 `SeriesDetailPage` の単体テストでは直下の子コンポーネント（`SeriesDetailHeader`, `SeriesSummaryCard`, `SeriesVolumeListSection`, `SeriesDetailEmptyState`）をすべて `vi.spyOn(...).mockImplementation(() => null)` で完全分離する。同様に `SeriesSummaryCard` / `SeriesVolumeListSection` の単体テストでは `CoverThumbnail` を `vi.spyOn` で分離し、`ObjectURL` ライフサイクル自体は `CoverThumbnail.test.tsx` で 100% 単体検証する。
-- **Storybook / VRT 決定論性保証**: `SeriesDetailPageProps` にオプショナルな `initialSnapshot?: SeriesDetailPageInitialSnapshot`（`loading` / `ready`［`series` + 進捗・`coverStatus` 付き巻配列］/ `empty` を同期注入し初期非同期 IndexedDB フェッチおよび表紙スケジューラ購読をスキップする Prop）を設け、1280px / 375px VRT を 100% 決定論的に描画する。
+- **Storybook / VRT 決定論性保証**: `SeriesDetailPageProps` にオプショナルな `initialSnapshot?: SeriesDetailPageInitialSnapshot`（`loading` / `ready`［`series` + 進捗・`coverStatus` 付き巻配列 + オプショナルな再試行活性制御用 `isGoogleConnected` / `isSyncing`（省略時は `true` / `false` 既定）］/ `empty` を同期注入し初期非同期 IndexedDB フェッチ・認証確認・表紙スケジューラ購読をスキップする Prop）を設け、1280px / 375px VRT を 100% 決定論的に描画する。
 
 ---
 
