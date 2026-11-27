@@ -228,15 +228,26 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
     );
   }
 
+  private abortThrottleSleep(): void {
+    if (this.throttleAbortController !== null) {
+      this.throttleAbortController.abort();
+      this.throttleAbortController = null;
+    }
+  }
+
   private abortActiveOperation(): void {
     if (this.activeAbortController !== null) {
       this.activeAbortController.abort();
       this.activeAbortController = null;
     }
-    if (this.throttleAbortController !== null) {
-      this.throttleAbortController.abort();
-      this.throttleAbortController = null;
-    }
+    this.abortThrottleSleep();
+  }
+
+  private shouldIncrementCompletedCount(
+    wasPending: boolean,
+    rootFolderId: string,
+  ): boolean {
+    return this.enabledRootIds.has(rootFolderId) && wasPending;
   }
 
   private computePhase(): CoverExtractionPhase {
@@ -381,17 +392,17 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
     }
   }
 
-  private takeNextVolumeId(): string {
+  private takeNextVolumeId(): string | undefined {
     return (
       this.viewportHighQueue.shift() ??
       this.backgroundRepQueue.shift() ??
-      this.backgroundOtherQueue.shift()!
+      this.backgroundOtherQueue.shift()
     );
   }
 
   private async runLoop(epoch: number): Promise<void> {
-    while (this.isEpochActive(epoch) && this.hasQueuedWork()) {
-      if (this.viewportHighQueue.length === 0) {
+    while (this.isEpochActive(epoch)) {
+      if (this.viewportHighQueue.length === 0 && this.hasQueuedWork()) {
         const waitMs =
           this.lastNetworkCompletedAt === null
             ? 0
@@ -406,7 +417,7 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
           if (this.throttleAbortController === throttleCtrl) {
             this.throttleAbortController = null;
           }
-          if (!this.isEpochActive(epoch)) {
+          if (!this.isEpochActive(epoch) || !this.hasQueuedWork()) {
             break;
           }
           if (this.viewportHighQueue.length > 0) {
@@ -416,6 +427,9 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
       }
 
       const nextVolumeId = this.takeNextVolumeId();
+      if (nextVolumeId === undefined) {
+        break;
+      }
       this.activeVolumeId = nextVolumeId;
       this.phase = "running";
       this.emitProgress();
@@ -596,12 +610,19 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
         expectedFileSize: latest.fileSize,
         coverBlob: encoded.blob,
       });
+      if (this.disposed) {
+        return null;
+      }
       this.rateLimitAttempts.delete(volumeId);
-      this.pendingVolumesById.delete(volumeId);
+      const wasPending = this.pendingVolumesById.delete(volumeId);
       this.pendingCount = this.pendingVolumesById.size;
 
       if (saved !== null) {
-        this.readyCount += 1;
+        if (
+          this.shouldIncrementCompletedCount(wasPending, saved.rootFolderId)
+        ) {
+          this.readyCount += 1;
+        }
         this.emitVolumeUpdated({
           volumeId: saved.id,
           seriesId: saved.seriesId,
@@ -646,8 +667,6 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
         formatErrorDetail(error),
       );
       this.rateLimitAttempts.delete(volumeId);
-      this.pendingVolumesById.delete(volumeId);
-      this.pendingCount = this.pendingVolumesById.size;
 
       if (latest !== null) {
         const saved = await this.deps.volumesRepo.saveCoverError({
@@ -655,8 +674,17 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
           expectedMd5Checksum: latest.md5Checksum,
           expectedFileSize: latest.fileSize,
         });
+        if (this.disposed) {
+          return null;
+        }
+        const wasPending = this.pendingVolumesById.delete(volumeId);
+        this.pendingCount = this.pendingVolumesById.size;
         if (saved !== null) {
-          this.errorCount += 1;
+          if (
+            this.shouldIncrementCompletedCount(wasPending, saved.rootFolderId)
+          ) {
+            this.errorCount += 1;
+          }
           this.emitVolumeUpdated({
             volumeId: saved.id,
             seriesId: saved.seriesId,
@@ -665,6 +693,9 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
             coverUpdatedAt: saved.coverUpdatedAt,
           });
         }
+      } else {
+        this.pendingVolumesById.delete(volumeId);
+        this.pendingCount = this.pendingVolumesById.size;
       }
       this.emitProgress();
       return null;
@@ -729,6 +760,9 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
     this.errorCount = error;
 
     this.rebuildQueuesFromOrders();
+    if (!this.hasQueuedWork()) {
+      this.abortThrottleSleep();
+    }
     this.emitProgress();
     this.ensureLoopRunning();
   }
@@ -767,12 +801,8 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
     this.viewportByScreen.set(screen, new Set(volumeIds));
     this.rebuildQueuesFromOrders();
 
-    if (
-      this.viewportHighQueue.length > 0 &&
-      this.throttleAbortController !== null
-    ) {
-      this.throttleAbortController.abort();
-      this.throttleAbortController = null;
+    if (this.viewportHighQueue.length > 0) {
+      this.abortThrottleSleep();
     }
   }
 
