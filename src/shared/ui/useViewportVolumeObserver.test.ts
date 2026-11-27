@@ -307,4 +307,106 @@ describe("useViewportVolumeObserver", () => {
       new Set(),
     );
   });
+
+  it("同一 data-cover-volume-id を持つ複数要素のうち片側が画面外になっても他方が可視なら維持し、全要素が画面外になった時点で除外すること (AC-COV-03)", () => {
+    const observers = installMockIntersectionObserver();
+    const setViewportVolumeIds = vi.fn();
+    const scheduler = { setViewportVolumeIds };
+
+    const { getByTestId, rerender } = render(
+      createElement(ObserverHarness, {
+        screenKey: "series-detail",
+        scheduler,
+        pendingVolumeIds: ["vol-1", "vol-2"],
+        renderedItems: [
+          { key: "summary-vol-1", coverVolumeId: "vol-1" },
+          { key: "row-vol-1", coverVolumeId: "vol-1" },
+          { key: "row-vol-2", coverVolumeId: "vol-2" },
+        ],
+      }),
+    );
+
+    const observer = observers[0]!;
+    const summaryEl = getByTestId("item-summary-vol-1");
+    const rowEl = getByTestId("item-row-vol-1");
+    const row2El = getByTestId("item-row-vol-2");
+
+    expect(observer.observed.has(summaryEl)).toBe(true);
+    expect(observer.observed.has(rowEl)).toBe(true);
+
+    // 初期バッチで [el1: true, el2: false] が同時に届いても "vol-1" が可視として通知されること
+    observer.trigger([
+      { target: summaryEl, isIntersecting: true },
+      { target: rowEl, isIntersecting: false },
+    ]);
+    expect(setViewportVolumeIds).toHaveBeenCalledTimes(1);
+    expect(setViewportVolumeIds).toHaveBeenLastCalledWith(
+      "series-detail",
+      new Set(["vol-1"]),
+    );
+
+    // もう一方の要素も可視になった場合は重複通知しないこと
+    observer.trigger([{ target: rowEl, isIntersecting: true }]);
+    expect(setViewportVolumeIds).toHaveBeenCalledTimes(1);
+
+    // 片側が画面外に出ても他方が可視である限り "vol-1" が維持されること
+    observer.trigger([{ target: summaryEl, isIntersecting: false }]);
+    expect(setViewportVolumeIds).toHaveBeenCalledTimes(1);
+
+    // 両方が画面外になった時点で "vol-1" が除外されること
+    observer.trigger([{ target: rowEl, isIntersecting: false }]);
+    expect(setViewportVolumeIds).toHaveBeenCalledTimes(2);
+    expect(setViewportVolumeIds).toHaveBeenLastCalledWith(
+      "series-detail",
+      new Set(),
+    );
+
+    // 同サイズの別集合へ 1 バッチで入れ替わった場合も差分通知されること
+    observer.trigger([{ target: summaryEl, isIntersecting: true }]);
+    expect(setViewportVolumeIds).toHaveBeenCalledTimes(3);
+    expect(setViewportVolumeIds).toHaveBeenLastCalledWith(
+      "series-detail",
+      new Set(["vol-1"]),
+    );
+    observer.trigger([
+      { target: summaryEl, isIntersecting: false },
+      { target: row2El, isIntersecting: true },
+    ]);
+    expect(setViewportVolumeIds).toHaveBeenCalledTimes(4);
+    expect(setViewportVolumeIds).toHaveBeenLastCalledWith(
+      "series-detail",
+      new Set(["vol-2"]),
+    );
+
+    // 両要素が可視の状態で再走査により片側要素だけ除去されても他方要素で "vol-1" を維持すること
+    observer.trigger([
+      { target: summaryEl, isIntersecting: true },
+      { target: rowEl, isIntersecting: true },
+      { target: row2El, isIntersecting: false },
+    ]);
+    expect(setViewportVolumeIds).toHaveBeenCalledTimes(5);
+    expect(setViewportVolumeIds).toHaveBeenLastCalledWith(
+      "series-detail",
+      new Set(["vol-1"]),
+    );
+
+    rerender(
+      createElement(ObserverHarness, {
+        screenKey: "series-detail",
+        scheduler,
+        pendingVolumeIds: ["vol-1"],
+        renderedItems: [{ key: "row-vol-1", coverVolumeId: "vol-1" }],
+      }),
+    );
+    expect(observer.unobserveSpy).toHaveBeenCalledWith(summaryEl);
+    expect(setViewportVolumeIds).toHaveBeenCalledTimes(5);
+
+    // 残存要素も画面外になれば除外されること
+    observer.trigger([{ target: rowEl, isIntersecting: false }]);
+    expect(setViewportVolumeIds).toHaveBeenCalledTimes(6);
+    expect(setViewportVolumeIds).toHaveBeenLastCalledWith(
+      "series-detail",
+      new Set(),
+    );
+  });
 });
