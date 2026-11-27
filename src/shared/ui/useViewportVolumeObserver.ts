@@ -39,10 +39,11 @@ export function useViewportVolumeObserver({
       return;
     }
 
+    const visibleIds = visibleIdsRef.current;
+
     const observer = new IntersectionObserver(
       (entries) => {
         let changed = false;
-        const visibleIds = visibleIdsRef.current;
         for (const entry of entries) {
           const volumeId = entry.target.getAttribute(COVER_VOLUME_ID_ATTRIBUTE);
           if (!volumeId) {
@@ -70,7 +71,7 @@ export function useViewportVolumeObserver({
       observer.disconnect();
       observerRef.current = null;
       observedElementsRef.current.clear();
-      visibleIdsRef.current.clear();
+      visibleIds.clear();
       scheduler.setViewportVolumeIds(screenKey, new Set());
     };
   }, [enabled, scheduler, screenKey]);
