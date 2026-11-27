@@ -21,7 +21,7 @@ docs/
 │   ├── db-schema.md                   # [App全体正本] Dexie.js（IndexedDB）主要テーブル・インデックス定義の正本
 │   ├── screen-transitions.md          # [App全体正本] 主要画面一覧（SCR-xx）と画面遷移（TR-xx）の全体マップ
 │   ├── features/                      # [App全体正本] 画面・機能別の現在仕様書（AC一覧・コンポーネント構成・テスト責務）
-│   ├── engine/                        # [App全体正本] ZIP/ZIP64パーサー・Coordinator/Decode Worker・L1/L2キャッシュ・WebGL2描画仕様書
+│   ├── engine/                        # [App全体正本] ZIP/ZIP64パーサー・Coordinator/Decode Worker・L1/L2キャッシュ・表紙WebP抽出・WebGL2描画仕様書
 │   ├── providers/                     # [App全体正本] Google Drive同期・ファイル名パーサー・公開書誌API（NDL/GoogleBooks/楽天/AniList）仕様書
 │   └── changes/                       # [差分仕様 (Delta Specs)] 要望（親Issue）ごとの設計差分・テスト計画・Sub-issue分割
 │       └── archive/                   # 完了済みの差分仕様アーカイブ（親Issueクローズ時に git mv で移動）
