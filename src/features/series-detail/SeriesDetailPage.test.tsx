@@ -13,6 +13,7 @@ import {
   ServiceContext,
   type ServiceContextValue,
 } from "../../app/serviceContext";
+import { NoopCoverExtractionScheduler } from "../../engine/cover/CoverExtractionSchedulerCore";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
 import {
   RouterContext,
@@ -141,6 +142,7 @@ function createMockServices(
       delete: vi.fn().mockResolvedValue(undefined),
       clearLocal: vi.fn().mockResolvedValue(undefined),
     },
+    coverExtractionScheduler: new NoopCoverExtractionScheduler(),
     ...overrides,
   } as unknown as ServiceContextValue;
 }

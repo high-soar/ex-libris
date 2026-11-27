@@ -53,6 +53,8 @@ import {
   createCoordinatorSession as defaultCreateCoordinatorSession,
   type CoordinatorSessionHandle,
 } from "./coordinatorClient";
+import { NoopCoverExtractionScheduler } from "../engine/cover/CoverExtractionSchedulerCore";
+import type { CoverExtractionScheduler } from "../engine/cover/types";
 import { ServiceContext, type ServiceContextValue } from "./serviceContext";
 
 export interface ServiceProviderProps {
@@ -70,6 +72,7 @@ export interface ServiceProviderProps {
   readonly driveSyncMetaRepo?: DriveSyncMetaRepository;
   readonly driveSyncClient?: DriveSyncClient;
   readonly driveSyncEngine?: DriveSyncEngine;
+  readonly coverExtractionScheduler?: CoverExtractionScheduler;
 }
 
 export interface ResetTestDbExposureOptions {
@@ -306,6 +309,7 @@ export function ServiceProvider({
   driveSyncMetaRepo,
   driveSyncClient,
   driveSyncEngine,
+  coverExtractionScheduler,
 }: ServiceProviderProps) {
   const resolvedAppBridge = useStableService(appBridge, createDefaultAppBridge);
   const resolvedZipIndexCacheRepo = useStableService(
@@ -405,6 +409,11 @@ export function ServiceProvider({
     createDefaultSyncEngine,
   );
 
+  const resolvedCoverExtractionScheduler = useStableService(
+    coverExtractionScheduler,
+    () => new NoopCoverExtractionScheduler(),
+  );
+
   const resolvedCreateCoordinatorSession = useMemo(
     () =>
       createCoordinatorSession ??
@@ -468,6 +477,7 @@ export function ServiceProvider({
       driveSyncMetaRepo: resolvedDriveSyncMetaRepo,
       driveSyncClient: resolvedDriveSyncClient,
       driveSyncEngine: resolvedDriveSyncEngine,
+      coverExtractionScheduler: resolvedCoverExtractionScheduler,
     }),
     [
       resolvedAppBridge,
@@ -483,6 +493,7 @@ export function ServiceProvider({
       resolvedDriveSyncMetaRepo,
       resolvedDriveSyncClient,
       resolvedDriveSyncEngine,
+      resolvedCoverExtractionScheduler,
     ],
   );
 

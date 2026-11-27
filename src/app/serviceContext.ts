@@ -6,6 +6,7 @@ import type {
   DriveSyncClient,
   DriveSyncEngine,
 } from "../providers/gdrive/types";
+import type { CoverExtractionScheduler } from "../engine/cover/types";
 import type { DriveSyncMetaRepository } from "../storage/repositories/driveSyncMetaRepository";
 import type { DriveSyncRootsRepository } from "../storage/repositories/driveSyncRootsRepository";
 import type { ReaderSettingsRepository } from "../storage/repositories/readerSettingsRepository";
@@ -29,6 +30,7 @@ export interface ServiceContextValue {
   readonly driveSyncMetaRepo: DriveSyncMetaRepository;
   readonly driveSyncClient: DriveSyncClient;
   readonly driveSyncEngine: DriveSyncEngine;
+  readonly coverExtractionScheduler: CoverExtractionScheduler;
 }
 
 export const ServiceContext = createContext<ServiceContextValue | null>(null);

@@ -2,6 +2,7 @@
 
 import type { AppBridge } from "./bridges/app/types";
 import type { MockGoogleAuthAdapter } from "./bridges/oauth/mockGoogleAuthAdapter";
+import type { CoverExtractionScheduler } from "./engine/cover/types";
 import type { MockDriveFolderClient } from "./providers/gdrive/mockDriveFolderClient";
 import type { MockDriveSyncClient } from "./providers/gdrive/mockDriveSyncClient";
 import type { DriveSyncEngine } from "./providers/gdrive/types";
@@ -28,6 +29,10 @@ export interface ExLibrisServicesState {
   readonly driveSyncMetaRepo?: DriveSyncMetaRepository;
   /** 非ネイティブかつ DEV / test / WebDriver 環境でのみ公開される Drive 同期モッククライアント */
   readonly mockDriveSyncClient?: MockDriveSyncClient;
+  /** 非ネイティブかつ DEV / test / WebDriver 環境でのみ公開される表紙抽出スケジューラ */
+  readonly coverExtractionScheduler?: CoverExtractionScheduler;
+  /** 非ネイティブかつ DEV / test / WebDriver 環境でのみ公開される表紙抽出自動実行トグル */
+  readonly setTestCoverExtractionAutoRun?: (enabled: boolean) => void;
 }
 
 declare global {
