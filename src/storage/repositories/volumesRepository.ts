@@ -456,24 +456,123 @@ export class DexieVolumesRepository implements VolumesRepository {
     });
   }
 
-  async saveCoverReady(
-    _input: SaveCoverReadyInput,
+  private updateCoverWithGuard(
+    volumeId: string,
+    expectedMd5Checksum: string | null,
+    expectedFileSize: number,
+    coverStatus: "ready" | "error",
+    coverBlob: Blob | null,
+    coverUpdatedAt?: number,
   ): Promise<VolumeRecord | null> {
-    void _input;
-    return null;
+    return this.enqueue(async () => {
+      const normalizedId = volumeId.trim();
+      if (normalizedId.length === 0) {
+        return null;
+      }
+      const normalizedExpectedMd5 =
+        normalizeNullableString(expectedMd5Checksum);
+
+      return this.database.transaction(
+        "rw",
+        this.database.volumes,
+        async () => {
+          const existing = await this.database.volumes.get(normalizedId);
+          if (!existing) {
+            return null;
+          }
+          if (!isValidVolumeRecord(existing)) {
+            await this.database.volumes.delete(normalizedId);
+            return null;
+          }
+          if (
+            existing.isTrashed !== 0 ||
+            existing.md5Checksum !== normalizedExpectedMd5 ||
+            existing.fileSize !== expectedFileSize
+          ) {
+            return null;
+          }
+
+          const updated: VolumeRecord = {
+            ...existing,
+            coverBlob,
+            coverStatus,
+            coverUpdatedAt: coverUpdatedAt ?? this.now(),
+          };
+          await this.database.volumes.put(updated);
+          return updated;
+        },
+      );
+    });
   }
 
-  async saveCoverError(
-    _input: SaveCoverErrorInput,
-  ): Promise<VolumeRecord | null> {
-    void _input;
-    return null;
+  saveCoverReady(input: SaveCoverReadyInput): Promise<VolumeRecord | null> {
+    return this.updateCoverWithGuard(
+      input.volumeId,
+      input.expectedMd5Checksum,
+      input.expectedFileSize,
+      "ready",
+      input.coverBlob,
+      input.coverUpdatedAt,
+    );
   }
 
-  async resetErrorCoversToPending(
-    _input: ResetErrorCoversToPendingInput,
+  saveCoverError(input: SaveCoverErrorInput): Promise<VolumeRecord | null> {
+    return this.updateCoverWithGuard(
+      input.volumeId,
+      input.expectedMd5Checksum,
+      input.expectedFileSize,
+      "error",
+      null,
+      input.coverUpdatedAt,
+    );
+  }
+
+  resetErrorCoversToPending(
+    input: ResetErrorCoversToPendingInput,
   ): Promise<readonly VolumeRecord[]> {
-    void _input;
-    return [];
+    return this.enqueue(async () => {
+      if (input.enabledRootIds.size === 0) {
+        return [];
+      }
+      let normalizedSeriesId: string | null = null;
+      if (input.seriesId !== undefined) {
+        normalizedSeriesId = input.seriesId.trim();
+        if (normalizedSeriesId.length === 0) {
+          return [];
+        }
+      }
+
+      return this.database.transaction(
+        "rw",
+        this.database.volumes,
+        async () => {
+          const records = await this.database.volumes.toArray();
+          const valid = await this.filterAndPurgeCorrupt(records);
+          const targets = valid
+            .filter(
+              (record) =>
+                record.isTrashed === 0 &&
+                input.enabledRootIds.has(record.rootFolderId) &&
+                record.coverStatus === "error" &&
+                (normalizedSeriesId === null ||
+                  record.seriesId === normalizedSeriesId),
+            )
+            .sort(compareVolumesForDisplay);
+
+          if (targets.length === 0) {
+            return [];
+          }
+
+          const updated: VolumeRecord[] = targets.map((record) => ({
+            ...record,
+            coverBlob: null,
+            coverStatus: "pending",
+            coverUpdatedAt: null,
+          }));
+          await this.database.volumes.bulkPut(updated);
+          return updated;
+        },
+      );
+    });
   }
 }
