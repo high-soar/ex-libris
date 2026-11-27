@@ -1,12 +1,31 @@
 import { Capacitor } from "@capacitor/core";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { CapacitorAppBridge } from "../bridges/app/capacitorAppBridge";
 import { MockAppBridge } from "../bridges/app/mockAppBridge";
 import type { AppBridge } from "../bridges/app/types";
 import { CapacitorGoogleAuthAdapter } from "../bridges/oauth/capacitorGoogleAuthAdapter";
 import { GoogleAuthTokenManager } from "../bridges/oauth/googleAuthTokenManager";
 import { MockGoogleAuthAdapter } from "../bridges/oauth/mockGoogleAuthAdapter";
-import type { GoogleAuthBridge } from "../bridges/oauth/types";
+import type {
+  GoogleAuthBridge,
+  GoogleAuthSession,
+} from "../bridges/oauth/types";
+import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
+import {
+  CoverExtractionSchedulerCore,
+  NoopCoverExtractionScheduler,
+} from "../engine/cover/CoverExtractionSchedulerCore";
+import { MockCoverArchiveRangeReader } from "../engine/cover/MockCoverArchiveRangeReader";
+import type { CoverExtractionScheduler } from "../engine/cover/types";
+import { GoogleDriveRangeReader } from "../engine/io/GoogleDriveRangeReader";
+import { resetBookshelfUiState } from "../features/bookshelf/bookshelfUiStateStore";
 import { DefaultDriveSyncEngine } from "../providers/gdrive/driveSyncEngine";
 import { GoogleDriveFolderClient } from "../providers/gdrive/googleDriveFolderClient";
 import { GoogleDriveSyncClient } from "../providers/gdrive/googleDriveSyncClient";
@@ -17,8 +36,14 @@ import type {
   DriveSyncClient,
   DriveSyncEngine,
 } from "../providers/gdrive/types";
-import { resetBookshelfUiState } from "../features/bookshelf/bookshelfUiStateStore";
-import { resetDriveSyncState } from "../shared/sync/driveSyncStateStore";
+import {
+  resetCoverExtractionState,
+  useCoverExtractionStateStore,
+} from "../shared/sync/coverExtractionStateStore";
+import {
+  resetDriveSyncState,
+  useDriveSyncStateStore,
+} from "../shared/sync/driveSyncStateStore";
 import { db, resetTestDb } from "../storage/db";
 import {
   DexieDriveSyncMetaRepository,
@@ -53,8 +78,7 @@ import {
   createCoordinatorSession as defaultCreateCoordinatorSession,
   type CoordinatorSessionHandle,
 } from "./coordinatorClient";
-import { NoopCoverExtractionScheduler } from "../engine/cover/CoverExtractionSchedulerCore";
-import type { CoverExtractionScheduler } from "../engine/cover/types";
+import { createCoverWorkerClient } from "./coverWorkerClient";
 import { ServiceContext, type ServiceContextValue } from "./serviceContext";
 
 export interface ServiceProviderProps {
@@ -96,9 +120,12 @@ interface GlobalServicesBuildParams {
   readonly volumesRepo: VolumesRepository;
   readonly driveSyncMetaRepo: DriveSyncMetaRepository;
   readonly mockDriveSyncClient?: MockDriveSyncClient;
+  readonly coverExtractionScheduler: CoverExtractionScheduler;
 }
 
 const TEST_MOCK_AUTH_STORAGE_KEY = "exLibris:test:mockGoogleAuthSession";
+const TEST_COVER_EXTRACTION_AUTO_RUN_KEY =
+  "exLibris:test:coverExtractionAutoRun";
 
 interface PersistedMockGoogleAuthSession {
   readonly email: string;
@@ -166,6 +193,28 @@ function writePersistedMockAuthSession(
   }
 }
 
+function readTestCoverExtractionAutoRun(): boolean {
+  try {
+    return (
+      window.sessionStorage.getItem(TEST_COVER_EXTRACTION_AUTO_RUN_KEY) === "1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function writeTestCoverExtractionAutoRun(enabled: boolean): void {
+  try {
+    if (enabled) {
+      window.sessionStorage.setItem(TEST_COVER_EXTRACTION_AUTO_RUN_KEY, "1");
+      return;
+    }
+    window.sessionStorage.removeItem(TEST_COVER_EXTRACTION_AUTO_RUN_KEY);
+  } catch {
+    // ストレージアクセスが制限された環境では永続化をスキップする
+  }
+}
+
 function buildGlobalServicesState(
   params: GlobalServicesBuildParams,
 ): ExLibrisServicesState {
@@ -181,6 +230,12 @@ function buildGlobalServicesState(
     appBridge: params.appBridge,
     resetTestDb: async () => {
       writePersistedMockAuthSession(null);
+      writeTestCoverExtractionAutoRun(false);
+      await params.coverExtractionScheduler.resetForTest();
+      if (isWebDriverEnvironment()) {
+        params.coverExtractionScheduler.pause("test-harness");
+      }
+      resetCoverExtractionState();
       resetBookshelfUiState();
       resetDriveSyncState();
       params.mockGoogleAuthAdapter?.reset();
@@ -201,6 +256,16 @@ function buildGlobalServicesState(
     ...(params.mockDriveSyncClient !== undefined
       ? { mockDriveSyncClient: params.mockDriveSyncClient }
       : {}),
+    coverExtractionScheduler: params.coverExtractionScheduler,
+    setTestCoverExtractionAutoRun: (enabled: boolean) => {
+      writeTestCoverExtractionAutoRun(enabled);
+      if (enabled) {
+        params.coverExtractionScheduler.resume("test-harness");
+        void params.coverExtractionScheduler.syncQueue();
+      } else {
+        params.coverExtractionScheduler.pause("test-harness");
+      }
+    },
   };
 }
 
@@ -276,6 +341,49 @@ function createDefaultDriveSyncClient(
   return Capacitor.isNativePlatform()
     ? new GoogleDriveSyncClient({ authBridge })
     : new MockDriveSyncClient();
+}
+
+function createDefaultCoverExtractionScheduler(params: {
+  readonly driveSyncRootsRepo: DriveSyncRootsRepository;
+  readonly seriesRepo: SeriesRepository;
+  readonly volumesRepo: VolumesRepository;
+  readonly zipIndexCacheRepo: ZipIndexCacheRepository;
+  readonly googleAuthBridge: GoogleAuthBridge;
+}): CoverExtractionScheduler {
+  if (typeof Worker === "undefined") {
+    return new NoopCoverExtractionScheduler();
+  }
+
+  const isNative = Capacitor.isNativePlatform();
+  const isWebDriver = isWebDriverEnvironment();
+  const useRealDriveReader = isNative || isWebDriver;
+
+  const scheduler = new CoverExtractionSchedulerCore({
+    driveSyncRootsRepo: params.driveSyncRootsRepo,
+    seriesRepo: params.seriesRepo,
+    volumesRepo: params.volumesRepo,
+    zipIndexCacheRepo: params.zipIndexCacheRepo,
+    googleAuthBridge: params.googleAuthBridge,
+    createRangeReader: (volume) =>
+      useRealDriveReader
+        ? new GoogleDriveRangeReader({
+            driveFileId: volume.driveFileId,
+            totalSize: volume.fileSize,
+            getAccessToken: (options) =>
+              params.googleAuthBridge.getValidAccessToken(options),
+            onDiagnostic: (level, message, detail) => {
+              diagnosticLogger.log(level, "cover", message, detail);
+            },
+          })
+        : new MockCoverArchiveRangeReader(volume.id),
+    createWorkerClient: () => createCoverWorkerClient(),
+  });
+
+  if (!isNative && isWebDriver && !readTestCoverExtractionAutoRun()) {
+    scheduler.pause("test-harness");
+  }
+
+  return scheduler;
 }
 
 function useStableService<T>(
@@ -409,10 +517,59 @@ export function ServiceProvider({
     createDefaultSyncEngine,
   );
 
-  const resolvedCoverExtractionScheduler = useStableService(
-    coverExtractionScheduler,
-    () => new NoopCoverExtractionScheduler(),
+  const createDefaultCoverScheduler = useCallback(
+    () =>
+      createDefaultCoverExtractionScheduler({
+        driveSyncRootsRepo: resolvedDriveSyncRootsRepo,
+        seriesRepo: resolvedSeriesRepo,
+        volumesRepo: resolvedVolumesRepo,
+        zipIndexCacheRepo: resolvedZipIndexCacheRepo,
+        googleAuthBridge: resolvedGoogleAuthBridge,
+      }),
+    [
+      resolvedDriveSyncRootsRepo,
+      resolvedSeriesRepo,
+      resolvedVolumesRepo,
+      resolvedZipIndexCacheRepo,
+      resolvedGoogleAuthBridge,
+    ],
   );
+
+  const defaultCoverSchedulerRef = useRef<CoverExtractionScheduler | null>(
+    null,
+  );
+  const [defaultCoverSchedulerVersion, setDefaultCoverSchedulerVersion] =
+    useState(0);
+
+  const resolvedCoverExtractionScheduler =
+    useMemo<CoverExtractionScheduler>(() => {
+      void defaultCoverSchedulerVersion;
+      if (coverExtractionScheduler) {
+        return coverExtractionScheduler;
+      }
+      if (!defaultCoverSchedulerRef.current) {
+        defaultCoverSchedulerRef.current = createDefaultCoverScheduler();
+      }
+      return defaultCoverSchedulerRef.current;
+    }, [
+      coverExtractionScheduler,
+      createDefaultCoverScheduler,
+      defaultCoverSchedulerVersion,
+    ]);
+
+  useEffect(() => {
+    if (coverExtractionScheduler !== undefined) {
+      return undefined;
+    }
+    if (defaultCoverSchedulerRef.current === null) {
+      defaultCoverSchedulerRef.current = createDefaultCoverScheduler();
+      setDefaultCoverSchedulerVersion((version) => version + 1);
+    }
+    return () => {
+      defaultCoverSchedulerRef.current?.dispose();
+      defaultCoverSchedulerRef.current = null;
+    };
+  }, [coverExtractionScheduler, createDefaultCoverScheduler]);
 
   const resolvedCreateCoordinatorSession = useMemo(
     () =>
@@ -425,6 +582,73 @@ export function ServiceProvider({
   );
 
   useEffect(() => {
+    const applySnapshot = useCoverExtractionStateStore.getState().applySnapshot;
+    applySnapshot(resolvedCoverExtractionScheduler.getSnapshot());
+    return resolvedCoverExtractionScheduler.subscribeProgress(applySnapshot);
+  }, [resolvedCoverExtractionScheduler]);
+
+  useEffect(() => {
+    let active = true;
+    const applyAuthSession = (session: GoogleAuthSession | null): void => {
+      if (session === null) {
+        resolvedCoverExtractionScheduler.pause("unauthenticated");
+        return;
+      }
+      resolvedCoverExtractionScheduler.resume("unauthenticated");
+      void resolvedCoverExtractionScheduler.syncQueue();
+    };
+
+    const cached = resolvedGoogleAuthBridge.getCachedSession();
+    if (cached !== null) {
+      applyAuthSession(cached);
+    } else {
+      resolvedCoverExtractionScheduler.pause("unauthenticated");
+      void resolvedGoogleAuthBridge
+        .getSession()
+        .then((session) => {
+          if (!active) {
+            return;
+          }
+          applyAuthSession(session);
+        })
+        .catch(() => {
+          if (!active) {
+            return;
+          }
+          resolvedCoverExtractionScheduler.pause("unauthenticated");
+        });
+    }
+
+    const unsubscribe =
+      resolvedGoogleAuthBridge.subscribeSession(applyAuthSession);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [resolvedGoogleAuthBridge, resolvedCoverExtractionScheduler]);
+
+  useEffect(() => {
+    let prevPhase = useDriveSyncStateStore.getState().phase;
+    if (prevPhase === "syncing") {
+      resolvedCoverExtractionScheduler.pause("drive-sync");
+    }
+    return useDriveSyncStateStore.subscribe((state) => {
+      const nextPhase = state.phase;
+      if (nextPhase === prevPhase) {
+        return;
+      }
+      const wasSyncing = prevPhase === "syncing";
+      prevPhase = nextPhase;
+      if (nextPhase === "syncing") {
+        resolvedCoverExtractionScheduler.pause("drive-sync");
+      } else if (wasSyncing) {
+        resolvedCoverExtractionScheduler.resume("drive-sync");
+        void resolvedCoverExtractionScheduler.syncQueue();
+      }
+    });
+  }, [resolvedCoverExtractionScheduler]);
+
+  useEffect(() => {
     window.__exLibrisServices = buildGlobalServicesState({
       appBridge: resolvedAppBridge,
       mockGoogleAuthAdapter: resolvedMockGoogleAuthAdapter,
@@ -434,6 +658,7 @@ export function ServiceProvider({
       volumesRepo: resolvedVolumesRepo,
       driveSyncMetaRepo: resolvedDriveSyncMetaRepo,
       mockDriveSyncClient: resolvedMockDriveSyncClient,
+      coverExtractionScheduler: resolvedCoverExtractionScheduler,
     });
   }, [
     resolvedAppBridge,
@@ -444,6 +669,7 @@ export function ServiceProvider({
     resolvedVolumesRepo,
     resolvedDriveSyncMetaRepo,
     resolvedMockDriveSyncClient,
+    resolvedCoverExtractionScheduler,
   ]);
 
   useEffect(() => {

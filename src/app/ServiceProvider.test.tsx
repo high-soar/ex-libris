@@ -1373,6 +1373,7 @@ describe("ServiceProvider", () => {
     expect(authListener).toBeNull();
 
     // 4. getSession() が null 解決・失敗・アンマウント後解決のケース
+    resetDriveSyncState();
     const scheduler2: CoverExtractionScheduler = {
       ...scheduler,
       pause: vi.fn(),
@@ -1396,8 +1397,10 @@ describe("ServiceProvider", () => {
       </ServiceProvider>,
     );
     await vi.waitFor(() => {
-      expect(scheduler2.pause).toHaveBeenCalledWith("unauthenticated");
+      expect(scheduler2.pause).toHaveBeenCalledTimes(2);
     });
+    expect(scheduler2.pause).toHaveBeenNthCalledWith(1, "unauthenticated");
+    expect(scheduler2.pause).toHaveBeenNthCalledWith(2, "unauthenticated");
     expect(scheduler2.resume).not.toHaveBeenCalledWith("unauthenticated");
     unmountFail();
 
