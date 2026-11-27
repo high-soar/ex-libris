@@ -237,6 +237,9 @@ function createMockVolumesRepo(
     listByRootFolderIds: vi.fn(async () => []),
     upsertFromDriveSync: vi.fn(),
     markTrashedByDriveFileIds: vi.fn(async () => 0),
+    saveCoverReady: vi.fn(async () => null),
+    saveCoverError: vi.fn(async () => null),
+    resetErrorCoversToPending: vi.fn(async () => []),
     ...overrides,
   };
 }

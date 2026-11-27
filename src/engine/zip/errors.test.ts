@@ -19,6 +19,31 @@ describe("ZipArchiveError", () => {
 
     expect(error.code).toBe("READ_ERROR");
     expect(error.cause).toBe(rootCause);
+    expect(error.httpStatus).toBeUndefined();
+    expect(error.isRateLimited).toBeUndefined();
+    expect(error.isUnauthorized).toBeUndefined();
+  });
+
+  it("メタデータ(httpStatus/isRateLimited/isUnauthorized)が指定された場合はプロパティとして保持すること (AC-COV-06)", () => {
+    const rateLimited = new ZipArchiveError(
+      "READ_ERROR",
+      "Rate limit",
+      undefined,
+      { httpStatus: 429, isRateLimited: true },
+    );
+    expect(rateLimited.httpStatus).toBe(429);
+    expect(rateLimited.isRateLimited).toBe(true);
+    expect(rateLimited.isUnauthorized).toBeUndefined();
+
+    const unauthorized = new ZipArchiveError(
+      "READ_ERROR",
+      "Unauthorized",
+      undefined,
+      { httpStatus: 401, isUnauthorized: true },
+    );
+    expect(unauthorized.httpStatus).toBe(401);
+    expect(unauthorized.isUnauthorized).toBe(true);
+    expect(unauthorized.isRateLimited).toBeUndefined();
   });
 });
 

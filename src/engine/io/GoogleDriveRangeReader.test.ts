@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { GoogleAuthError } from "../../bridges/oauth/googleAuthErrors";
 import { ZipArchiveError } from "../zip/errors";
 import { GoogleDriveRangeReader } from "./GoogleDriveRangeReader";
 
@@ -595,5 +596,149 @@ describe("GoogleDriveRangeReader", () => {
       expect.any(String),
       expect.any(String),
     );
+  });
+
+  it("429・403 Rate Limit/権限エラー・2回目401・GoogleAuthError・その他HTTPエラーに構造化メタデータを付与すること (AC-COV-06)", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const getAccessToken = vi.fn(async () => "ya29.tok");
+    const reader = new GoogleDriveRangeReader({
+      driveFileId: "file-meta",
+      totalSize: 10,
+      getAccessToken,
+      fetchImpl,
+    });
+
+    // 1. 429 -> httpStatus: 429, isRateLimited: true
+    fetchImpl.mockResolvedValueOnce(new Response(null, { status: 429 }));
+    await expect(reader.readRange(0, 2)).rejects.toMatchObject({
+      code: "READ_ERROR",
+      httpStatus: 429,
+      isRateLimited: true,
+    });
+
+    // 2. 403 Rate Limit reason 4種 -> httpStatus: 403, isRateLimited: true
+    for (const reason of [
+      "rateLimitExceeded",
+      "userRateLimitExceeded",
+      "downloadQuotaExceeded",
+      "quotaExceeded",
+    ]) {
+      fetchImpl.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              errors: [{ reason, message: "Limit exceeded" }],
+            },
+          }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      await expect(reader.readRange(0, 2)).rejects.toMatchObject({
+        code: "READ_ERROR",
+        httpStatus: 403,
+        isRateLimited: true,
+      });
+    }
+
+    // 3. 403 非Rate Limit reason / 不正構造JSON / 非JSONボディ -> httpStatus: 403, isRateLimited: false
+    const nonRateLimit403Payloads = [
+      JSON.stringify({
+        error: { errors: [{ reason: "insufficientFilePermissions" }] },
+      }),
+      JSON.stringify({ error: { errors: [null, { reason: 123 }] } }),
+      JSON.stringify({ error: {} }),
+      JSON.stringify({ error: "not-an-object" }),
+      JSON.stringify(null),
+      "<html>Forbidden</html>",
+    ];
+    for (const body of nonRateLimit403Payloads) {
+      fetchImpl.mockResolvedValueOnce(new Response(body, { status: 403 }));
+      await expect(reader.readRange(0, 2)).rejects.toMatchObject({
+        code: "READ_ERROR",
+        httpStatus: 403,
+        isRateLimited: false,
+      });
+    }
+
+    // 4. 403 JSON 読込中の AbortSignal 中断は AbortError を再送出
+    const abort403Ctrl = new AbortController();
+    fetchImpl.mockResolvedValueOnce({
+      status: 403,
+      headers: new Headers(),
+      body: null,
+      json: async () => {
+        abort403Ctrl.abort();
+        throw new Error("aborted while parsing json");
+      },
+    } as unknown as Response);
+    await expect(
+      reader.readRange(0, 2, abort403Ctrl.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    const abort403AfterJsonCtrl = new AbortController();
+    fetchImpl.mockResolvedValueOnce({
+      status: 403,
+      headers: new Headers(),
+      body: null,
+      json: async () => {
+        abort403AfterJsonCtrl.abort();
+        return { error: { errors: [{ reason: "rateLimitExceeded" }] } };
+      },
+    } as unknown as Response);
+    await expect(
+      reader.readRange(0, 2, abort403AfterJsonCtrl.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    // 5. 2回目 401 -> httpStatus: 401, isUnauthorized: true
+    fetchImpl
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(new Response(null, { status: 401 }));
+    await expect(reader.readRange(0, 2)).rejects.toMatchObject({
+      code: "READ_ERROR",
+      httpStatus: 401,
+      isUnauthorized: true,
+    });
+
+    // 6. getAccessToken の GoogleAuthError: AUTH_REQUIRED / AUTH_CANCELLED / AUTH_FAILED は isUnauthorized: true、AUTH_NETWORK_ERROR は undefined
+    for (const authCode of [
+      "AUTH_REQUIRED",
+      "AUTH_CANCELLED",
+      "AUTH_FAILED",
+    ] as const) {
+      getAccessToken.mockRejectedValueOnce(
+        new GoogleAuthError(authCode, `auth error ${authCode}`),
+      );
+      await expect(reader.readRange(0, 2)).rejects.toMatchObject({
+        code: "READ_ERROR",
+        isUnauthorized: true,
+      });
+    }
+
+    getAccessToken.mockRejectedValueOnce(
+      new GoogleAuthError("AUTH_NETWORK_ERROR", "offline"),
+    );
+    let caughtNetErr: unknown;
+    try {
+      await reader.readRange(0, 2);
+    } catch (error) {
+      caughtNetErr = error;
+    }
+    expect(caughtNetErr).toBeInstanceOf(ZipArchiveError);
+    expect((caughtNetErr as ZipArchiveError).isUnauthorized).toBeUndefined();
+
+    // 7. その他の非 206/200 ステータス (404, 503) -> httpStatus: status, isRateLimited: false
+    fetchImpl.mockResolvedValueOnce(new Response(null, { status: 404 }));
+    await expect(reader.readRange(0, 2)).rejects.toMatchObject({
+      code: "READ_ERROR",
+      httpStatus: 404,
+      isRateLimited: false,
+    });
+
+    fetchImpl.mockResolvedValueOnce(new Response(null, { status: 503 }));
+    await expect(reader.readRange(0, 2)).rejects.toMatchObject({
+      code: "READ_ERROR",
+      httpStatus: 503,
+      isRateLimited: false,
+    });
   });
 });
