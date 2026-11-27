@@ -84,4 +84,26 @@ describe("SeriesCard", () => {
     expect(onQuickRead).toHaveBeenCalledWith("series-frieren", "vol-6");
     expect(onOpenDetail).toHaveBeenCalledTimes(1);
   });
+
+  it("代表表紙が pending のときのみ data-cover-volume-id を付与すること (AC-BS-13)", () => {
+    const { unmount } = render(<Reading />);
+    expect(screen.getByTestId("series-card")).toHaveAttribute(
+      "data-cover-volume-id",
+      "vol-1",
+    );
+    unmount();
+
+    const readingArgs = stories.default.args!;
+    const readyItem = {
+      ...readingArgs.item!,
+      representativeVolume: {
+        ...readingArgs.item!.representativeVolume,
+        coverStatus: "ready" as const,
+      },
+    };
+    render(<Reading item={readyItem} />);
+    expect(screen.getByTestId("series-card")).not.toHaveAttribute(
+      "data-cover-volume-id",
+    );
+  });
 });

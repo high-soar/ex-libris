@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { CoverExtractionProgressSnapshot } from "../../engine/cover/types";
 import type { DriveSyncResult } from "../../providers/gdrive/types";
 import {
   type BookshelfSortOrder,
@@ -12,6 +13,9 @@ export interface BookshelfToolbarProps {
   readonly lastSyncedAt: number | null;
   readonly lastSyncResult: DriveSyncResult | null;
   readonly syncErrorMessage: string | null;
+  readonly coverExtractionState?: CoverExtractionProgressSnapshot;
+  readonly canRetryCovers?: boolean;
+  readonly onRetryFailedCovers?: () => void;
   readonly onChangeSortOrder: (sortOrder: BookshelfSortOrder) => void;
 }
 

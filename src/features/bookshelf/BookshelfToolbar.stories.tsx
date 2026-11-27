@@ -67,3 +67,57 @@ export const UnsyncedWithError: Story = {
       "Google アカウントの認証が切れました。設定画面から再ログインしてください",
   },
 };
+
+/** 表紙抽出進行中のコンパクトステータス表示 */
+export const CoverExtracting: Story = {
+  name: "表紙抽出中表示",
+  args: {
+    coverExtractionState: {
+      phase: "running",
+      totalCount: 24,
+      readyCount: 11,
+      pendingCount: 13,
+      errorCount: 0,
+      activeVolumeId: "vol-12",
+      pauseReasons: [],
+    },
+    canRetryCovers: true,
+    onRetryFailedCovers: () => {},
+  },
+};
+
+/** 表紙抽出の一時停止かつ未取得エラーあり（再試行非活性） */
+export const CoverPausedWithErrors: Story = {
+  name: "表紙抽出・一時停止と未取得エラー",
+  args: {
+    coverExtractionState: {
+      phase: "paused",
+      totalCount: 24,
+      readyCount: 10,
+      pendingCount: 12,
+      errorCount: 2,
+      activeVolumeId: null,
+      pauseReasons: ["drive-sync"],
+    },
+    canRetryCovers: false,
+    onRetryFailedCovers: () => {},
+  },
+};
+
+/** 表紙未取得エラーのみ残存し再試行可能な状態 */
+export const CoverErrorsOnly: Story = {
+  name: "表紙未取得エラーのみ（再試行可能）",
+  args: {
+    coverExtractionState: {
+      phase: "idle",
+      totalCount: 24,
+      readyCount: 22,
+      pendingCount: 0,
+      errorCount: 2,
+      activeVolumeId: null,
+      pauseReasons: [],
+    },
+    canRetryCovers: true,
+    onRetryFailedCovers: () => {},
+  },
+};
