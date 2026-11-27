@@ -424,9 +424,10 @@ describe("BookshelfPage", () => {
     recentHistorySpy = vi
       .spyOn(RecentLocalHistorySectionModule, "RecentLocalHistorySection")
       .mockImplementation(() => null);
-    viewportObserverSpy = vi
-      .spyOn(ViewportObserverModule, "useViewportVolumeObserver")
-      .mockImplementation(() => undefined);
+    viewportObserverSpy = vi.spyOn(
+      ViewportObserverModule,
+      "useViewportVolumeObserver",
+    );
   });
 
   afterEach(async () => {

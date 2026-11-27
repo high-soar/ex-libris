@@ -19,9 +19,14 @@ import {
 } from "../../shared/router/routeMatcher";
 import { useRouter } from "../../shared/router/routerContext";
 import {
+  INITIAL_COVER_EXTRACTION_SNAPSHOT,
+  useCoverExtractionStateStore,
+} from "../../shared/sync/coverExtractionStateStore";
+import {
   type DriveSyncUiPhase,
   useDriveSyncStateStore,
 } from "../../shared/sync/driveSyncStateStore";
+import { useViewportVolumeObserver } from "../../shared/ui/useViewportVolumeObserver";
 import {
   type LocalReadingHistoryItem,
   RECENT_LOCAL_HISTORY_DEFAULT_LIMIT,
@@ -102,6 +107,7 @@ export function BookshelfPage({
     volumesRepo,
     driveSyncMetaRepo,
     driveSyncEngine,
+    coverExtractionScheduler,
   } = useServices();
   const { navigate } = useRouter();
   const openLocalFile = useLocalReaderSessionStore(
@@ -134,6 +140,26 @@ export function BookshelfPage({
     (state) => state.hydrateLastSyncedAt,
   );
   const runDriveSync = useDriveSyncStateStore((state) => state.runDriveSync);
+
+  const storeCoverPhase = useCoverExtractionStateStore((state) => state.phase);
+  const storeCoverTotalCount = useCoverExtractionStateStore(
+    (state) => state.totalCount,
+  );
+  const storeCoverReadyCount = useCoverExtractionStateStore(
+    (state) => state.readyCount,
+  );
+  const storeCoverPendingCount = useCoverExtractionStateStore(
+    (state) => state.pendingCount,
+  );
+  const storeCoverErrorCount = useCoverExtractionStateStore(
+    (state) => state.errorCount,
+  );
+  const storeCoverActiveVolumeId = useCoverExtractionStateStore(
+    (state) => state.activeVolumeId,
+  );
+  const storeCoverPauseReasons = useCoverExtractionStateStore(
+    (state) => state.pauseReasons,
+  );
 
   const hasSnapshot = initialSnapshot !== undefined;
   const resolvedInitialDriveSetup =
@@ -176,6 +202,7 @@ export function BookshelfPage({
     useState<boolean>(hasSnapshot);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
   const isMountedRef = useRef<boolean>(true);
 
   const activeSortOrder = snapshotSortOrder ?? storeSortOrder;
@@ -191,6 +218,19 @@ export function BookshelfPage({
   const effectiveSyncErrorMessage = hasSnapshot
     ? (initialSnapshot.syncErrorMessage ?? null)
     : storeSyncErrorMessage;
+  const effectiveCoverExtractionState: CoverExtractionProgressSnapshot =
+    hasSnapshot
+      ? (initialSnapshot.coverExtractionState ??
+        INITIAL_COVER_EXTRACTION_SNAPSHOT)
+      : {
+          phase: storeCoverPhase,
+          totalCount: storeCoverTotalCount,
+          readyCount: storeCoverReadyCount,
+          pendingCount: storeCoverPendingCount,
+          errorCount: storeCoverErrorCount,
+          activeVolumeId: storeCoverActiveVolumeId,
+          pauseReasons: storeCoverPauseReasons,
+        };
   const isSyncing = effectiveSyncPhase === "syncing";
 
   const sortedSeriesItems = useMemo(
@@ -201,6 +241,48 @@ export function BookshelfPage({
     () => sortedSeriesItems.reduce((sum, item) => sum + item.volumeCount, 0),
     [sortedSeriesItems],
   );
+  const pendingRepresentativeVolumeIds = useMemo(
+    () =>
+      sortedSeriesItems
+        .filter((item) => item.representativeVolume.coverStatus === "pending")
+        .map((item) => item.representativeVolume.id),
+    [sortedSeriesItems],
+  );
+
+  useViewportVolumeObserver({
+    containerRef: mainRef,
+    screenKey: "bookshelf",
+    scheduler: coverExtractionScheduler,
+    pendingVolumeIds: pendingRepresentativeVolumeIds,
+    enabled: !hasSnapshot,
+  });
+
+  useEffect(() => {
+    if (hasSnapshot) {
+      return;
+    }
+    return coverExtractionScheduler.subscribeVolumeUpdated((event) => {
+      setSeriesItems((prev) => {
+        let changed = false;
+        const next = prev.map((item) => {
+          if (item.representativeVolume.id !== event.volumeId) {
+            return item;
+          }
+          changed = true;
+          return {
+            ...item,
+            representativeVolume: {
+              ...item.representativeVolume,
+              coverStatus: event.coverStatus,
+              coverBlob: event.coverBlob,
+              coverUpdatedAt: event.coverUpdatedAt,
+            },
+          };
+        });
+        return changed ? next : prev;
+      });
+    });
+  }, [coverExtractionScheduler, hasSnapshot]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -447,15 +529,20 @@ export function BookshelfPage({
     [clearSeriesDetailScroll, navigate, saveScrollY],
   );
 
+  const handleRetryFailedCovers = useCallback(() => {
+    void coverExtractionScheduler.retryFailedCovers();
+  }, [coverExtractionScheduler]);
+
   const handleQuickRead = useCallback(
     (seriesId: string, volumeId: string) => {
       saveScrollY(window.scrollY);
+      coverExtractionScheduler.pause("reader");
       navigate(buildReaderVolumePath(volumeId), {
         readerOrigin: "bookshelf",
         seriesId,
       });
     },
-    [navigate, saveScrollY],
+    [coverExtractionScheduler, navigate, saveScrollY],
   );
 
   const handleOpenLocalZip = useCallback(() => {
@@ -481,9 +568,10 @@ export function BookshelfPage({
       setErrorMessage(null);
       clearScrollY();
       openLocalFile(file);
+      coverExtractionScheduler.pause("reader");
       navigate("/read/local");
     },
-    [clearScrollY, navigate, openLocalFile],
+    [clearScrollY, coverExtractionScheduler, navigate, openLocalFile],
   );
 
   const handleFileChange = useCallback(
@@ -610,6 +698,7 @@ export function BookshelfPage({
         onOpenSettings={handleOpenSettings}
       />
       <main
+        ref={mainRef}
         data-drag-active={String(isDragActive)}
         className={`flex-1 flex flex-col items-center gap-6 p-4 sm:p-6 transition-colors ${
           isBranchA ? "justify-start" : "justify-center"
@@ -663,6 +752,9 @@ export function BookshelfPage({
               lastSyncedAt={effectiveLastSyncedAt}
               lastSyncResult={effectiveLastSyncResult}
               syncErrorMessage={effectiveSyncErrorMessage}
+              coverExtractionState={effectiveCoverExtractionState}
+              canRetryCovers={driveSetupState.kind === "ready" && !isSyncing}
+              onRetryFailedCovers={handleRetryFailedCovers}
               onChangeSortOrder={handleChangeSortOrder}
             />
             <SeriesGridSection
