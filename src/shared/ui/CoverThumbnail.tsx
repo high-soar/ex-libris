@@ -44,6 +44,8 @@ export function CoverThumbnail({
           data-testid="cover-thumbnail-image"
           src={objectUrl}
           alt={`${title} の表紙`}
+          loading="lazy"
+          decoding="async"
           className="h-full w-full object-cover"
         />
       ) : (
@@ -62,6 +64,14 @@ export function CoverThumbnail({
             <p className="mt-3 line-clamp-3 break-words text-xs font-medium leading-snug text-slate-300">
               {trimmedTitle}
             </p>
+          )}
+          {coverStatus === "error" && (
+            <span
+              data-testid="cover-thumbnail-error-badge"
+              className="mt-2 inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-200"
+            >
+              取得失敗
+            </span>
           )}
         </div>
       )}
