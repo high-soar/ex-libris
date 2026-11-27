@@ -15,6 +15,31 @@ export interface UseViewportVolumeObserverParams {
   readonly enabled?: boolean;
 }
 
+function areSetsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) {
+    return false;
+  }
+  for (const item of a) {
+    if (!b.has(item)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function notifyIfChanged(
+  visibleElements: ReadonlyMap<Element, string>,
+  lastReportedIdsRef: { current: Set<string> },
+  scheduler: Pick<CoverExtractionScheduler, "setViewportVolumeIds">,
+  screenKey: CoverViewportScreenKey,
+): void {
+  const nextIds = new Set(visibleElements.values());
+  if (!areSetsEqual(nextIds, lastReportedIdsRef.current)) {
+    lastReportedIdsRef.current = nextIds;
+    scheduler.setViewportVolumeIds(screenKey, new Set(nextIds));
+  }
+}
+
 export function useViewportVolumeObserver({
   containerRef,
   screenKey,
@@ -24,7 +49,8 @@ export function useViewportVolumeObserver({
 }: UseViewportVolumeObserverParams): void {
   const observerRef = useRef<IntersectionObserver | null>(null);
   const observedElementsRef = useRef<Set<Element>>(new Set());
-  const visibleIdsRef = useRef<Set<string>>(new Set());
+  const visibleElementsRef = useRef<Map<Element, string>>(new Map());
+  const lastReportedIdsRef = useRef<Set<string>>(new Set());
   const pendingSet = useMemo(
     () => new Set(pendingVolumeIds),
     [pendingVolumeIds],
@@ -39,28 +65,28 @@ export function useViewportVolumeObserver({
       return;
     }
 
-    const visibleIds = visibleIdsRef.current;
+    const visibleElements = visibleElementsRef.current;
 
     const observer = new IntersectionObserver(
       (entries) => {
-        let changed = false;
         for (const entry of entries) {
           const volumeId = entry.target.getAttribute(COVER_VOLUME_ID_ATTRIBUTE);
-          if (!volumeId) {
-            continue;
-          }
-          if (entry.isIntersecting && pendingSetRef.current.has(volumeId)) {
-            if (!visibleIds.has(volumeId)) {
-              visibleIds.add(volumeId);
-              changed = true;
-            }
-          } else if (visibleIds.delete(volumeId)) {
-            changed = true;
+          if (
+            entry.isIntersecting &&
+            volumeId &&
+            pendingSetRef.current.has(volumeId)
+          ) {
+            visibleElements.set(entry.target, volumeId);
+          } else {
+            visibleElements.delete(entry.target);
           }
         }
-        if (changed) {
-          scheduler.setViewportVolumeIds(screenKey, new Set(visibleIds));
-        }
+        notifyIfChanged(
+          visibleElements,
+          lastReportedIdsRef,
+          scheduler,
+          screenKey,
+        );
       },
       { rootMargin: VIEWPORT_OBSERVER_ROOT_MARGIN },
     );
@@ -71,7 +97,8 @@ export function useViewportVolumeObserver({
       observer.disconnect();
       observerRef.current = null;
       observedElementsRef.current.clear();
-      visibleIds.clear();
+      visibleElements.clear();
+      lastReportedIdsRef.current = new Set();
       scheduler.setViewportVolumeIds(screenKey, new Set());
     };
   }, [enabled, scheduler, screenKey]);
@@ -84,8 +111,7 @@ export function useViewportVolumeObserver({
     }
 
     const currentPending = pendingSetRef.current;
-    const nextObserved = new Set<Element>();
-    const activeDomIds = new Set<string>();
+    const nextObserved = new Map<Element, string>();
 
     const candidates = container.querySelectorAll(
       `[${COVER_VOLUME_ID_ATTRIBUTE}]`,
@@ -93,8 +119,7 @@ export function useViewportVolumeObserver({
     for (const element of candidates) {
       const volumeId = element.getAttribute(COVER_VOLUME_ID_ATTRIBUTE);
       if (volumeId && currentPending.has(volumeId)) {
-        nextObserved.add(element);
-        activeDomIds.add(volumeId);
+        nextObserved.set(element, volumeId);
       }
     }
 
@@ -104,23 +129,22 @@ export function useViewportVolumeObserver({
         observer.unobserve(element);
       }
     }
-    for (const element of nextObserved) {
+    for (const element of nextObserved.keys()) {
       if (!prevObserved.has(element)) {
         observer.observe(element);
       }
     }
-    observedElementsRef.current = nextObserved;
+    observedElementsRef.current = new Set(nextObserved.keys());
 
-    let pruned = false;
-    const visibleIds = visibleIdsRef.current;
-    for (const visibleId of visibleIds) {
-      if (!activeDomIds.has(visibleId)) {
-        visibleIds.delete(visibleId);
-        pruned = true;
+    const visibleElements = visibleElementsRef.current;
+    for (const element of visibleElements.keys()) {
+      const nextVolumeId = nextObserved.get(element);
+      if (nextVolumeId === undefined) {
+        visibleElements.delete(element);
+      } else {
+        visibleElements.set(element, nextVolumeId);
       }
     }
-    if (pruned) {
-      scheduler.setViewportVolumeIds(screenKey, new Set(visibleIds));
-    }
+    notifyIfChanged(visibleElements, lastReportedIdsRef, scheduler, screenKey);
   }, [containerRef, enabled, pendingKey, scheduler, screenKey]);
 }

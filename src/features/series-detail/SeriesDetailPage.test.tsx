@@ -33,6 +33,7 @@ import {
   useDriveSyncStateStore,
 } from "../../shared/sync/driveSyncStateStore";
 import * as ViewportObserverModule from "../../shared/ui/useViewportVolumeObserver";
+import type { VolumesRepository } from "../../storage/repositories/volumesRepository";
 import type {
   DriveSyncRootRecord,
   ReadingProgressRecord,
@@ -175,6 +176,40 @@ function createMockCoverExtractionScheduler(
   };
 }
 
+function createMockVolumesRepository(
+  overrides: Partial<VolumesRepository> = {},
+): VolumesRepository {
+  return {
+    getById: vi.fn<VolumesRepository["getById"]>().mockResolvedValue(null),
+    getByDriveFileId: vi
+      .fn<VolumesRepository["getByDriveFileId"]>()
+      .mockResolvedValue(null),
+    listBySeriesId: vi
+      .fn<VolumesRepository["listBySeriesId"]>()
+      .mockResolvedValue([createVolume()]),
+    listVisibleByEnabledRoots: vi
+      .fn<VolumesRepository["listVisibleByEnabledRoots"]>()
+      .mockResolvedValue([]),
+    listByRootFolderIds: vi
+      .fn<VolumesRepository["listByRootFolderIds"]>()
+      .mockResolvedValue([]),
+    upsertFromDriveSync: vi.fn<VolumesRepository["upsertFromDriveSync"]>(),
+    markTrashedByDriveFileIds: vi
+      .fn<VolumesRepository["markTrashedByDriveFileIds"]>()
+      .mockResolvedValue(0),
+    saveCoverReady: vi
+      .fn<VolumesRepository["saveCoverReady"]>()
+      .mockResolvedValue(null),
+    saveCoverError: vi
+      .fn<VolumesRepository["saveCoverError"]>()
+      .mockResolvedValue(null),
+    resetErrorCoversToPending: vi
+      .fn<VolumesRepository["resetErrorCoversToPending"]>()
+      .mockResolvedValue([]),
+    ...overrides,
+  };
+}
+
 function createMockServices(
   overrides: Partial<ServiceContextValue> = {},
 ): ServiceContextValue {
@@ -187,17 +222,7 @@ function createMockServices(
       mergeAuthorsIfUnlocked: vi.fn(),
       updateLastReadAt: vi.fn(),
     },
-    volumesRepo: {
-      getById: vi.fn(),
-      getByDriveFileId: vi.fn(),
-      listBySeriesId: vi.fn().mockResolvedValue([createVolume()]),
-      listVisibleByRootIds: vi.fn().mockResolvedValue([]),
-      upsertByDriveFileId: vi.fn(),
-      markTrashedByDriveFileId: vi.fn(),
-      markTrashedMissingInRoot: vi.fn(),
-      listPendingCovers: vi.fn(),
-      updateCover: vi.fn(),
-    },
+    volumesRepo: createMockVolumesRepository(),
     driveSyncRootsRepo: {
       listActive: vi.fn().mockResolvedValue([createRoot()]),
       countEnabled: vi.fn().mockResolvedValue(1),
@@ -728,17 +753,11 @@ describe("SeriesDetailPage", () => {
     const services = createMockServices({
       googleAuthBridge: authBridge,
       coverExtractionScheduler: scheduler,
-      volumesRepo: {
-        getById: vi.fn(),
-        getByDriveFileId: vi.fn(),
-        listBySeriesId: vi.fn().mockResolvedValue([vol1, vol2]),
-        listVisibleByRootIds: vi.fn().mockResolvedValue([]),
-        upsertByDriveFileId: vi.fn(),
-        markTrashedByDriveFileId: vi.fn(),
-        markTrashedMissingInRoot: vi.fn(),
-        listPendingCovers: vi.fn(),
-        updateCover: vi.fn(),
-      } as unknown as ServiceContextValue["volumesRepo"],
+      volumesRepo: createMockVolumesRepository({
+        listBySeriesId: vi
+          .fn<VolumesRepository["listBySeriesId"]>()
+          .mockResolvedValue([vol1, vol2]),
+      }),
     });
 
     const { unmount } = render(
