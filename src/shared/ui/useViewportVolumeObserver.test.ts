@@ -192,11 +192,12 @@ describe("useViewportVolumeObserver", () => {
   it("rootMargin 200px 0px で pending 要素を監視し、交差変化・再走査・非 pending 除外・アンマウントクリアを通知すること (AC-COV-03)", () => {
     const observers = installMockIntersectionObserver();
     const setViewportVolumeIds = vi.fn();
+    const scheduler = { setViewportVolumeIds };
 
     const { getByTestId, rerender, unmount } = render(
       createElement(ObserverHarness, {
         screenKey: "series-detail",
-        scheduler: { setViewportVolumeIds },
+        scheduler,
         pendingVolumeIds: ["v1", "v2"],
         renderedItems: [
           { key: "v1", coverVolumeId: "v1" },
@@ -253,7 +254,7 @@ describe("useViewportVolumeObserver", () => {
     rerender(
       createElement(ObserverHarness, {
         screenKey: "series-detail",
-        scheduler: { setViewportVolumeIds },
+        scheduler,
         pendingVolumeIds: ["v2", "v3"],
         renderedItems: [
           { key: "v1" },
@@ -275,11 +276,18 @@ describe("useViewportVolumeObserver", () => {
       new Set(),
     );
 
-    // v4 のみを追加しても可視集合に変化がない場合は不要な通知を行わないこと
+    // v2 を可視にした後、v4 を追加しても既存の可視 v2 が維持され不要な通知が起きないこと
+    observer.trigger([{ target: el2, isIntersecting: true }]);
+    expect(setViewportVolumeIds).toHaveBeenCalledTimes(4);
+    expect(setViewportVolumeIds).toHaveBeenLastCalledWith(
+      "series-detail",
+      new Set(["v2"]),
+    );
+
     rerender(
       createElement(ObserverHarness, {
         screenKey: "series-detail",
-        scheduler: { setViewportVolumeIds },
+        scheduler,
         pendingVolumeIds: ["v2", "v3", "v4"],
         renderedItems: [
           { key: "v2", coverVolumeId: "v2" },
@@ -288,12 +296,12 @@ describe("useViewportVolumeObserver", () => {
         ],
       }),
     );
-    expect(setViewportVolumeIds).toHaveBeenCalledTimes(3);
+    expect(setViewportVolumeIds).toHaveBeenCalledTimes(4);
 
     // アンマウント時に disconnect + 空 Set でクリア
     unmount();
     expect(observer.disconnectSpy).toHaveBeenCalledTimes(1);
-    expect(setViewportVolumeIds).toHaveBeenCalledTimes(4);
+    expect(setViewportVolumeIds).toHaveBeenCalledTimes(5);
     expect(setViewportVolumeIds).toHaveBeenLastCalledWith(
       "series-detail",
       new Set(),
