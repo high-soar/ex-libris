@@ -434,8 +434,8 @@ describe("CoverExtractionSchedulerCore", () => {
     // v-hit: zipIndexCache ヒットにより parseZipDirectory 省略 = 1 RTT (0 RTT 目次)
     expect(readsByVolume.get("v-hit")).toBe(1);
 
-    // v-repair: キャッシュ由来失敗 → delete → 再 parseZipDirectory → 成功、かつ正常キャッシュへ更新
-    expect(readsByVolume.get("v-repair")).toBe(4);
+    // v-repair: キャッシュ由来LFH失敗(1) → delete → 再 parseZipDirectory(2) → 正常LFH取得(3)
+    expect(readsByVolume.get("v-repair")).toBe(3);
     const repairedCache = await zipIndexCacheRepo.get(
       "gdrive:df-repair:md5-repair",
     );

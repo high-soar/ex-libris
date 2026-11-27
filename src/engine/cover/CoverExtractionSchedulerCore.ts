@@ -1,18 +1,32 @@
 import type { CoverWorkerClientHandle } from "../../app/coverWorkerClient";
 import type { GoogleAuthBridge } from "../../bridges/oauth/types";
+import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
 import type { DiagnosticLogger } from "../../diagnostics/types";
+import {
+  buildBookshelfSeriesItems,
+  sortBookshelfSeriesItems,
+} from "../../features/bookshelf/bookshelfViewModel";
 import type { DriveSyncRootsRepository } from "../../storage/repositories/driveSyncRootsRepository";
 import type { SeriesRepository } from "../../storage/repositories/seriesRepository";
-import type { VolumesRepository } from "../../storage/repositories/volumesRepository";
+import {
+  compareVolumesForDisplay,
+  type VolumesRepository,
+} from "../../storage/repositories/volumesRepository";
 import type { ZipIndexCacheRepository } from "../../storage/repositories/zipIndexCacheRepository";
-import type { VolumeRecord } from "../../storage/types";
-import type { RandomAccessReader } from "../types";
+import type { SeriesRecord, VolumeRecord } from "../../storage/types";
+import { ENGINE_BUDGETS } from "../constants";
+import type { RandomAccessReader, ZipPageEntry } from "../types";
+import { ZipArchiveError, isAbortError } from "../zip/errors";
+import { validateZipIndexEntries } from "../zip/zipIndexValidation";
+import { parseZipDirectory, readCompressedPageSlice } from "../zip/zipParser";
 import type {
   CoverExtractionPauseReason,
+  CoverExtractionPhase,
   CoverExtractionProgressSnapshot,
   CoverExtractionScheduler,
   CoverExtractionVolumeUpdateEvent,
   CoverViewportScreenKey,
+  EncodeCoverWebpResult,
 } from "./types";
 
 export interface CoverExtractionSchedulerDeps {
@@ -45,62 +59,866 @@ const EMPTY_SNAPSHOT: CoverExtractionProgressSnapshot = {
   pauseReasons: [],
 };
 
-export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
-  constructor(_deps: CoverExtractionSchedulerDeps) {
-    void _deps;
+const BG_MIN_INTERVAL_MS = Math.ceil(
+  1_000 / ENGINE_BUDGETS.COVER_BG_MAX_PER_SECOND,
+);
+
+function defaultAbortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0 || signal.aborted) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timerId);
+      resolve();
+    };
+    const timerId = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function buildZipIndexCacheKey(volume: VolumeRecord): string {
+  return `gdrive:${volume.driveFileId}:${volume.md5Checksum ?? volume.fileSize}`;
+}
+
+function formatErrorDetail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function buildPriorityOrder(
+  activeSeries: readonly SeriesRecord[],
+  visibleVolumes: readonly VolumeRecord[],
+): {
+  readonly representativeIds: string[];
+  readonly otherIds: string[];
+} {
+  const seriesItems = sortBookshelfSeriesItems(
+    buildBookshelfSeriesItems({
+      seriesList: activeSeries,
+      visibleVolumes,
+      progressByVolumeId: new Map(),
+    }),
+    "lastReadDesc",
+  );
+
+  const volumesBySeries = new Map<string, VolumeRecord[]>();
+  for (const volume of visibleVolumes) {
+    const bucket = volumesBySeries.get(volume.seriesId);
+    if (bucket) {
+      bucket.push(volume);
+    } else {
+      volumesBySeries.set(volume.seriesId, [volume]);
+    }
   }
 
-  async syncQueue(): Promise<void> {
-    throw new Error("Not implemented");
+  const representativeIds: string[] = [];
+  const otherIds: string[] = [];
+  const placedIds = new Set<string>();
+
+  for (const item of seriesItems) {
+    const rep = item.representativeVolume;
+    if (rep.coverStatus === "pending") {
+      representativeIds.push(rep.id);
+      placedIds.add(rep.id);
+    }
+  }
+
+  for (const item of seriesItems) {
+    const seriesVolumes = volumesBySeries.get(item.seriesId) ?? [];
+    for (const volume of seriesVolumes) {
+      if (volume.coverStatus === "pending" && !placedIds.has(volume.id)) {
+        otherIds.push(volume.id);
+        placedIds.add(volume.id);
+      }
+    }
+  }
+
+  const orphanPending = visibleVolumes
+    .filter(
+      (volume) => volume.coverStatus === "pending" && !placedIds.has(volume.id),
+    )
+    .sort(compareVolumesForDisplay);
+  for (const volume of orphanPending) {
+    otherIds.push(volume.id);
+    placedIds.add(volume.id);
+  }
+
+  return { representativeIds, otherIds };
+}
+
+export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
+  private readonly deps: CoverExtractionSchedulerDeps;
+  private readonly logger: DiagnosticLogger;
+  private readonly now: () => number;
+  private readonly sleep: (ms: number, signal: AbortSignal) => Promise<void>;
+
+  private readonly pauseReasons = new Set<CoverExtractionPauseReason>();
+  private readonly viewportByScreen = new Map<
+    CoverViewportScreenKey,
+    ReadonlySet<string>
+  >();
+  private readonly progressListeners = new Set<
+    (snapshot: CoverExtractionProgressSnapshot) => void
+  >();
+  private readonly volumeListeners = new Set<
+    (event: CoverExtractionVolumeUpdateEvent) => void
+  >();
+
+  private enabledRootIds = new Set<string>();
+  private pendingVolumesById = new Map<string, VolumeRecord>();
+  private representativeOrder: string[] = [];
+  private otherOrder: string[] = [];
+  private representativeSet = new Set<string>();
+
+  private viewportHighQueue: string[] = [];
+  private backgroundRepQueue: string[] = [];
+  private backgroundOtherQueue: string[] = [];
+  private rateLimitAttempts = new Map<string, number>();
+
+  private readyCount = 0;
+  private pendingCount = 0;
+  private errorCount = 0;
+  private activeVolumeId: string | null = null;
+  private phase: CoverExtractionPhase = "idle";
+  private lastNetworkCompletedAt: number | null = null;
+
+  private schedulerEpoch = 0;
+  private activeAbortController: AbortController | null = null;
+  private throttleAbortController: AbortController | null = null;
+  private loopPromise: Promise<void> | null = null;
+  private syncPromise: Promise<void> | null = null;
+  private resyncRequested = false;
+  private workerClient: CoverWorkerClientHandle | null = null;
+  private disposed = false;
+
+  constructor(deps: CoverExtractionSchedulerDeps) {
+    this.deps = deps;
+    this.logger = deps.logger ?? diagnosticLogger;
+    this.now = deps.now ?? Date.now;
+    this.sleep = deps.sleep ?? defaultAbortableSleep;
+  }
+
+  private getActiveViewportIds(): Set<string> {
+    const merged = new Set<string>();
+    for (const ids of this.viewportByScreen.values()) {
+      for (const id of ids) {
+        merged.add(id);
+      }
+    }
+    return merged;
+  }
+
+  private hasQueuedWork(): boolean {
+    return (
+      this.viewportHighQueue.length > 0 ||
+      this.backgroundRepQueue.length > 0 ||
+      this.backgroundOtherQueue.length > 0
+    );
+  }
+
+  private abortActiveOperation(): void {
+    if (this.activeAbortController !== null) {
+      this.activeAbortController.abort();
+      this.activeAbortController = null;
+    }
+    if (this.throttleAbortController !== null) {
+      this.throttleAbortController.abort();
+      this.throttleAbortController = null;
+    }
+  }
+
+  private computePhase(): CoverExtractionPhase {
+    if (this.pauseReasons.size > 0) {
+      return this.pendingCount > 0 ? "paused" : "idle";
+    }
+    if (this.phase === "backoff") {
+      return "backoff";
+    }
+    if (this.activeVolumeId !== null || this.hasQueuedWork()) {
+      return "running";
+    }
+    return "idle";
+  }
+
+  private buildSnapshot(): CoverExtractionProgressSnapshot {
+    const phase = this.computePhase();
+    return {
+      phase,
+      totalCount: this.readyCount + this.pendingCount + this.errorCount,
+      readyCount: this.readyCount,
+      pendingCount: this.pendingCount,
+      errorCount: this.errorCount,
+      activeVolumeId: this.activeVolumeId,
+      pauseReasons: [...this.pauseReasons],
+    };
+  }
+
+  private emitProgress(): void {
+    const snapshot = this.buildSnapshot();
+    for (const listener of [...this.progressListeners]) {
+      listener(snapshot);
+    }
+  }
+
+  private emitVolumeUpdated(event: CoverExtractionVolumeUpdateEvent): void {
+    for (const listener of [...this.volumeListeners]) {
+      listener(event);
+    }
+  }
+
+  private rebuildQueuesFromOrders(): void {
+    const activeViewportIds = this.getActiveViewportIds();
+    const nextHigh: string[] = [];
+    const nextBgRep: string[] = [];
+    const nextBgOther: string[] = [];
+
+    for (const id of this.representativeOrder) {
+      if (id === this.activeVolumeId || !this.pendingVolumesById.has(id)) {
+        continue;
+      }
+      if (activeViewportIds.has(id)) {
+        nextHigh.push(id);
+      } else {
+        nextBgRep.push(id);
+      }
+    }
+
+    for (const id of this.otherOrder) {
+      if (id === this.activeVolumeId || !this.pendingVolumesById.has(id)) {
+        continue;
+      }
+      if (activeViewportIds.has(id)) {
+        nextHigh.push(id);
+      } else {
+        nextBgOther.push(id);
+      }
+    }
+
+    this.viewportHighQueue = nextHigh;
+    this.backgroundRepQueue = nextBgRep;
+    this.backgroundOtherQueue = nextBgOther;
+  }
+
+  private requeueFront(volumeId: string): void {
+    if (!this.pendingVolumesById.has(volumeId)) {
+      return;
+    }
+    const activeViewportIds = this.getActiveViewportIds();
+    if (activeViewportIds.has(volumeId)) {
+      if (!this.viewportHighQueue.includes(volumeId)) {
+        this.viewportHighQueue.unshift(volumeId);
+      }
+      return;
+    }
+    if (this.representativeSet.has(volumeId)) {
+      if (!this.backgroundRepQueue.includes(volumeId)) {
+        this.backgroundRepQueue.unshift(volumeId);
+      }
+      return;
+    }
+    if (!this.backgroundOtherQueue.includes(volumeId)) {
+      this.backgroundOtherQueue.unshift(volumeId);
+    }
+  }
+
+  private ensureWorkerClient(): CoverWorkerClientHandle {
+    if (this.workerClient !== null && this.workerClient.isBroken()) {
+      this.workerClient.dispose();
+      this.workerClient = null;
+    }
+    if (this.workerClient === null) {
+      this.workerClient = this.deps.createWorkerClient();
+    }
+    return this.workerClient;
+  }
+
+  private ensureLoopRunning(): void {
+    if (
+      this.disposed ||
+      this.pauseReasons.size > 0 ||
+      this.loopPromise !== null ||
+      !this.hasQueuedWork()
+    ) {
+      return;
+    }
+    const epoch = this.schedulerEpoch;
+    const promise = this.runLoop(epoch).finally(() => {
+      if (this.loopPromise === promise) {
+        this.loopPromise = null;
+      }
+      if (
+        !this.disposed &&
+        this.pauseReasons.size === 0 &&
+        this.hasQueuedWork()
+      ) {
+        this.ensureLoopRunning();
+      } else {
+        this.phase = "idle";
+        this.emitProgress();
+      }
+    });
+    this.loopPromise = promise;
+  }
+
+  private isEpochActive(epoch: number, signal?: AbortSignal): boolean {
+    return (
+      !this.disposed &&
+      epoch === this.schedulerEpoch &&
+      this.pauseReasons.size === 0 &&
+      !(signal?.aborted ?? false)
+    );
+  }
+
+  private takeNextVolumeId(): {
+    readonly volumeId: string;
+    readonly fromViewportHigh: boolean;
+  } | null {
+    const highId = this.viewportHighQueue.shift();
+    if (highId !== undefined) {
+      return { volumeId: highId, fromViewportHigh: true };
+    }
+    const repId = this.backgroundRepQueue.shift();
+    if (repId !== undefined) {
+      return { volumeId: repId, fromViewportHigh: false };
+    }
+    const otherId = this.backgroundOtherQueue.shift();
+    if (otherId !== undefined) {
+      return { volumeId: otherId, fromViewportHigh: false };
+    }
+    return null;
+  }
+
+  private async runLoop(epoch: number): Promise<void> {
+    while (this.isEpochActive(epoch)) {
+      if (this.viewportHighQueue.length === 0) {
+        if (
+          this.backgroundRepQueue.length === 0 &&
+          this.backgroundOtherQueue.length === 0
+        ) {
+          break;
+        }
+        const waitMs =
+          this.lastNetworkCompletedAt === null
+            ? 0
+            : Math.max(
+                0,
+                this.lastNetworkCompletedAt + BG_MIN_INTERVAL_MS - this.now(),
+              );
+        if (waitMs > 0) {
+          const throttleCtrl = new AbortController();
+          this.throttleAbortController = throttleCtrl;
+          await this.sleep(waitMs, throttleCtrl.signal);
+          if (this.throttleAbortController === throttleCtrl) {
+            this.throttleAbortController = null;
+          }
+          if (!this.isEpochActive(epoch)) {
+            break;
+          }
+          if (this.viewportHighQueue.length > 0) {
+            continue;
+          }
+        }
+      }
+
+      const next = this.takeNextVolumeId();
+      if (next === null) {
+        break;
+      }
+
+      this.activeVolumeId = next.volumeId;
+      this.phase = "running";
+      this.emitProgress();
+
+      const backoffMs = await this.processVolume(next.volumeId, epoch);
+
+      if (this.activeVolumeId === next.volumeId) {
+        this.activeVolumeId = null;
+      }
+
+      if (backoffMs !== null && this.isEpochActive(epoch)) {
+        this.phase = "backoff";
+        this.emitProgress();
+        const backoffCtrl = new AbortController();
+        this.activeAbortController = backoffCtrl;
+        await this.sleep(backoffMs, backoffCtrl.signal);
+        if (this.activeAbortController === backoffCtrl) {
+          this.activeAbortController = null;
+        }
+        this.phase = "idle";
+      }
+    }
+  }
+
+  private async extractAndEncode(
+    volume: VolumeRecord,
+    reader: RandomAccessReader,
+    entries: readonly ZipPageEntry[],
+    signal: AbortSignal,
+    epoch: number,
+  ): Promise<EncodeCoverWebpResult> {
+    const targetEntry = entries[volume.coverPageIndex];
+    if (targetEntry === undefined) {
+      throw new ZipArchiveError(
+        "CORRUPT_ZIP",
+        `coverPageIndex(${volume.coverPageIndex})がアーカイブのページ数(${entries.length})を超過しています`,
+      );
+    }
+
+    const compressedSlice = await readCompressedPageSlice(
+      reader,
+      targetEntry,
+      signal,
+    );
+    if (!this.isEpochActive(epoch, signal)) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    const workerClient = this.ensureWorkerClient();
+    const encoded = await workerClient.api.encodeCoverWebp(
+      compressedSlice,
+      targetEntry.compressionMethod,
+    );
+    if (!this.isEpochActive(epoch, signal)) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    return encoded;
+  }
+
+  private async processVolume(
+    volumeId: string,
+    epoch: number,
+  ): Promise<number | null> {
+    const controller = new AbortController();
+    this.activeAbortController = controller;
+    const { signal } = controller;
+
+    let didNetworkRead = false;
+    let latest: VolumeRecord | null = null;
+
+    try {
+      latest = await this.deps.volumesRepo.getById(volumeId);
+      if (!this.isEpochActive(epoch, signal)) {
+        this.requeueFront(volumeId);
+        return null;
+      }
+
+      if (
+        latest === null ||
+        latest.coverStatus !== "pending" ||
+        latest.isTrashed !== 0 ||
+        !this.enabledRootIds.has(latest.rootFolderId)
+      ) {
+        this.pendingVolumesById.delete(volumeId);
+        this.rateLimitAttempts.delete(volumeId);
+        this.pendingCount = this.pendingVolumesById.size;
+        this.emitProgress();
+        return null;
+      }
+
+      const baseReader = this.deps.createRangeReader(latest);
+      const trackedReader: RandomAccessReader = {
+        sourceId: baseReader.sourceId,
+        totalSize: baseReader.totalSize,
+        readRange: async (offset, length, readSignal) => {
+          didNetworkRead = true;
+          return baseReader.readRange(offset, length, readSignal);
+        },
+      };
+
+      const isExactSizeReader = trackedReader.totalSize === latest.fileSize;
+      const cacheKey = buildZipIndexCacheKey(latest);
+      let fromIndexCache = false;
+      let entries: readonly ZipPageEntry[];
+
+      const cachedEntries = isExactSizeReader
+        ? await this.deps.zipIndexCacheRepo.get(cacheKey)
+        : null;
+      if (!this.isEpochActive(epoch, signal)) {
+        this.requeueFront(volumeId);
+        return null;
+      }
+
+      if (cachedEntries !== null && validateZipIndexEntries(cachedEntries)) {
+        entries = cachedEntries;
+        fromIndexCache = true;
+      } else {
+        entries = await parseZipDirectory(trackedReader, signal);
+        if (!this.isEpochActive(epoch, signal)) {
+          this.requeueFront(volumeId);
+          return null;
+        }
+        if (isExactSizeReader) {
+          void this.deps.zipIndexCacheRepo
+            .put(cacheKey, entries)
+            .catch(() => undefined);
+        }
+      }
+
+      let encoded: EncodeCoverWebpResult;
+      try {
+        encoded = await this.extractAndEncode(
+          latest,
+          trackedReader,
+          entries,
+          signal,
+          epoch,
+        );
+      } catch (extractError) {
+        if (
+          fromIndexCache &&
+          extractError instanceof ZipArchiveError &&
+          (extractError.code === "CORRUPT_ZIP" ||
+            extractError.code === "DECODE_FAILED")
+        ) {
+          await this.deps.zipIndexCacheRepo.delete(cacheKey);
+          if (!this.isEpochActive(epoch, signal)) {
+            this.requeueFront(volumeId);
+            return null;
+          }
+          const freshEntries = await parseZipDirectory(trackedReader, signal);
+          if (!this.isEpochActive(epoch, signal)) {
+            this.requeueFront(volumeId);
+            return null;
+          }
+          void this.deps.zipIndexCacheRepo
+            .put(cacheKey, freshEntries)
+            .catch(() => undefined);
+          encoded = await this.extractAndEncode(
+            latest,
+            trackedReader,
+            freshEntries,
+            signal,
+            epoch,
+          );
+        } else {
+          throw extractError;
+        }
+      }
+
+      const saved = await this.deps.volumesRepo.saveCoverReady({
+        volumeId: latest.id,
+        expectedMd5Checksum: latest.md5Checksum,
+        expectedFileSize: latest.fileSize,
+        coverBlob: encoded.blob,
+      });
+      this.rateLimitAttempts.delete(volumeId);
+      this.pendingVolumesById.delete(volumeId);
+      this.pendingCount = this.pendingVolumesById.size;
+
+      if (saved !== null) {
+        this.readyCount += 1;
+        this.emitVolumeUpdated({
+          volumeId: saved.id,
+          seriesId: saved.seriesId,
+          coverStatus: "ready",
+          coverBlob: saved.coverBlob,
+          coverUpdatedAt: saved.coverUpdatedAt,
+        });
+      }
+      this.emitProgress();
+      return null;
+    } catch (error) {
+      if (!this.isEpochActive(epoch, signal) || isAbortError(error)) {
+        this.requeueFront(volumeId);
+        return null;
+      }
+
+      if (error instanceof ZipArchiveError && error.isRateLimited === true) {
+        const attempts = this.rateLimitAttempts.get(volumeId) ?? 0;
+        if (attempts < ENGINE_BUDGETS.COVER_RATE_LIMIT_MAX_RETRIES) {
+          this.rateLimitAttempts.set(volumeId, attempts + 1);
+          this.requeueFront(volumeId);
+          return (
+            ENGINE_BUDGETS.COVER_RATE_LIMIT_BASE_BACKOFF_MS * 2 ** attempts
+          );
+        }
+      }
+
+      if (
+        error instanceof ZipArchiveError &&
+        error.isUnauthorized === true &&
+        (this.deps.googleAuthBridge.getCachedSession() === null ||
+          error.httpStatus !== 401)
+      ) {
+        this.requeueFront(volumeId);
+        this.pause("unauthenticated");
+        return null;
+      }
+
+      this.logger.warn(
+        "cover",
+        `表紙抽出に失敗したためエラーとして確定します: volumeId=${volumeId}`,
+        formatErrorDetail(error),
+      );
+      this.rateLimitAttempts.delete(volumeId);
+      this.pendingVolumesById.delete(volumeId);
+      this.pendingCount = this.pendingVolumesById.size;
+
+      if (latest !== null) {
+        const saved = await this.deps.volumesRepo.saveCoverError({
+          volumeId: latest.id,
+          expectedMd5Checksum: latest.md5Checksum,
+          expectedFileSize: latest.fileSize,
+        });
+        if (saved !== null) {
+          this.errorCount += 1;
+          this.emitVolumeUpdated({
+            volumeId: saved.id,
+            seriesId: saved.seriesId,
+            coverStatus: "error",
+            coverBlob: null,
+            coverUpdatedAt: saved.coverUpdatedAt,
+          });
+        }
+      }
+      this.emitProgress();
+      return null;
+    } finally {
+      if (this.activeAbortController === controller) {
+        this.activeAbortController = null;
+      }
+      if (didNetworkRead) {
+        this.lastNetworkCompletedAt = this.now();
+      }
+    }
+  }
+
+  private async runSyncPass(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+
+    if (this.deps.googleAuthBridge.getCachedSession() !== null) {
+      this.pauseReasons.delete("unauthenticated");
+    }
+
+    const activeRoots = await this.deps.driveSyncRootsRepo.listActive();
+    const enabledRootIds = new Set(
+      activeRoots
+        .filter((root) => root.enabled === 1)
+        .map((root) => root.folderId),
+    );
+    const [visibleVolumes, activeSeries] = await Promise.all([
+      this.deps.volumesRepo.listVisibleByEnabledRoots(enabledRootIds),
+      this.deps.seriesRepo.listActive(),
+    ]);
+
+    if (this.disposed) {
+      return;
+    }
+
+    this.enabledRootIds = enabledRootIds;
+
+    let ready = 0;
+    let error = 0;
+    const nextPendingMap = new Map<string, VolumeRecord>();
+    for (const volume of visibleVolumes) {
+      if (volume.coverStatus === "ready") {
+        ready += 1;
+      } else if (volume.coverStatus === "error") {
+        error += 1;
+      } else {
+        nextPendingMap.set(volume.id, volume);
+      }
+    }
+
+    if (
+      this.activeVolumeId !== null &&
+      !nextPendingMap.has(this.activeVolumeId)
+    ) {
+      this.schedulerEpoch += 1;
+      this.abortActiveOperation();
+      this.activeVolumeId = null;
+    }
+
+    const { representativeIds, otherIds } = buildPriorityOrder(
+      activeSeries,
+      visibleVolumes,
+    );
+
+    this.pendingVolumesById = nextPendingMap;
+    this.representativeOrder = representativeIds;
+    this.otherOrder = otherIds;
+    this.representativeSet = new Set(representativeIds);
+    this.readyCount = ready;
+    this.pendingCount = nextPendingMap.size;
+    this.errorCount = error;
+
+    this.rebuildQueuesFromOrders();
+    this.emitProgress();
+    this.ensureLoopRunning();
+  }
+
+  syncQueue(): Promise<void> {
+    if (this.disposed) {
+      return Promise.resolve();
+    }
+    if (this.syncPromise !== null) {
+      this.resyncRequested = true;
+      return this.syncPromise;
+    }
+
+    const promise = (async () => {
+      do {
+        this.resyncRequested = false;
+        await this.runSyncPass();
+      } while (this.resyncRequested && !this.disposed);
+    })().finally(() => {
+      if (this.syncPromise === promise) {
+        this.syncPromise = null;
+      }
+    });
+
+    this.syncPromise = promise;
+    return promise;
   }
 
   setViewportVolumeIds(
-    _screen: CoverViewportScreenKey,
-    _volumeIds: ReadonlySet<string>,
+    screen: CoverViewportScreenKey,
+    volumeIds: ReadonlySet<string>,
   ): void {
-    void _screen;
-    void _volumeIds;
+    if (this.disposed) {
+      return;
+    }
+    this.viewportByScreen.set(screen, new Set(volumeIds));
+    this.rebuildQueuesFromOrders();
+
+    if (
+      this.viewportHighQueue.length > 0 &&
+      this.throttleAbortController !== null
+    ) {
+      this.throttleAbortController.abort();
+      this.throttleAbortController = null;
+    }
   }
 
-  pause(_reason: CoverExtractionPauseReason): void {
-    void _reason;
+  pause(reason: CoverExtractionPauseReason): void {
+    if (this.disposed) {
+      return;
+    }
+    const added = !this.pauseReasons.has(reason);
+    this.pauseReasons.add(reason);
+    if (added) {
+      this.schedulerEpoch += 1;
+      this.abortActiveOperation();
+      this.phase = "idle";
+      this.emitProgress();
+    }
   }
 
-  resume(_reason: CoverExtractionPauseReason): void {
-    void _reason;
+  resume(reason: CoverExtractionPauseReason): void {
+    if (this.disposed) {
+      return;
+    }
+    const removed = this.pauseReasons.delete(reason);
+    if (!removed) {
+      return;
+    }
+    this.emitProgress();
+    this.ensureLoopRunning();
   }
 
-  async retryFailedCovers(_options?: {
+  async retryFailedCovers(options?: {
     readonly seriesId?: string;
   }): Promise<number> {
-    void _options;
-    throw new Error("Not implemented");
+    if (this.disposed) {
+      return 0;
+    }
+    const activeRoots = await this.deps.driveSyncRootsRepo.listActive();
+    const enabledRootIds = new Set(
+      activeRoots
+        .filter((root) => root.enabled === 1)
+        .map((root) => root.folderId),
+    );
+    const resetVolumes = await this.deps.volumesRepo.resetErrorCoversToPending({
+      enabledRootIds,
+      seriesId: options?.seriesId,
+    });
+
+    for (const volume of resetVolumes) {
+      this.rateLimitAttempts.delete(volume.id);
+      this.emitVolumeUpdated({
+        volumeId: volume.id,
+        seriesId: volume.seriesId,
+        coverStatus: "pending",
+        coverBlob: null,
+        coverUpdatedAt: null,
+      });
+    }
+
+    await this.syncQueue();
+    return resetVolumes.length;
   }
 
   getSnapshot(): CoverExtractionProgressSnapshot {
-    return EMPTY_SNAPSHOT;
+    return this.buildSnapshot();
   }
 
   subscribeProgress(
-    _listener: (snapshot: CoverExtractionProgressSnapshot) => void,
+    listener: (snapshot: CoverExtractionProgressSnapshot) => void,
   ): () => void {
-    void _listener;
-    return () => undefined;
+    this.progressListeners.add(listener);
+    return () => {
+      this.progressListeners.delete(listener);
+    };
   }
 
   subscribeVolumeUpdated(
-    _listener: (event: CoverExtractionVolumeUpdateEvent) => void,
+    listener: (event: CoverExtractionVolumeUpdateEvent) => void,
   ): () => void {
-    void _listener;
-    return () => undefined;
+    this.volumeListeners.add(listener);
+    return () => {
+      this.volumeListeners.delete(listener);
+    };
   }
 
   async resetForTest(): Promise<void> {
-    throw new Error("Not implemented");
+    this.schedulerEpoch += 1;
+    this.resyncRequested = false;
+    this.abortActiveOperation();
+
+    if (this.loopPromise !== null) {
+      await this.loopPromise;
+    }
+
+    this.pauseReasons.clear();
+    this.viewportByScreen.clear();
+    this.enabledRootIds.clear();
+    this.pendingVolumesById.clear();
+    this.representativeOrder = [];
+    this.otherOrder = [];
+    this.representativeSet.clear();
+    this.viewportHighQueue = [];
+    this.backgroundRepQueue = [];
+    this.backgroundOtherQueue = [];
+    this.rateLimitAttempts.clear();
+    this.readyCount = 0;
+    this.pendingCount = 0;
+    this.errorCount = 0;
+    this.activeVolumeId = null;
+    this.phase = "idle";
+    this.lastNetworkCompletedAt = null;
+    this.emitProgress();
   }
 
   dispose(): void {
-    // stub
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    this.schedulerEpoch += 1;
+    this.resyncRequested = false;
+    this.abortActiveOperation();
+    if (this.workerClient !== null) {
+      this.workerClient.dispose();
+      this.workerClient = null;
+    }
+    this.progressListeners.clear();
+    this.volumeListeners.clear();
   }
 }
 

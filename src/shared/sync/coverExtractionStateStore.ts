@@ -17,12 +17,25 @@ export interface CoverExtractionState extends CoverExtractionProgressSnapshot {
 }
 
 export const useCoverExtractionStateStore = create<CoverExtractionState>(
-  () => ({
+  (set) => ({
     ...INITIAL_COVER_EXTRACTION_SNAPSHOT,
-    applySnapshot: () => undefined,
+    applySnapshot: (snapshot) => {
+      set({
+        phase: snapshot.phase,
+        totalCount: snapshot.totalCount,
+        readyCount: snapshot.readyCount,
+        pendingCount: snapshot.pendingCount,
+        errorCount: snapshot.errorCount,
+        activeVolumeId: snapshot.activeVolumeId,
+        pauseReasons: [...snapshot.pauseReasons],
+      });
+    },
   }),
 );
 
 export function resetCoverExtractionState(): void {
-  // Red stub
+  useCoverExtractionStateStore.setState({
+    ...INITIAL_COVER_EXTRACTION_SNAPSHOT,
+    pauseReasons: [],
+  });
 }
