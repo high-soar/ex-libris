@@ -92,4 +92,31 @@ describe("SeriesSummaryCard", () => {
     fireEvent.click(screen.getByTestId("series-detail-primary-read-button"));
     expect(onQuickRead).toHaveBeenCalledWith("vol-2");
   });
+
+  it("代表表紙が pending のときのみ data-cover-volume-id を付与する (AC-SD-07)", () => {
+    const { unmount } = render(<Reading />);
+    expect(screen.getByTestId("series-summary-card")).toHaveAttribute(
+      "data-cover-volume-id",
+      "vol-1",
+    );
+    unmount();
+
+    render(
+      <SeriesSummaryCard
+        title={Reading.args.title!}
+        authors={Reading.args.authors!}
+        representativeVolume={{
+          ...Reading.args.representativeVolume!,
+          coverStatus: "ready",
+        }}
+        volumeCount={Reading.args.volumeCount!}
+        completedCount={Reading.args.completedCount!}
+        quickLaunch={Reading.args.quickLaunch!}
+        onQuickRead={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("series-summary-card")).not.toHaveAttribute(
+      "data-cover-volume-id",
+    );
+  });
 });

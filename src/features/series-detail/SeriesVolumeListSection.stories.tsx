@@ -128,3 +128,47 @@ export const MixedVolumes: Story = {
     volumes: SAMPLE_VOLUMES,
   },
 };
+
+const VOLUMES_WITH_ERRORS: readonly SeriesDetailVolumeItem[] = [
+  {
+    ...SAMPLE_VOLUMES[0]!,
+    volume: {
+      ...SAMPLE_VOLUMES[0]!.volume,
+      coverStatus: "ready",
+    },
+  },
+  {
+    ...SAMPLE_VOLUMES[1]!,
+    volume: {
+      ...SAMPLE_VOLUMES[1]!.volume,
+      coverStatus: "error",
+    },
+  },
+  {
+    ...SAMPLE_VOLUMES[2]!,
+    volume: {
+      ...SAMPLE_VOLUMES[2]!.volume,
+      coverStatus: "error",
+    },
+  },
+];
+
+/** 表紙取得失敗巻があり再試行可能な状態 */
+export const WithCoverErrors: Story = {
+  name: "表紙取得失敗あり（再試行可能）",
+  args: {
+    volumes: VOLUMES_WITH_ERRORS,
+    canRetryCovers: true,
+    onRetryFailedCovers: () => {},
+  },
+};
+
+/** 表紙取得失敗巻があるが未連携・同期中のため再試行非活性な状態 */
+export const WithCoverErrorsDisabled: Story = {
+  name: "表紙取得失敗あり（再試行非活性）",
+  args: {
+    volumes: VOLUMES_WITH_ERRORS,
+    canRetryCovers: false,
+    onRetryFailedCovers: () => {},
+  },
+};

@@ -5,6 +5,8 @@ import type { SeriesDetailVolumeItem } from "../bookshelf/bookshelfViewModel";
 
 export interface SeriesVolumeListSectionProps {
   readonly volumes: readonly SeriesDetailVolumeItem[];
+  readonly canRetryCovers?: boolean;
+  readonly onRetryFailedCovers?: () => void;
   readonly onSelectVolume: (volumeId: string) => void;
 }
 
