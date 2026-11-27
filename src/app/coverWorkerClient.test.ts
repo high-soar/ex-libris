@@ -54,7 +54,7 @@ describe("coverWorkerClient", () => {
             if (method === 8) {
               throw new ZipArchiveError("DECODE_FAILED", "壊れた画像");
             }
-            expect(data).toEqual(new Uint8Array([9, 8, 7]));
+            expect(Array.from(data)).toEqual([9, 8, 7]);
             return { blob: expectedBlob, width: 200, height: 300 };
           },
         };
