@@ -286,6 +286,10 @@ export function SettingsPage({
   }, [logger]);
 
   useEffect(() => {
+    window.scrollTo(0, 0);
+  }, []);
+
+  useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
