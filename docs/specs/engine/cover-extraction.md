@@ -264,7 +264,7 @@ export interface CoverExtractionScheduler {
    - **④ 一時通信・サーバー障害（オフライン・通信断［`READ_ERROR` かつ `httpStatus === undefined`］、`AUTH_NETWORK_ERROR`、HTTP `5xx`）**:
      - 蔵書全体がオフラインやサーバー一時障害で恒久 `"error"` 汚染されるのを防ぐため、`saveCoverError` は呼び出さない。
      - 連続一時障害回数 `transientErrorAttempts` が `COVER_RATE_LIMIT_MAX_RETRIES`（`3`）未満の間は、当該巻を `"pending"` のままキュー先頭へ戻し、`phase = "backoff"` で指数バックオフ（**`1000ms → 2000ms → 4000ms`**）待機後に再試行する（1 冊でも成功または非一時エラー確定した時点でカウンタを `0` へリセット）。
-     - `3` 回のリトライすべてに失敗した場合（計 4 回連続失敗）は、`diagnosticLogger.warn("cover", ...)` を記録し、当該巻を `"pending"` のままキュー先頭へ戻した上で当該セッションの自動ループを待機停止（`phase = "idle"`、`pendingCount` 維持、`errorCount` 非加算）とする。次回 `syncQueue()`・`resume()`・`retryFailedCovers()` 呼び出し時に待機停止を解除して自動再試行を再開する。
+     - `3` 回のリトライすべてに失敗した場合（計 4 回連続失敗）は、`diagnosticLogger.warn("cover", ...)` を記録し、当該巻を `"pending"` のままキュー先頭へ戻した上で当該セッションの自動ループを待機停止（`phase = "idle"`、`pendingCount` 維持、`errorCount` 非加算）とする。端末のオンライン復帰（`ServiceProvider` が購読する `window` の `online` イベントによる `syncQueue()` 自動発火）、または次回 `syncQueue()`・`resume()`・`retryFailedCovers()` 呼び出し時に待機停止を解除して自動再試行を再開する。
    - **⑤ 恒久的／個別アーカイブ異常（`404`, 非 Rate Limit の `403`, `416`, `CORRUPT_ZIP`, `EMPTY_ARCHIVE`, `ENCRYPTED_ZIP`, `UNSUPPORTED_COMPRESSION`, `DECODE_FAILED`, `coverPageIndex` 範囲外）**:
      - リトライを行わず `diagnosticLogger.warn("cover", ...)` を記録し、`VolumesRepository.saveCoverError({ volumeId: volume.id, expectedMd5Checksum: volume.md5Checksum, expectedFileSize: volume.fileSize })` で `coverStatus = "error"`, `coverBlob = null` を保存し、`subscribeVolumeUpdated`（`coverStatus: "error"`）と進捗更新を通知して直ちに次巻へ進む。
 
