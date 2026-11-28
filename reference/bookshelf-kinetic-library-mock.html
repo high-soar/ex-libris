@@ -1,0 +1,1811 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ExLibris — 案A 回転集密書架（エントランス & 左右ナビ比較モック）</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    :root {
+      --anim-scale: 1;
+      --brass: #d9a05b;
+      --brass-soft: rgba(217, 160, 91, 0.28);
+      --brass-glow: rgba(217, 160, 91, 0.45);
+      --shelf-wood-top: #4b3423;
+      --shelf-wood-front: #2e1f15;
+      --shelf-wood-edge: #6b4b33;
+      --wing-accent: #d9a05b;
+      --wing-light: rgba(255, 200, 130, 0.16);
+    }
+
+    [data-wing="entrance"] {
+      --wing-accent: #d9a05b;
+      --wing-light: rgba(217, 160, 91, 0.14);
+    }
+    [data-wing="manga"] {
+      --wing-accent: #d9a05b;
+      --wing-light: rgba(255, 198, 128, 0.17);
+    }
+    [data-wing="novel"] {
+      --wing-accent: #7cc49b;
+      --wing-light: rgba(124, 196, 155, 0.15);
+    }
+    [data-wing="art"] {
+      --wing-accent: #9bb8ff;
+      --wing-light: rgba(155, 184, 255, 0.16);
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .shelf-scroll::-webkit-scrollbar {
+      width: 5px;
+    }
+    .shelf-scroll::-webkit-scrollbar-track {
+      background: rgba(8, 11, 18, 0.5);
+    }
+    .shelf-scroll::-webkit-scrollbar-thumb {
+      background: rgba(217, 160, 91, 0.35);
+      border-radius: 999px;
+    }
+
+    /* 3D Stage */
+    .library-stage {
+      perspective: 1150px;
+      perspective-origin: 50% 46%;
+      position: relative;
+      overflow: hidden;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      touch-action: pan-y;
+    }
+    .library-stage.hidden,
+    .entrance-view.hidden {
+      display: none !important;
+    }
+
+    .floor-rails {
+      position: absolute;
+      inset: auto 0 0 0;
+      height: 52px;
+      background: linear-gradient(to top, rgba(6, 9, 15, 0.95), rgba(11, 15, 23, 0.3) 65%, transparent);
+      pointer-events: none;
+      z-index: 1;
+    }
+    .floor-rails::before,
+    .floor-rails::after {
+      content: "";
+      position: absolute;
+      left: 8%;
+      right: 8%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(217, 160, 91, 0.22) 25%, rgba(217, 160, 91, 0.35) 50%, rgba(217, 160, 91, 0.22) 75%, transparent);
+    }
+    .floor-rails::before { bottom: 16px; }
+    .floor-rails::after { bottom: 7px; opacity: 0.6; }
+
+    /* Layer transition wrapper */
+    .stacks-layer {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      transform-style: preserve-3d;
+      transition:
+        transform calc(380ms * var(--anim-scale)) cubic-bezier(0.22, 1, 0.36, 1),
+        opacity calc(300ms * var(--anim-scale)) ease;
+    }
+
+    .stacks-layer.anim-dive-out {
+      transform: scale(1.24) translateZ(120px);
+      opacity: 0;
+    }
+    .stacks-layer.anim-dive-in-start {
+      transform: scale(0.78) translateZ(-140px);
+      opacity: 0;
+      transition: none !important;
+    }
+    .stacks-layer.anim-rise-out {
+      transform: scale(0.78) translateZ(-120px);
+      opacity: 0;
+    }
+    .stacks-layer.anim-rise-in-start {
+      transform: scale(1.22) translateZ(120px);
+      opacity: 0;
+      transition: none !important;
+    }
+
+    /* Entrance View */
+    .entrance-view {
+      width: 100%;
+      height: 100%;
+      overflow-y: auto;
+      padding: 16px 14px 20px;
+      transition:
+        transform calc(360ms * var(--anim-scale)) cubic-bezier(0.22, 1, 0.36, 1),
+        opacity calc(280ms * var(--anim-scale)) ease;
+    }
+    .entrance-view.anim-dive-out {
+      transform: scale(1.14);
+      opacity: 0;
+    }
+    .entrance-view.anim-rise-in-start {
+      transform: scale(0.9);
+      opacity: 0;
+      transition: none !important;
+    }
+
+    .wing-gate-card {
+      position: relative;
+      overflow: hidden;
+      border-radius: 14px;
+      background: linear-gradient(155deg, rgba(26, 34, 48, 0.94) 0%, rgba(13, 18, 28, 0.98) 100%);
+      border: 1px solid rgba(217, 160, 91, 0.25);
+      box-shadow: 0 14px 28px rgba(0, 0, 0, 0.55);
+      transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), border-color 220ms ease, box-shadow 220ms ease;
+      cursor: pointer;
+    }
+    .wing-gate-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--gate-color, #d9a05b);
+      box-shadow: 0 18px 34px rgba(0, 0, 0, 0.65), 0 0 18px var(--gate-glow, rgba(217, 160, 91, 0.22));
+    }
+    .wing-gate-card:active {
+      transform: scale(0.985);
+    }
+    .wing-gate-toplight {
+      height: 3px;
+      background: linear-gradient(90deg, transparent 5%, var(--gate-color, #d9a05b) 35%, #fff5df 50%, var(--gate-color, #d9a05b) 65%, transparent 95%);
+      opacity: 0.85;
+    }
+
+    /* Individual 3D Bookcase Unit */
+    .stack-unit {
+      position: absolute;
+      top: 8px;
+      bottom: 14px;
+      left: 50%;
+      width: var(--stack-width, 82%);
+      margin-left: calc(var(--stack-width, 82%) / -2);
+      transform-style: preserve-3d;
+      transition:
+        transform calc(520ms * var(--anim-scale)) cubic-bezier(0.22, 1, 0.36, 1),
+        opacity calc(420ms * var(--anim-scale)) ease,
+        filter calc(420ms * var(--anim-scale)) ease;
+      will-change: transform, opacity;
+    }
+
+    .stack-front {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(180deg, #171e2b 0%, #10151f 100%);
+      border: 2px solid #2b364a;
+      border-radius: 10px;
+      box-shadow:
+        0 24px 48px rgba(0, 0, 0, 0.72),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08),
+        inset 0 22px 34px -12px var(--wing-light);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      backface-visibility: hidden;
+    }
+
+    .stack-top-light {
+      height: 3px;
+      background: linear-gradient(90deg, transparent 4%, var(--wing-accent) 28%, #fff2d6 50%, var(--wing-accent) 72%, transparent 96%);
+      opacity: 0.85;
+      box-shadow: 0 2px 14px var(--wing-accent);
+      flex-shrink: 0;
+    }
+
+    .stack-side-panel {
+      position: absolute;
+      inset: 0;
+      border-radius: 10px;
+      background:
+        repeating-linear-gradient(
+          180deg,
+          rgba(255, 255, 255, 0.025) 0px,
+          rgba(255, 255, 255, 0.025) 2px,
+          transparent 2px,
+          transparent 18px
+        ),
+        linear-gradient(180deg, #1d2534 0%, #121824 55%, #0d121c 100%);
+      border: 2px solid #2f3c52;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 16px 10px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity calc(300ms * var(--anim-scale)) ease;
+      box-shadow: inset 0 0 36px rgba(0, 0, 0, 0.65);
+    }
+
+    .stack-unit[data-rel="left"] .stack-side-panel,
+    .stack-unit[data-rel="right"] .stack-side-panel,
+    .stack-unit[data-rel="far-left"] .stack-side-panel,
+    .stack-unit[data-rel="far-right"] .stack-side-panel {
+      opacity: 1;
+      pointer-events: auto;
+      cursor: pointer;
+    }
+
+    .stack-unit[data-rel="left"] .stack-front-inner,
+    .stack-unit[data-rel="right"] .stack-front-inner,
+    .stack-unit[data-rel="far-left"] .stack-front-inner,
+    .stack-unit[data-rel="far-right"] .stack-front-inner {
+      opacity: 0.14;
+      pointer-events: none;
+    }
+
+    .brass-plaque {
+      background: linear-gradient(135deg, #e7bc7c 0%, #b67d39 48%, #8f5e24 100%);
+      color: #161007;
+      border: 1px solid #f6d59e;
+      box-shadow:
+        0 4px 12px rgba(0, 0, 0, 0.55),
+        inset 0 1px 0 rgba(255, 248, 224, 0.65);
+      font-weight: 700;
+      letter-spacing: 0.05em;
+    }
+
+    .brass-plaque-dark {
+      background: linear-gradient(180deg, rgba(217, 160, 91, 0.16) 0%, rgba(217, 160, 91, 0.06) 100%);
+      border: 1px solid rgba(217, 160, 91, 0.42);
+      color: #f3d7ad;
+    }
+
+    .shelf-plank {
+      height: 11px;
+      margin: 0 -8px;
+      background: linear-gradient(
+        180deg,
+        var(--shelf-wood-edge) 0%,
+        var(--shelf-wood-top) 32%,
+        var(--shelf-wood-front) 100%
+      );
+      box-shadow:
+        0 6px 12px rgba(0, 0, 0, 0.7),
+        inset 0 1px 0 rgba(255, 220, 175, 0.22);
+      position: relative;
+      z-index: 2;
+    }
+
+    .shelf-tier {
+      position: relative;
+      padding: 12px 8px 0 8px;
+      background: linear-gradient(180deg, var(--wing-light) 0%, rgba(10, 14, 22, 0.15) 38%, rgba(6, 9, 15, 0.48) 100%);
+    }
+
+    .book-card {
+      transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+      cursor: pointer;
+    }
+    .book-card:hover {
+      transform: translateY(-4px) scale(1.02);
+    }
+    .book-card:active {
+      transform: translateY(-2px) scale(0.98);
+    }
+
+    .book-cover-frame {
+      aspect-ratio: 2 / 2.85;
+      border-radius: 4px 5px 5px 4px;
+      box-shadow:
+        -3px 6px 12px rgba(0, 0, 0, 0.72),
+        inset 3px 0 6px rgba(255, 255, 255, 0.18),
+        inset -1px 0 2px rgba(0, 0, 0, 0.5);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .sub-bay-card {
+      background: linear-gradient(180deg, rgba(28, 36, 52, 0.92) 0%, rgba(17, 23, 34, 0.96) 100%);
+      border: 1px solid rgba(217, 160, 91, 0.28);
+      border-radius: 8px;
+      transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), border-color 200ms ease, box-shadow 200ms ease;
+      cursor: pointer;
+    }
+    .sub-bay-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--wing-accent);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5), 0 0 14px var(--wing-light);
+    }
+
+    /* Neighbor Navigator Bar (between breadcrumb and bookcase) */
+    .neighbor-nav {
+      background: linear-gradient(180deg, rgba(16, 22, 34, 0.92) 0%, rgba(10, 14, 22, 0.72) 100%);
+      border-bottom: 1px solid rgba(217, 160, 91, 0.18);
+    }
+  </style>
+</head>
+<body class="bg-[var(--background)] text-[var(--foreground)] antialiased min-h-screen m-0 p-0">
+  <div class="max-w-5xl mx-auto px-4 py-4 flex flex-col items-center gap-4">
+    <!-- Top Prototype Control Bar -->
+    <div class="w-full bg-[var(--card)] border border-[var(--border)] rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+      <div class="flex flex-col gap-0.5">
+        <div class="font-semibold text-sm flex items-center gap-2">
+          <span>ExLibris 案A プロトタイプ v2</span>
+          <span class="px-2 py-0.5 rounded-full bg-[var(--secondary)] text-[var(--secondary-foreground)] text-[11px] font-mono">
+            エントランス + 上部左右ナビ検証
+          </span>
+        </div>
+        <p class="text-[var(--muted-foreground)] m-0">
+          第0層エントランスから各館へダイブ ／ 右上「⌂ ホーム」でエントランスへ復帰 ／ 上部左右ナビは ON/OFF で比較できます
+        </p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <div class="inline-flex rounded-lg border border-[var(--border)] overflow-hidden">
+          <button id="btn-mobile" class="px-2.5 py-1.5 font-medium transition-colors" onclick="setViewport('mobile')">
+            スマホ縦
+          </button>
+          <button id="btn-tablet" class="px-2.5 py-1.5 font-medium transition-colors border-l border-[var(--border)]" onclick="setViewport('tablet')">
+            タブレット縦
+          </button>
+        </div>
+        <div class="inline-flex rounded-lg border border-[var(--border)] overflow-hidden">
+          <button id="btn-nav-on" class="px-2.5 py-1.5 font-medium transition-colors" onclick="setShowTopNav(true)">
+            左右ナビ ON
+          </button>
+          <button id="btn-nav-off" class="px-2.5 py-1.5 font-medium transition-colors border-l border-[var(--border)]" onclick="setShowTopNav(false)">
+            左右ナビ OFF
+          </button>
+        </div>
+        <div class="inline-flex rounded-lg border border-[var(--border)] overflow-hidden">
+          <button id="btn-speed-normal" class="px-2.5 py-1.5 font-medium transition-colors" onclick="setSpeed(1)">
+            1.0x
+          </button>
+          <button id="btn-speed-slow" class="px-2.5 py-1.5 font-medium transition-colors border-l border-[var(--border)]" onclick="setSpeed(2.2)">
+            0.45x
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Interactive Viewport Container -->
+    <div class="w-full flex flex-col lg:flex-row items-start justify-center gap-5">
+      <!-- App Portrait Viewport -->
+      <div
+        id="app-viewport"
+        data-wing="entrance"
+        class="relative mx-auto rounded-2xl overflow-hidden shadow-2xl border border-slate-700/80 flex flex-col transition-all duration-300"
+        style="width: 390px; height: 760px; background: radial-gradient(circle at 50% 0%, #192234 0%, #0b0f17 58%, #070a10 100%); color: #eef2f7;"
+      >
+        <!-- Compact Single-Row Header -->
+        <header class="px-3.5 py-2.5 border-b border-slate-800/90 bg-slate-950/80 backdrop-blur-md z-20 shrink-0 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <div class="w-6 h-6 rounded-md flex items-center justify-center brass-plaque text-[11px]">Ex</div>
+            <span class="font-semibold tracking-wider text-sm text-amber-100">ExLibris</span>
+            <span id="layer-badge" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800/90 text-amber-200/90 font-mono">L0 エントランス</span>
+          </div>
+          <div class="flex items-center gap-1.5 text-[11px]">
+            <button
+              id="btn-home-entrance"
+              onclick="returnToEntrance()"
+              class="hidden px-2 py-1 rounded-md brass-plaque-dark hover:brightness-125 transition-all flex items-center gap-1 font-medium"
+            >
+              <span>⌂</span><span>エントランス</span>
+            </button>
+            <span id="entrance-total-badge" class="font-mono text-amber-200/80">全 1,835 冊</span>
+            <button
+              id="btn-open-search"
+              onclick="openSearchModal()"
+              aria-label="蔵書を検索"
+              title="蔵書検索ダイアログを開く"
+              class="w-7 h-7 rounded-md bg-slate-800/90 hover:bg-slate-700 border border-amber-500/35 text-amber-200 flex items-center justify-center transition-all"
+            >
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="7"></circle>
+                <path d="m20 20-3.5-3.5"></path>
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <!-- Library Breadcrumb Bar (Visible inside Wings: L1 / L2) -->
+        <nav id="breadcrumb-wrap" class="hidden px-3.5 py-1.5 bg-slate-950/65 border-b border-slate-800/70 flex items-center justify-between gap-2 z-20 shrink-0">
+          <div id="breadcrumb-bar" class="flex items-center gap-1 text-xs overflow-x-auto whitespace-nowrap"></div>
+          <button
+            id="btn-up-level"
+            onclick="riseLevel()"
+            class="hidden shrink-0 px-2 py-0.5 rounded-md text-[11px] font-medium brass-plaque-dark hover:brightness-125 transition-all"
+          >
+            ↑ 上へ
+          </button>
+        </nav>
+
+        <!-- Adjacent Bookcase Navigator Bar (Between Breadcrumb & Bookcase — Toggleable) -->
+        <div id="neighbor-nav" class="hidden neighbor-nav px-2.5 py-1.5 z-20 shrink-0">
+          <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-xs">
+            <button
+              id="neighbor-left"
+              onclick="stepStack(-1)"
+              class="flex items-center gap-1.5 text-left text-slate-300 hover:text-amber-200 transition-colors min-w-0 px-1.5 py-0.5 rounded hover:bg-slate-800/60"
+            ></button>
+            <span class="h-3.5 w-px bg-amber-500/25 shrink-0" aria-hidden="true"></span>
+            <button
+              id="neighbor-right"
+              onclick="stepStack(1)"
+              class="flex items-center justify-end gap-1.5 text-right text-slate-300 hover:text-amber-200 transition-colors min-w-0 px-1.5 py-0.5 rounded hover:bg-slate-800/60"
+            ></button>
+          </div>
+        </div>
+
+        <!-- LAYER 0: Library Entrance Screen -->
+        <section id="entrance-view" class="entrance-view shelf-scroll flex-1">
+          <!-- Atmospheric Greeting -->
+          <div class="mb-3.5">
+            <div class="text-[10px] font-mono tracking-widest text-amber-300/80 uppercase">PRIVATE HIGH-SPEED LIBRARY</div>
+            <h1 class="text-lg font-bold text-slate-100 m-0 mt-0.5">書庫エントランス</h1>
+            <p class="text-[11px] text-slate-400 m-0 mt-0.5">入りたい館（ルートフォルダ）を選んでください</p>
+          </div>
+
+          <!-- Quick Resume Desk Strip (1-tap jump back to last read) -->
+          <div
+            onclick="openQuickResume()"
+            class="mb-4 p-2.5 rounded-xl bg-slate-900/90 border border-amber-500/35 hover:border-amber-400/70 transition-all cursor-pointer flex items-center gap-3 shadow-lg"
+          >
+            <div id="quick-resume-cover" class="w-10 shrink-0"></div>
+            <div class="flex-1 min-w-0">
+              <div class="text-[10px] font-mono text-amber-300/90">さっき読んでいた本（1タップ再開）</div>
+              <div class="text-xs font-bold text-slate-100 truncate">星屑のアーカイバ 第11巻</div>
+              <div class="text-[10px] text-slate-400 truncate">マンガ館 ・ 進捗 78%</div>
+            </div>
+            <div class="shrink-0 px-2.5 py-1.5 rounded-lg brass-plaque text-[11px]">▶ 続き</div>
+          </div>
+
+          <!-- Wing Gate Cards (Layer 0) -->
+          <div id="wing-gates" class="space-y-3"></div>
+        </section>
+
+        <!-- LAYER 1 & 2: 3D Rotating Bookcases Stage -->
+        <main id="library-stage" class="hidden library-stage">
+          <div class="floor-rails"></div>
+          <div id="stacks-layer" class="stacks-layer"></div>
+
+          <button
+            id="nav-prev"
+            onclick="stepStack(-1)"
+            aria-label="左の書架へ"
+            class="absolute left-1.5 top-1/2 -translate-y-1/2 z-30 w-8 h-12 rounded-lg bg-slate-950/75 hover:bg-slate-900 border border-amber-500/30 text-amber-200 flex items-center justify-center text-base shadow-lg transition-all"
+          >
+            ‹
+          </button>
+          <button
+            id="nav-next"
+            onclick="stepStack(1)"
+            aria-label="右の書架へ"
+            class="absolute right-1.5 top-1/2 -translate-y-1/2 z-30 w-8 h-12 rounded-lg bg-slate-950/75 hover:bg-slate-900 border border-amber-500/30 text-amber-200 flex items-center justify-center text-base shadow-lg transition-all"
+          >
+            ›
+          </button>
+        </main>
+
+        <!-- Bottom Kinetic Index Rail (Visible inside Wings) -->
+        <footer id="stack-rail-wrap" class="hidden px-3 py-2 bg-slate-950/90 border-t border-slate-800/90 z-20 shrink-0">
+          <div id="stack-rail" class="flex items-center gap-1.5 overflow-x-auto pb-0.5"></div>
+        </footer>
+
+        <!-- Pull-out Book Preview Overlay -->
+        <div
+          id="book-modal"
+          class="hidden absolute inset-0 z-40 bg-slate-950/80 backdrop-blur-sm flex items-end justify-center p-3"
+          onclick="closeBookModal()"
+        >
+          <div
+            class="w-full rounded-2xl bg-slate-900 border border-amber-500/35 p-4 shadow-2xl"
+            onclick="event.stopPropagation()"
+          >
+            <div class="flex gap-3.5 items-start">
+              <div id="modal-cover" class="w-24 shrink-0"></div>
+              <div class="flex-1 min-w-0">
+                <div id="modal-tag" class="text-[11px] font-mono text-amber-300/90 mb-1"></div>
+                <h3 id="modal-title" class="text-base font-bold text-slate-100 leading-snug m-0 mb-1"></h3>
+                <p id="modal-author" class="text-xs text-slate-400 m-0 mb-2.5"></p>
+                <div id="modal-meta" class="flex flex-wrap gap-1.5 text-[11px] mb-3"></div>
+              </div>
+            </div>
+            <div class="mt-3 pt-3 border-t border-slate-800 flex items-center gap-2">
+              <button
+                onclick="simulateRead()"
+                class="flex-1 py-2.5 px-3 rounded-xl brass-plaque text-xs font-bold tracking-wide hover:brightness-110 transition-all"
+              >
+                ▶ 続きを読む（WebGL2 リーダー起動）
+              </button>
+              <button
+                onclick="closeBookModal()"
+                class="py-2.5 px-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition-colors"
+              >
+                棚に戻す
+              </button>
+            </div>
+            <div id="modal-toast" class="hidden mt-2 text-center text-[11px] text-emerald-300 bg-emerald-950/70 border border-emerald-700/50 rounded-lg py-1.5">
+              Fast-Path 1RTT でリーダーを開くイメージです（モック動作）
+            </div>
+          </div>
+        </div>
+
+        <!-- Library Search Dialog Overlay -->
+        <div
+          id="search-modal"
+          class="hidden absolute inset-0 z-50 bg-slate-950/82 backdrop-blur-sm flex items-start justify-center p-3 pt-10"
+          onclick="closeSearchModal()"
+        >
+          <div
+            class="w-full max-h-[84%] rounded-2xl bg-slate-900 border border-amber-500/40 shadow-2xl flex flex-col overflow-hidden"
+            onclick="event.stopPropagation()"
+          >
+            <!-- Search Header & Input -->
+            <div class="p-3 border-b border-slate-800 bg-slate-950/70 space-y-2.5 shrink-0">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-1.5 text-xs font-bold text-amber-100">
+                  <span>🔍</span><span>蔵書検索（ローカル即時検索）</span>
+                </div>
+                <button
+                  onclick="closeSearchModal()"
+                  class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px]"
+                >
+                  閉じる
+                </button>
+              </div>
+              <div class="relative">
+                <input
+                  id="search-input"
+                  type="text"
+                  placeholder="タイトル・著者・ジャンルで検索..."
+                  oninput="renderSearchResults()"
+                  class="w-full pl-3 pr-8 py-2 rounded-xl bg-slate-900 border border-slate-700 focus:border-amber-400 focus:outline-none text-xs text-slate-100 placeholder-slate-500"
+                />
+                <button
+                  onclick="clearSearchInput()"
+                  title="クリア"
+                  class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 text-xs px-1"
+                >
+                  ✕
+                </button>
+              </div>
+              <!-- Scope Filter Chips -->
+              <div id="search-scope-chips" class="flex items-center gap-1 overflow-x-auto text-[11px]"></div>
+              <!-- Sample Quick Keywords -->
+              <div class="flex items-center gap-1 flex-wrap text-[10px] text-slate-400">
+                <span>例:</span>
+                <button onclick="applySearchSample('探偵')" class="px-1.5 py-0.5 rounded bg-slate-800/90 hover:bg-slate-700 text-amber-200/90">探偵</button>
+                <button onclick="applySearchSample('蒼井')" class="px-1.5 py-0.5 rounded bg-slate-800/90 hover:bg-slate-700 text-amber-200/90">蒼井</button>
+                <button onclick="applySearchSample('未読')" class="px-1.5 py-0.5 rounded bg-slate-800/90 hover:bg-slate-700 text-amber-200/90">未読</button>
+                <button onclick="applySearchSample('画集')" class="px-1.5 py-0.5 rounded bg-slate-800/90 hover:bg-slate-700 text-amber-200/90">画集</button>
+                <button onclick="applySearchSample('王国')" class="px-1.5 py-0.5 rounded bg-slate-800/90 hover:bg-slate-700 text-amber-200/90">王国</button>
+              </div>
+            </div>
+
+            <!-- Search Results List -->
+            <div id="search-results" class="shelf-scroll flex-1 overflow-y-auto p-2.5 space-y-2"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Side Comparison Notes -->
+      <aside class="w-full lg:w-72 bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 text-xs space-y-3 shrink-0">
+        <div class="font-semibold text-sm border-b border-[var(--border)] pb-2">
+          v2 の変更ポイント
+        </div>
+        <div class="space-y-2.5 text-[var(--muted-foreground)] leading-relaxed">
+          <div class="p-2.5 rounded-lg bg-[var(--background)] border border-[var(--border)]">
+            <div class="font-semibold text-[var(--foreground)] mb-0.5">1. 第0層「書庫エントランス」</div>
+            上部の館タブを撤廃し、独立したエントランス画面へ。各館のゲートをタップすると中へダイブし、右上の <strong class="text-[var(--foreground)]">⌂ エントランス</strong>（またはパンくずの「エントランス」）で戻れます。
+          </div>
+          <div class="p-2.5 rounded-lg bg-[var(--background)] border border-[var(--border)]">
+            <div class="font-semibold text-[var(--foreground)] mb-0.5">2. パンくず〜書架間の「左右ナビ」</div>
+            視線が集まる書架のすぐ上に <code class="text-[var(--foreground)]">‹ 左の書架 | 現在 | 右の書架 ›</code> を配置しました。<br />
+            上部タブが無くなった分の縦スペースに収まっているため、書架の高さは v1 とほぼ同じです。
+          </div>
+          <div class="p-2.5 rounded-lg bg-[var(--background)] border border-[var(--border)]">
+            <div class="font-semibold text-[var(--foreground)] mb-0.5">3. ON / OFF で直接比較</div>
+            上のコントロールバーの <strong class="text-[var(--foreground)]">「左右ナビ ON / OFF」</strong> を押すと、1行分のスペース差と視認性の違いをリアルタイムで見比べられます。
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    const PALETTES = [
+      ["#2d4a7c", "#111c33", "#e8b068"],
+      ["#6b2737", "#240c14", "#f2c68d"],
+      ["#1f5c52", "#0b2421", "#a3e4d7"],
+      ["#53326b", "#1c0e29", "#d8b4fe"],
+      ["#7c4a1e", "#2b1708", "#fde68a"],
+      ["#2c4b5e", "#0e1d26", "#93c5fd"],
+      ["#6e2c4b", "#260d19", "#fbcfe8"],
+      ["#3c5a2d", "#15210e", "#bef264"],
+      ["#4f4675", "#19152b", "#c4b5fd"],
+      ["#733926", "#29120b", "#fdba74"]
+    ];
+
+    function makeBooks(seedList, wingLabel) {
+      return seedList.map((item, idx) => {
+        const pal = PALETTES[(idx + item.title.length) % PALETTES.length];
+        return {
+          id: `${wingLabel}-${idx}-${item.title}`,
+          title: item.title,
+          author: item.author,
+          volumes: item.volumes,
+          currentVol: item.currentVol ?? 1,
+          progress: item.progress ?? Math.floor(((idx * 37) % 90) + 10),
+          status: item.status ?? (idx % 4 === 0 ? "読了" : idx % 3 === 0 ? "未読" : "読書中"),
+          tag: item.tag || wingLabel,
+          palette: pal
+        };
+      });
+    }
+
+    const LIBRARY_DATA = {
+      manga: {
+        id: "manga",
+        name: "マンガ館",
+        en: "COMICS WING",
+        icon: "📚",
+        driveRoot: "/Drive/Comics",
+        desc: "単行本・合本コミック（ジャンル / 五十音 / マイ書架）",
+        totalVolumes: "1,240 冊",
+        seriesCount: "148 作品",
+        gateColor: "#d9a05b",
+        gateGlow: "rgba(217, 160, 91, 0.24)",
+        stacks: [
+          {
+            id: "reading",
+            code: "DESK-01",
+            title: "閲覧デスク",
+            subtitle: "最近読んだ作品・すぐ続きを開く",
+            kind: "books",
+            books: makeBooks([
+              { title: "星屑のアーカイバ", author: "蒼井 透", volumes: 14, currentVol: 11, progress: 78, status: "読書中", tag: "SF" },
+              { title: "深淵図書館の司書", author: "黒木 律", volumes: 8, currentVol: 6, progress: 64, status: "読書中", tag: "ファンタジー" },
+              { title: "夜の標本室", author: "白石 紡", volumes: 12, currentVol: 9, progress: 42, status: "読書中", tag: "ミステリー" },
+              { title: "軌道エレベーターの料理人", author: "橘 航", volumes: 6, currentVol: 4, progress: 85, status: "読書中", tag: "日常SF" },
+              { title: "硝子細工の探偵譚", author: "久遠 栞", volumes: 19, currentVol: 15, progress: 55, status: "読書中", tag: "ミステリー" },
+              { title: "蒼穹のグリモア", author: "水無瀬 蓮", volumes: 22, currentVol: 18, progress: 91, status: "読書中", tag: "冒険" },
+              { title: "雨降る古書店街", author: "葉月 悠", volumes: 5, currentVol: 2, progress: 30, status: "読書中", tag: "日常" },
+              { title: "時計塔のクロニクル", author: "神崎 澪", volumes: 11, currentVol: 11, progress: 100, status: "読了", tag: "ファンタジー" },
+              { title: "零式機甲師団", author: "佐伯 剛", volumes: 16, currentVol: 7, progress: 45, status: "読書中", tag: "メカ" },
+              { title: "月影の旅籠", author: "藤宮 環", volumes: 9, currentVol: 3, progress: 22, status: "読書中", tag: "時代劇" },
+              { title: "電脳書庫の迷宮", author: "九条 創", volumes: 7, currentVol: 5, progress: 68, status: "読書中", tag: "サイバーパンク" },
+              { title: "白銀の観測者", author: "雪村 玲", volumes: 10, currentVol: 1, progress: 12, status: "読書中", tag: "SF" }
+            ], "閲覧中")
+          },
+          {
+            id: "genre",
+            code: "AISLE-A",
+            title: "ジャンル書架",
+            subtitle: "タップで各ジャンルの詳細棚へ潜る",
+            kind: "directory",
+            children: [
+              {
+                id: "sf-fantasy",
+                code: "A-01",
+                title: "SF・ファンタジー",
+                countLabel: "42 作品",
+                desc: "星間航行・異世界・魔導書庫系",
+                books: makeBooks([
+                  { title: "星屑のアーカイバ", author: "蒼井 透", volumes: 14, currentVol: 11, progress: 78 },
+                  { title: "深淵図書館の司書", author: "黒木 律", volumes: 8, currentVol: 6, progress: 64 },
+                  { title: "蒼穹のグリモア", author: "水無瀬 蓮", volumes: 22, currentVol: 18, progress: 91 },
+                  { title: "電脳書庫の迷宮", author: "九条 創", volumes: 7, currentVol: 5, progress: 68 },
+                  { title: "白銀の観測者", author: "雪村 玲", volumes: 10, currentVol: 1, progress: 12 },
+                  { title: "軌道エレベーターの料理人", author: "橘 航", volumes: 6, currentVol: 4, progress: 85 },
+                  { title: "時計塔のクロニクル", author: "神崎 澪", volumes: 11, currentVol: 11, progress: 100 },
+                  { title: "零式機甲師団", author: "佐伯 剛", volumes: 16, currentVol: 7, progress: 45 },
+                  { title: "星海航路の地図師", author: "朝霧 圭", volumes: 9, currentVol: 1, progress: 0, status: "未読" },
+                  { title: "錬金術師の仮説", author: "桐生 朔", volumes: 13, currentVol: 8, progress: 60 },
+                  { title: "古代遺跡の翻訳官", author: "高瀬 凛", volumes: 5, currentVol: 5, progress: 100, status: "読了" },
+                  { title: "重力井戸の向こう側", author: "遠野 迅", volumes: 15, currentVol: 10, progress: 72 }
+                ], "SF・ファンタジー")
+              },
+              {
+                id: "mystery",
+                code: "A-02",
+                title: "ミステリー・サスペンス",
+                countLabel: "28 作品",
+                desc: "探偵・密室・心理戦",
+                books: makeBooks([
+                  { title: "夜の標本室", author: "白石 紡", volumes: 12, currentVol: 9, progress: 42 },
+                  { title: "硝子細工の探偵譚", author: "久遠 栞", volumes: 19, currentVol: 15, progress: 55 },
+                  { title: "霧の館の七人目", author: "綾辻 匠", volumes: 6, currentVol: 6, progress: 100, status: "読了" },
+                  { title: "暗号解読官の憂鬱", author: "御影 駿", volumes: 10, currentVol: 4, progress: 35 },
+                  { title: "真夜中の証言台", author: "冴木 凛", volumes: 8, currentVol: 2, progress: 25 },
+                  { title: "消えた初版本の謎", author: "古賀 誠", volumes: 5, currentVol: 1, progress: 0, status: "未読" },
+                  { title: "時計仕掛けのアリバイ", author: "真壁 悠", volumes: 11, currentVol: 7, progress: 62 },
+                  { title: "赤レンガ倉庫の密室", author: "東雲 啓", volumes: 9, currentVol: 9, progress: 100, status: "読了" },
+                  { title: "偽書鑑定人の記録", author: "北条 澪", volumes: 7, currentVol: 3, progress: 40 }
+                ], "ミステリー")
+              },
+              {
+                id: "slice",
+                code: "A-03",
+                title: "日常・グルメ・青春",
+                countLabel: "35 作品",
+                desc: "ゆったり読める日常と旅",
+                books: makeBooks([
+                  { title: "雨降る古書店街", author: "葉月 悠", volumes: 5, currentVol: 2, progress: 30 },
+                  { title: "深夜喫茶のトースト", author: "小鳥遊 葵", volumes: 9, currentVol: 6, progress: 66 },
+                  { title: "週末キャンプと珈琲", author: "森下 陽", volumes: 12, currentVol: 10, progress: 84 },
+                  { title: "海辺のレコード店", author: "凪 咲良", volumes: 4, currentVol: 4, progress: 100, status: "読了" },
+                  { title: "路地裏の猫と設計士", author: "柴田 薫", volumes: 8, currentVol: 3, progress: 38 },
+                  { title: "放課後天文部のノート", author: "星野 結衣", volumes: 7, currentVol: 5, progress: 70 },
+                  { title: "路面電車で巡るパン屋", author: "結城 楓", volumes: 6, currentVol: 1, progress: 15 },
+                  { title: "冬の温泉とスケッチ帳", author: "雪見 澄", volumes: 5, currentVol: 2, progress: 40 },
+                  { title: "小さな植物園の休日", author: "緑川 芽", volumes: 10, currentVol: 8, progress: 80 }
+                ], "日常")
+              },
+              {
+                id: "history",
+                code: "A-04",
+                title: "歴史・時代・群像劇",
+                countLabel: "19 作品",
+                desc: "戦国・幕末・中世ヨーロッパ",
+                books: makeBooks([
+                  { title: "月影の旅籠", author: "藤宮 環", volumes: 9, currentVol: 3, progress: 22 },
+                  { title: "大航海時代の羅針盤", author: "黒田 遼", volumes: 18, currentVol: 12, progress: 68 },
+                  { title: "京都町衆の算術師", author: "桂 宗介", volumes: 7, currentVol: 7, progress: 100, status: "読了" },
+                  { title: "シルクロードの隊商", author: "砂川 蓮", volumes: 14, currentVol: 9, progress: 64 },
+                  { title: "活版印刷所の革命", author: "森 健吾", volumes: 11, currentVol: 5, progress: 45 },
+                  { title: "北辺の砦守", author: "伊達 剛", volumes: 13, currentVol: 2, progress: 18 }
+                ], "歴史")
+              }
+            ]
+          },
+          {
+            id: "kana",
+            code: "AISLE-B",
+            title: "著者（五十音）書架",
+            subtitle: "あ行〜わ行の棚へ素早くダイブ",
+            kind: "directory",
+            children: [
+              {
+                id: "kana-a",
+                code: "あ行",
+                title: "あ行の著者棚",
+                countLabel: "24 作品",
+                desc: "蒼井 / 朝霧 / 綾辻 / 伊達...",
+                books: makeBooks([
+                  { title: "星屑のアーカイバ", author: "蒼井 透", volumes: 14, currentVol: 11 },
+                  { title: "星海航路の地図師", author: "朝霧 圭", volumes: 9, currentVol: 1 },
+                  { title: "霧の館の七人目", author: "綾辻 匠", volumes: 6, currentVol: 6 },
+                  { title: "北辺の砦守", author: "伊達 剛", volumes: 13, currentVol: 2 },
+                  { title: "青空の製図板", author: "相沢 翼", volumes: 5, currentVol: 3 },
+                  { title: "秋風の郵便局", author: "雨宮 栞", volumes: 8, currentVol: 8 }
+                ], "あ行")
+              },
+              {
+                id: "kana-ka",
+                code: "か行",
+                title: "か行の著者棚",
+                countLabel: "31 作品",
+                desc: "神崎 / 久遠 / 九条 / 黒木...",
+                books: makeBooks([
+                  { title: "時計塔のクロニクル", author: "神崎 澪", volumes: 11, currentVol: 11 },
+                  { title: "硝子細工の探偵譚", author: "久遠 栞", volumes: 19, currentVol: 15 },
+                  { title: "電脳書庫の迷宮", author: "九条 創", volumes: 7, currentVol: 5 },
+                  { title: "深淵図書館の司書", author: "黒木 律", volumes: 8, currentVol: 6 },
+                  { title: "大航海時代の羅針盤", author: "黒田 遼", volumes: 18, currentVol: 12 },
+                  { title: "消えた初版本の謎", author: "古賀 誠", volumes: 5, currentVol: 1 }
+                ], "か行")
+              },
+              {
+                id: "kana-sa",
+                code: "さ行",
+                title: "さ行の著者棚",
+                countLabel: "29 作品",
+                desc: "佐伯 / 白石 / 東雲 / 砂川...",
+                books: makeBooks([
+                  { title: "零式機甲師団", author: "佐伯 剛", volumes: 16, currentVol: 7 },
+                  { title: "夜の標本室", author: "白石 紡", volumes: 12, currentVol: 9 },
+                  { title: "真夜中の証言台", author: "冴木 凛", volumes: 8, currentVol: 2 },
+                  { title: "赤レンガ倉庫の密室", author: "東雲 啓", volumes: 9, currentVol: 9 },
+                  { title: "シルクロードの隊商", author: "砂川 蓮", volumes: 14, currentVol: 9 },
+                  { title: "路地裏の猫と設計士", author: "柴田 薫", volumes: 8, currentVol: 3 }
+                ], "さ行")
+              },
+              {
+                id: "kana-ta",
+                code: "た行",
+                title: "た行の著者棚",
+                countLabel: "18 作品",
+                desc: "橘 / 高瀬 / 遠野 / 小鳥遊...",
+                books: makeBooks([
+                  { title: "軌道エレベーターの料理人", author: "橘 航", volumes: 6, currentVol: 4 },
+                  { title: "古代遺跡の翻訳官", author: "高瀬 凛", volumes: 5, currentVol: 5 },
+                  { title: "重力井戸の向こう側", author: "遠野 迅", volumes: 15, currentVol: 10 },
+                  { title: "深夜喫茶のトースト", author: "小鳥遊 葵", volumes: 9, currentVol: 6 }
+                ], "た行")
+              }
+            ]
+          },
+          {
+            id: "collections",
+            code: "AISLE-C",
+            title: "マイ書架",
+            subtitle: "お気に入り・完結済み・再読したい棚",
+            kind: "directory",
+            children: [
+              {
+                id: "col-fav",
+                code: "MY-01",
+                title: "殿堂入りベスト",
+                countLabel: "12 作品",
+                desc: "何度でも読み返す名作",
+                books: makeBooks([
+                  { title: "星屑のアーカイバ", author: "蒼井 透", volumes: 14, currentVol: 14, progress: 100, status: "読了" },
+                  { title: "硝子細工の探偵譚", author: "久遠 栞", volumes: 19, currentVol: 15, progress: 79 },
+                  { title: "時計塔のクロニクル", author: "神崎 澪", volumes: 11, currentVol: 11, progress: 100, status: "読了" },
+                  { title: "雨降る古書店街", author: "葉月 悠", volumes: 5, currentVol: 5, progress: 100, status: "読了" }
+                ], "殿堂入り")
+              },
+              {
+                id: "col-unread",
+                code: "MY-02",
+                title: "積読消化リスト",
+                countLabel: "16 作品",
+                desc: "週末にイッキ読み予定",
+                books: makeBooks([
+                  { title: "星海航路の地図師", author: "朝霧 圭", volumes: 9, currentVol: 1, progress: 0, status: "未読" },
+                  { title: "消えた初版本の謎", author: "古賀 誠", volumes: 5, currentVol: 1, progress: 0, status: "未読" },
+                  { title: "白銀の観測者", author: "雪村 玲", volumes: 10, currentVol: 1, progress: 12, status: "読書中" }
+                ], "積読")
+              }
+            ]
+          }
+        ]
+      },
+      novel: {
+        id: "novel",
+        name: "ノベル館",
+        en: "NOVELS WING",
+        icon: "📖",
+        driveRoot: "/Drive/Novels",
+        desc: "ライトノベル・文芸書（レーベル / 完結済み）",
+        totalVolumes: "380 冊",
+        seriesCount: "64 作品",
+        gateColor: "#7cc49b",
+        gateGlow: "rgba(124, 196, 155, 0.22)",
+        stacks: [
+          {
+            id: "novel-reading",
+            code: "N-DESK",
+            title: "読書中の小説",
+            subtitle: "ライトノベル・文芸の続き",
+            kind: "books",
+            books: makeBooks([
+              { title: "銀の書簡と冬の王国", author: "結城 朔夜", volumes: 9, currentVol: 5, progress: 58 },
+              { title: "星図の果ての修道院", author: "長谷川 翠", volumes: 4, currentVol: 3, progress: 74 },
+              { title: "黄昏の帝国書記官", author: "三上 律", volumes: 12, currentVol: 8, progress: 62 },
+              { title: "珈琲館の論理学者", author: "深沢 澪", volumes: 6, currentVol: 2, progress: 33 },
+              { title: "白夜航路の記憶", author: "氷室 葵", volumes: 3, currentVol: 1, progress: 18 },
+              { title: "魔導工学概論", author: "瀬戸 悠真", volumes: 15, currentVol: 11, progress: 80 }
+            ], "ノベル")
+          },
+          {
+            id: "novel-label",
+            code: "N-LABEL",
+            title: "レーベル書架",
+            subtitle: "文庫・単行本レーベル別に探索",
+            kind: "directory",
+            children: [
+              {
+                id: "label-fantasia",
+                code: "NL-01",
+                title: "星海文庫",
+                countLabel: "18 作品",
+                desc: "ファンタジー・SF長編",
+                books: makeBooks([
+                  { title: "銀の書簡と冬の王国", author: "結城 朔夜", volumes: 9, currentVol: 5 },
+                  { title: "黄昏の帝国書記官", author: "三上 律", volumes: 12, currentVol: 8 },
+                  { title: "魔導工学概論", author: "瀬戸 悠真", volumes: 15, currentVol: 11 },
+                  { title: "天球儀の守護者", author: "桜庭 玲", volumes: 7, currentVol: 2 }
+                ], "星海文庫")
+              },
+              {
+                id: "label-mystery",
+                code: "NL-02",
+                title: "琥珀ミステリー",
+                countLabel: "14 作品",
+                desc: "本格推理・クラシック文芸",
+                books: makeBooks([
+                  { title: "珈琲館の論理学者", author: "深沢 澪", volumes: 6, currentVol: 2 },
+                  { title: "星図の果ての修道院", author: "長谷川 翠", volumes: 4, currentVol: 3 },
+                  { title: "白夜航路の記憶", author: "氷室 葵", volumes: 3, currentVol: 1 }
+                ], "琥珀ミステリー")
+              }
+            ]
+          },
+          {
+            id: "novel-complete",
+            code: "N-END",
+            title: "完結済み書架",
+            subtitle: "最後まで揃っている長編シリーズ",
+            kind: "books",
+            books: makeBooks([
+              { title: "蒼の年代記 全6巻", author: "水城 遙", volumes: 6, currentVol: 6, progress: 100, status: "読了" },
+              { title: "霧の都の建築家", author: "桐島 諒", volumes: 5, currentVol: 5, progress: 100, status: "読了" },
+              { title: "夏至の天文台", author: "森野 栞", volumes: 3, currentVol: 3, progress: 100, status: "読了" },
+              { title: "黎明の航海日誌", author: "海堂 航", volumes: 8, currentVol: 8, progress: 100, status: "読了" }
+            ], "完結")
+          }
+        ]
+      },
+      art: {
+        id: "art",
+        name: "CG・画集館",
+        en: "ARTWORKS WING",
+        icon: "🎨",
+        driveRoot: "/Drive/Artworks",
+        desc: "画集・設定資料・同人CG集（作家 / テーマ別）",
+        totalVolumes: "215 冊",
+        seriesCount: "86 冊",
+        gateColor: "#9bb8ff",
+        gateGlow: "rgba(155, 184, 255, 0.24)",
+        stacks: [
+          {
+            id: "art-recent",
+            code: "GAL-01",
+            title: "最近見た画集・CG集",
+            subtitle: "高解像度スキャン・イラスト集",
+            kind: "books",
+            books: makeBooks([
+              { title: "NOCTURNE WORKS 2026", author: "Studio Lumina", volumes: 1, currentVol: 1, progress: 45 },
+              { title: "背景美術アーカイブ Vol.4", author: "蒼穹美術部", volumes: 4, currentVol: 4, progress: 82 },
+              { title: "CHARACTER DESIGN LOG", author: "K. Shirai", volumes: 3, currentVol: 2, progress: 60 },
+              { title: "建築と光スケッチ集", author: "Atelier Arch", volumes: 2, currentVol: 1, progress: 30 },
+              { title: "CYBERPUNK CONCEPT ART", author: "Neon Lab", volumes: 5, currentVol: 3, progress: 70 },
+              { title: "水彩風景画集 - 四季", author: "葉山 澄", volumes: 2, currentVol: 2, progress: 100, status: "読了" }
+            ], "画集")
+          },
+          {
+            id: "art-circle",
+            code: "GAL-02",
+            title: "サークル・作家別書架",
+            subtitle: "作家・サークル単位で潜る",
+            kind: "directory",
+            children: [
+              {
+                id: "art-bg",
+                code: "ART-A",
+                title: "背景美術・コンセプトアート",
+                countLabel: "34 冊",
+                desc: "建築・空・都市景観CG",
+                books: makeBooks([
+                  { title: "背景美術アーカイブ Vol.4", author: "蒼穹美術部", volumes: 4, currentVol: 4 },
+                  { title: "建築と光スケッチ集", author: "Atelier Arch", volumes: 2, currentVol: 1 },
+                  { title: "CYBERPUNK CONCEPT ART", author: "Neon Lab", volumes: 5, currentVol: 3 },
+                  { title: "星景イラストレーション", author: "Cosmos Works", volumes: 3, currentVol: 2 }
+                ], "背景美術")
+              },
+              {
+                id: "art-char",
+                code: "ART-B",
+                title: "キャラクター・同人CG集",
+                countLabel: "52 冊",
+                desc: "個人画集・設定資料集",
+                books: makeBooks([
+                  { title: "NOCTURNE WORKS 2026", author: "Studio Lumina", volumes: 1, currentVol: 1 },
+                  { title: "CHARACTER DESIGN LOG", author: "K. Shirai", volumes: 3, currentVol: 2 },
+                  { title: "水彩風景画集 - 四季", author: "葉山 澄", volumes: 2, currentVol: 2 },
+                  { title: "衣装デザイン資料集", author: "Mode Archive", volumes: 4, currentVol: 1 }
+                ], "キャラ画集")
+              }
+            ]
+          }
+        ]
+      }
+    };
+
+    const state = {
+      viewport: "mobile",
+      speedScale: 1,
+      showTopNav: true,
+      mode: "entrance", // "entrance" | "wing"
+      wingId: "manga",
+      path: [],
+      activeIndex: 0,
+      isTransitioning: false
+    };
+
+    function getCurrentStacks() {
+      const wing = LIBRARY_DATA[state.wingId];
+      if (state.path.length === 0) return wing.stacks;
+      const parent = wing.stacks.find((s) => s.id === state.path[0].parentStackId);
+      return parent ? parent.children : wing.stacks;
+    }
+
+    // =========================================================================
+    // Controls
+    // =========================================================================
+    function setViewport(mode) {
+      state.viewport = mode;
+      const vp = document.getElementById("app-viewport");
+      const btnM = document.getElementById("btn-mobile");
+      const btnT = document.getElementById("btn-tablet");
+      if (mode === "mobile") {
+        vp.style.width = "390px";
+        vp.style.height = "760px";
+        vp.style.setProperty("--stack-width", "82%");
+        btnM.className = "px-2.5 py-1.5 font-medium bg-[var(--primary)] text-[var(--primary-foreground)]";
+        btnT.className = "px-2.5 py-1.5 font-medium bg-transparent text-[var(--muted-foreground)] border-l border-[var(--border)]";
+      } else {
+        vp.style.width = "560px";
+        vp.style.height = "820px";
+        vp.style.setProperty("--stack-width", "76%");
+        btnT.className = "px-2.5 py-1.5 font-medium bg-[var(--primary)] text-[var(--primary-foreground)] border-l border-[var(--border)]";
+        btnM.className = "px-2.5 py-1.5 font-medium bg-transparent text-[var(--muted-foreground)]";
+      }
+      renderAll();
+    }
+
+    function setShowTopNav(enabled) {
+      state.showTopNav = enabled;
+      const bOn = document.getElementById("btn-nav-on");
+      const bOff = document.getElementById("btn-nav-off");
+      if (enabled) {
+        bOn.className = "px-2.5 py-1.5 font-medium bg-[var(--primary)] text-[var(--primary-foreground)]";
+        bOff.className = "px-2.5 py-1.5 font-medium bg-transparent text-[var(--muted-foreground)] border-l border-[var(--border)]";
+      } else {
+        bOff.className = "px-2.5 py-1.5 font-medium bg-[var(--primary)] text-[var(--primary-foreground)] border-l border-[var(--border)]";
+        bOn.className = "px-2.5 py-1.5 font-medium bg-transparent text-[var(--muted-foreground)]";
+      }
+      updateTopNavVisibility();
+    }
+
+    function setSpeed(scale) {
+      state.speedScale = scale;
+      document.documentElement.style.setProperty("--anim-scale", String(scale));
+      const b1 = document.getElementById("btn-speed-normal");
+      const b2 = document.getElementById("btn-speed-slow");
+      if (scale === 1) {
+        b1.className = "px-2.5 py-1.5 font-medium bg-[var(--primary)] text-[var(--primary-foreground)]";
+        b2.className = "px-2.5 py-1.5 font-medium bg-transparent text-[var(--muted-foreground)] border-l border-[var(--border)]";
+      } else {
+        b2.className = "px-2.5 py-1.5 font-medium bg-[var(--primary)] text-[var(--primary-foreground)] border-l border-[var(--border)]";
+        b1.className = "px-2.5 py-1.5 font-medium bg-transparent text-[var(--muted-foreground)]";
+      }
+    }
+
+    function updateTopNavVisibility() {
+      const nav = document.getElementById("neighbor-nav");
+      nav.classList.toggle("hidden", state.mode !== "wing" || !state.showTopNav);
+    }
+
+    // =========================================================================
+    // Cover SVG Generator
+    // =========================================================================
+    function buildCoverHTML(book, compact = false) {
+      const [c1, c2, accent] = book.palette;
+      const titleSize = compact ? "text-[8px] leading-tight" : "text-[10px] leading-tight";
+      return `
+        <div class="book-cover-frame w-full" style="background: linear-gradient(155deg, ${c1} 0%, ${c2} 100%);">
+          <svg class="absolute inset-0 w-full h-full opacity-30" viewBox="0 0 100 140" preserveAspectRatio="none">
+            <circle cx="82" cy="28" r="34" fill="${accent}" opacity="0.45"/>
+            <path d="M0 95 L100 68 L100 140 L0 140 Z" fill="#000" opacity="0.35"/>
+            <line x1="12" y1="14" x2="88" y2="14" stroke="${accent}" stroke-width="1" opacity="0.7"/>
+          </svg>
+          <div class="relative z-10 h-full p-1.5 flex flex-col justify-between">
+            <div class="flex justify-between items-start gap-1">
+              <span class="px-1 py-0.5 rounded text-[8px] font-mono bg-black/55 text-amber-200 border border-white/10">
+                ${compact ? book.volumes + "巻" : "全" + book.volumes + "巻"}
+              </span>
+              ${!compact && book.status === "読了"
+                ? `<span class="px-1 py-0.5 rounded text-[8px] bg-emerald-500/85 text-slate-950 font-bold">済</span>`
+                : ""}
+            </div>
+            <div>
+              <div class="${titleSize} font-bold text-white drop-shadow line-clamp-2">${book.title}</div>
+              ${!compact ? `<div class="text-[8px] text-white/70 truncate mt-0.5">${book.author}</div>` : ""}
+            </div>
+          </div>
+          ${!compact ? `
+            <div class="absolute bottom-0 left-0 right-0 h-1 bg-black/60">
+              <div class="h-full" style="width:${book.progress}%; background:${accent};"></div>
+            </div>
+          ` : ""}
+        </div>
+      `;
+    }
+
+    // =========================================================================
+    // Entrance Render (Layer 0)
+    // =========================================================================
+    function renderEntrance() {
+      const firstBook = LIBRARY_DATA.manga.stacks[0].books[0];
+      document.getElementById("quick-resume-cover").innerHTML = buildCoverHTML(firstBook, true);
+
+      const gatesEl = document.getElementById("wing-gates");
+      gatesEl.innerHTML = Object.values(LIBRARY_DATA).map((wing) => {
+        const previewBooks = wing.stacks[0].books.slice(0, 3).map((b) => `
+          <div class="w-11 shrink-0">${buildCoverHTML(b, true)}</div>
+        `).join("");
+
+        return `
+          <article
+            class="wing-gate-card"
+            style="--gate-color:${wing.gateColor}; --gate-glow:${wing.gateGlow};"
+            onclick="enterWing('${wing.id}')"
+          >
+            <div class="wing-gate-toplight"></div>
+            <div class="p-3.5 flex items-center gap-3.5">
+              <div class="flex -space-x-3 pr-2 shrink-0">
+                ${previewBooks}
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-1.5 mb-0.5">
+                  <span class="text-[9px] font-mono tracking-wider px-1.5 py-0.5 rounded bg-black/50 border border-white/10" style="color:${wing.gateColor};">
+                    ${wing.en}
+                  </span>
+                  <span class="text-[10px] font-mono text-slate-400">${wing.totalVolumes}</span>
+                </div>
+                <div class="text-base font-bold text-slate-100 flex items-center gap-1.5">
+                  <span>${wing.icon}</span><span>${wing.name}</span>
+                </div>
+                <div class="text-[11px] text-slate-400 truncate mt-0.5">${wing.desc}</div>
+                <div class="text-[10px] font-mono text-slate-500 mt-1 truncate">Root: ${wing.driveRoot}</div>
+              </div>
+              <div class="shrink-0 w-8 h-8 rounded-full bg-white/5 border border-white/15 flex items-center justify-center text-sm" style="color:${wing.gateColor};">
+                →
+              </div>
+            </div>
+          </article>
+        `;
+      }).join("");
+    }
+
+    // =========================================================================
+    // Bookcase Contents Render (Layer 1 & 2)
+    // =========================================================================
+    function buildStackInnerHTML(stack) {
+      const cols = state.viewport === "tablet" ? 4 : 3;
+
+      if (stack.kind === "directory") {
+        const baysHtml = stack.children.map((child, childIdx) => {
+          const previewBooks = child.books.slice(0, 3).map((b) => `
+            <div class="w-11 shrink-0">${buildCoverHTML(b, true)}</div>
+          `).join("");
+
+          return `
+            <div class="shelf-tier pb-2">
+              <div class="sub-bay-card p-2.5 flex items-center gap-3" onclick="diveInto(${childIdx})">
+                <div class="flex -space-x-3 pr-2 shrink-0">${previewBooks}</div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-1.5 mb-0.5">
+                    <span class="px-1.5 py-0.5 rounded text-[9px] font-mono brass-plaque">${child.code}</span>
+                    <span class="text-[10px] text-amber-200/80 font-mono">${child.countLabel}</span>
+                  </div>
+                  <div class="text-sm font-bold text-slate-100 truncate">${child.title}</div>
+                  <div class="text-[11px] text-slate-400 truncate mt-0.5">${child.desc}</div>
+                </div>
+                <div class="shrink-0 w-7 h-7 rounded-full bg-amber-500/15 border border-amber-400/35 text-amber-200 flex items-center justify-center text-sm">
+                  →
+                </div>
+              </div>
+              <div class="shelf-plank mt-2"></div>
+            </div>
+          `;
+        }).join("");
+
+        return `
+          <div class="px-3 py-2 border-b border-slate-800/80 flex items-center justify-between bg-slate-950/50 shrink-0">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-mono brass-plaque">${stack.code}</span>
+                <h2 class="text-sm font-bold text-amber-100 truncate m-0">${stack.title}</h2>
+              </div>
+              <p class="text-[11px] text-slate-400 m-0 mt-0.5 truncate">${stack.subtitle}</p>
+            </div>
+            <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-200 border border-amber-500/30 shrink-0">
+              タップで潜る
+            </span>
+          </div>
+          <div class="shelf-scroll flex-1 overflow-y-auto px-2 pb-4">${baysHtml}</div>
+        `;
+      }
+
+      const tiers = [];
+      for (let i = 0; i < stack.books.length; i += cols) {
+        tiers.push(stack.books.slice(i, i + cols));
+      }
+
+      const tiersHtml = tiers.map((row) => {
+        const cards = row.map((book) => {
+          const encoded = encodeURIComponent(JSON.stringify(book));
+          return `
+            <div class="book-card flex flex-col" onclick="openBookModal('${encoded}')">
+              ${buildCoverHTML(book, false)}
+            </div>
+          `;
+        }).join("");
+
+        return `
+          <div class="shelf-tier">
+            <div class="grid gap-2.5 pb-1.5" style="grid-template-columns: repeat(${cols}, minmax(0, 1fr));">
+              ${cards}
+            </div>
+            <div class="shelf-plank"></div>
+          </div>
+        `;
+      }).join("");
+
+      return `
+        <div class="px-3 py-2 border-b border-slate-800/80 flex items-center justify-between bg-slate-950/50 shrink-0">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono brass-plaque">${stack.code}</span>
+              <h2 class="text-sm font-bold text-amber-100 truncate m-0">${stack.title}</h2>
+            </div>
+            <p class="text-[11px] text-slate-400 m-0 mt-0.5 truncate">${stack.subtitle || stack.desc || ""}</p>
+          </div>
+          <span class="text-[10px] font-mono text-slate-400 shrink-0">${stack.books.length} 作品</span>
+        </div>
+        <div class="shelf-scroll flex-1 overflow-y-auto px-2 pb-6">
+          ${tiersHtml}
+          <div class="text-center text-[10px] text-slate-500 py-3 font-mono">— 棚の最下段 —</div>
+        </div>
+      `;
+    }
+
+    // =========================================================================
+    // 3D Rotation Math
+    // =========================================================================
+    function getTransformForOffset(offset) {
+      const sideShift = state.viewport === "tablet" ? 64 : 62;
+      if (offset === 0) {
+        return { rel: "center", transform: "translateX(0%) translateZ(0px) rotateY(0deg)", opacity: 1, zIndex: 20, filter: "brightness(1)" };
+      }
+      if (offset === -1) {
+        return { rel: "left", transform: `translateX(-${sideShift}%) translateZ(-135px) rotateY(78deg)`, opacity: 0.92, zIndex: 12, filter: "brightness(0.82)" };
+      }
+      if (offset === 1) {
+        return { rel: "right", transform: `translateX(${sideShift}%) translateZ(-135px) rotateY(-78deg)`, opacity: 0.92, zIndex: 12, filter: "brightness(0.82)" };
+      }
+      if (offset < -1) {
+        const extra = Math.min(Math.abs(offset) - 1, 3);
+        return { rel: "far-left", transform: `translateX(-${sideShift + extra * 14}%) translateZ(-${170 + extra * 50}px) rotateY(84deg)`, opacity: Math.max(0, 0.45 - extra * 0.2), zIndex: 5 - extra, filter: "brightness(0.5)" };
+      }
+      const extra = Math.min(offset - 1, 3);
+      return { rel: "far-right", transform: `translateX(${sideShift + extra * 14}%) translateZ(-${170 + extra * 50}px) rotateY(-84deg)`, opacity: Math.max(0, 0.45 - extra * 0.2), zIndex: 5 - extra, filter: "brightness(0.5)" };
+    }
+
+    // =========================================================================
+    // Update Neighbor Navigator Bar + Breadcrumbs
+    // =========================================================================
+    function updateNavigationBars() {
+      const wing = LIBRARY_DATA[state.wingId];
+      const stacks = getCurrentStacks();
+      const current = stacks[state.activeIndex];
+      const prev = state.activeIndex > 0 ? stacks[state.activeIndex - 1] : null;
+      const next = state.activeIndex < stacks.length - 1 ? stacks[state.activeIndex + 1] : null;
+
+      // Breadcrumbs
+      const bc = document.getElementById("breadcrumb-bar");
+      const crumbs = [
+        `<button onclick="returnToEntrance()" class="text-slate-400 hover:text-amber-200 transition-colors">エントランス</button>`,
+        `<span class="text-slate-600">›</span>`,
+        `<button onclick="riseToWingRoot()" class="text-amber-200/90 hover:text-amber-100 font-medium">${wing.name}</button>`
+      ];
+      if (state.path.length > 0) {
+        crumbs.push(`<span class="text-slate-600">›</span>`);
+        crumbs.push(`<button onclick="riseLevel()" class="text-amber-200/80 hover:text-amber-100">${state.path[0].parentTitle}</button>`);
+      }
+      crumbs.push(`<span class="text-slate-600">›</span>`);
+      crumbs.push(`<span class="text-slate-100 font-semibold">${current.title}</span>`);
+      bc.innerHTML = crumbs.join("");
+
+      document.getElementById("btn-up-level").classList.toggle("hidden", state.path.length === 0);
+
+      // Neighbor Navigator (Left | Right)
+      const leftEl = document.getElementById("neighbor-left");
+      const rightEl = document.getElementById("neighbor-right");
+
+      if (prev) {
+        leftEl.disabled = false;
+        leftEl.innerHTML = `<span class="text-amber-300 font-bold shrink-0">‹</span><span class="truncate">${prev.title}</span>`;
+        leftEl.classList.remove("opacity-30", "pointer-events-none");
+      } else {
+        leftEl.disabled = true;
+        leftEl.innerHTML = `<span class="text-slate-600 font-mono text-[10px]">— 左端 —</span>`;
+        leftEl.classList.add("opacity-30", "pointer-events-none");
+      }
+
+      if (next) {
+        rightEl.disabled = false;
+        rightEl.innerHTML = `<span class="truncate">${next.title}</span><span class="text-amber-300 font-bold shrink-0">›</span>`;
+        rightEl.classList.remove("opacity-30", "pointer-events-none");
+      } else {
+        rightEl.disabled = true;
+        rightEl.innerHTML = `<span class="text-slate-600 font-mono text-[10px]">— 右端 —</span>`;
+        rightEl.classList.add("opacity-30", "pointer-events-none");
+      }
+
+      document.getElementById("nav-prev").style.opacity = prev ? "1" : "0.22";
+      document.getElementById("nav-next").style.opacity = next ? "1" : "0.22";
+
+      // Bottom rail
+      const railBtns = document.querySelectorAll("#stack-rail button");
+      railBtns.forEach((btn, idx) => {
+        const isCurrent = idx === state.activeIndex;
+        btn.className = `shrink-0 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all flex items-center gap-1.5 ${
+          isCurrent
+            ? "brass-plaque shadow-md"
+            : "bg-slate-900 text-slate-300 border border-slate-800 hover:border-amber-500/40"
+        }`;
+        if (isCurrent) {
+          btn.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+        }
+      });
+    }
+
+    // =========================================================================
+    // Render All
+    // =========================================================================
+    function renderAll() {
+      const vp = document.getElementById("app-viewport");
+      const entranceView = document.getElementById("entrance-view");
+      const stage = document.getElementById("library-stage");
+      const bcWrap = document.getElementById("breadcrumb-wrap");
+      const railWrap = document.getElementById("stack-rail-wrap");
+      const btnHome = document.getElementById("btn-home-entrance");
+      const totalBadge = document.getElementById("entrance-total-badge");
+      const layerBadge = document.getElementById("layer-badge");
+
+      if (state.mode === "entrance") {
+        vp.setAttribute("data-wing", "entrance");
+        layerBadge.textContent = "L0 エントランス";
+        entranceView.classList.remove("hidden");
+        stage.classList.add("hidden");
+        bcWrap.classList.add("hidden");
+        railWrap.classList.add("hidden");
+        btnHome.classList.add("hidden");
+        totalBadge.classList.remove("hidden");
+        updateTopNavVisibility();
+        renderEntrance();
+        return;
+      }
+
+      // Wing Mode (L1 / L2)
+      vp.setAttribute("data-wing", state.wingId);
+      layerBadge.textContent = state.path.length === 0 ? "L1 大書架" : "L2 詳細棚";
+      entranceView.classList.add("hidden");
+      stage.classList.remove("hidden");
+      bcWrap.classList.remove("hidden");
+      railWrap.classList.remove("hidden");
+      btnHome.classList.remove("hidden");
+      totalBadge.classList.add("hidden");
+      updateTopNavVisibility();
+
+      const stacks = getCurrentStacks();
+      if (state.activeIndex >= stacks.length) state.activeIndex = 0;
+
+      const layer = document.getElementById("stacks-layer");
+      layer.innerHTML = stacks.map((stack, idx) => {
+        const pos = getTransformForOffset(idx - state.activeIndex);
+        return `
+          <section
+            class="stack-unit"
+            data-idx="${idx}"
+            data-rel="${pos.rel}"
+            style="transform:${pos.transform}; opacity:${pos.opacity}; z-index:${pos.zIndex}; filter:${pos.filter};"
+          >
+            <div class="stack-front">
+              <div class="stack-top-light"></div>
+              <div class="stack-front-inner flex-1 flex flex-col min-h-0">
+                ${buildStackInnerHTML(stack)}
+              </div>
+              <div class="stack-side-panel" onclick="selectStack(${idx})">
+                <div class="px-3 py-2 rounded-md brass-plaque text-xs text-center shadow-lg mb-3">
+                  ${stack.code}
+                </div>
+                <div class="text-base font-bold text-amber-100 text-center tracking-widest px-2 leading-snug">
+                  ${stack.title}
+                </div>
+                <div class="mt-2 text-[11px] text-amber-200/70 font-mono">
+                  タップして正面へ
+                </div>
+              </div>
+            </div>
+          </section>
+        `;
+      }).join("");
+
+      const rail = document.getElementById("stack-rail");
+      rail.innerHTML = stacks.map((s, idx) => `
+        <button onclick="selectStack(${idx})">
+          <span class="font-mono text-[10px] opacity-80">${s.code}</span>
+          <span>${s.title}</span>
+        </button>
+      `).join("");
+
+      updateNavigationBars();
+    }
+
+    function updateStackTransformsOnly() {
+      const units = document.querySelectorAll("#stacks-layer .stack-unit");
+      units.forEach((el) => {
+        const idx = Number(el.getAttribute("data-idx"));
+        const pos = getTransformForOffset(idx - state.activeIndex);
+        el.setAttribute("data-rel", pos.rel);
+        el.style.transform = pos.transform;
+        el.style.opacity = String(pos.opacity);
+        el.style.zIndex = String(pos.zIndex);
+        el.style.filter = pos.filter;
+      });
+      updateNavigationBars();
+    }
+
+    // =========================================================================
+    // Transitions: Entrance <-> Wing (L0 <-> L1) & L1 <-> L2
+    // =========================================================================
+    function enterWing(wingId) {
+      if (state.isTransitioning) return;
+      state.isTransitioning = true;
+      const entrance = document.getElementById("entrance-view");
+      entrance.classList.add("anim-dive-out");
+
+      setTimeout(() => {
+        state.mode = "wing";
+        state.wingId = wingId;
+        state.path = [];
+        state.activeIndex = 0;
+        renderAll();
+        entrance.classList.remove("anim-dive-out");
+
+        const layer = document.getElementById("stacks-layer");
+        layer.classList.add("anim-dive-in-start");
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            layer.classList.remove("anim-dive-in-start");
+            setTimeout(() => { state.isTransitioning = false; }, 380 * state.speedScale);
+          });
+        });
+      }, 240 * state.speedScale);
+    }
+
+    function returnToEntrance() {
+      if (state.isTransitioning || state.mode === "entrance") return;
+      state.isTransitioning = true;
+      const layer = document.getElementById("stacks-layer");
+      layer.classList.add("anim-rise-out");
+
+      setTimeout(() => {
+        state.mode = "entrance";
+        state.path = [];
+        state.activeIndex = 0;
+        renderAll();
+        layer.classList.remove("anim-rise-out");
+
+        const entrance = document.getElementById("entrance-view");
+        entrance.classList.add("anim-rise-in-start");
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            entrance.classList.remove("anim-rise-in-start");
+            setTimeout(() => { state.isTransitioning = false; }, 340 * state.speedScale);
+          });
+        });
+      }, 240 * state.speedScale);
+    }
+
+    function selectStack(idx) {
+      const stacks = getCurrentStacks();
+      if (idx < 0 || idx >= stacks.length || idx === state.activeIndex) return;
+      state.activeIndex = idx;
+      updateStackTransformsOnly();
+    }
+
+    function stepStack(delta) {
+      if (state.mode !== "wing") return;
+      const stacks = getCurrentStacks();
+      const next = Math.max(0, Math.min(stacks.length - 1, state.activeIndex + delta));
+      selectStack(next);
+    }
+
+    function diveInto(childIdx) {
+      if (state.isTransitioning || state.path.length > 0) return;
+      const stacks = getCurrentStacks();
+      const parentStack = stacks[state.activeIndex];
+      if (!parentStack || parentStack.kind !== "directory") return;
+
+      state.isTransitioning = true;
+      const layer = document.getElementById("stacks-layer");
+      layer.classList.add("anim-dive-out");
+
+      setTimeout(() => {
+        state.path = [{ parentStackId: parentStack.id, parentTitle: parentStack.title, parentIdx: state.activeIndex }];
+        state.activeIndex = childIdx;
+        renderAll();
+
+        layer.classList.remove("anim-dive-out");
+        layer.classList.add("anim-dive-in-start");
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            layer.classList.remove("anim-dive-in-start");
+            setTimeout(() => { state.isTransitioning = false; }, 380 * state.speedScale);
+          });
+        });
+      }, 250 * state.speedScale);
+    }
+
+    function riseLevel() {
+      if (state.isTransitioning || state.path.length === 0) return;
+      state.isTransitioning = true;
+      const layer = document.getElementById("stacks-layer");
+      const restoreIdx = state.path[0].parentIdx ?? 0;
+      layer.classList.add("anim-rise-out");
+
+      setTimeout(() => {
+        state.path = [];
+        state.activeIndex = restoreIdx;
+        renderAll();
+
+        layer.classList.remove("anim-rise-out");
+        layer.classList.add("anim-rise-in-start");
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            layer.classList.remove("anim-rise-in-start");
+            setTimeout(() => { state.isTransitioning = false; }, 380 * state.speedScale);
+          });
+        });
+      }, 250 * state.speedScale);
+    }
+
+    function riseToWingRoot() {
+      if (state.path.length > 0) riseLevel();
+    }
+
+    // =========================================================================
+    // Gestures & Keyboard
+    // =========================================================================
+    let pointerStartX = null;
+    let pointerStartY = null;
+    const stageEl = document.getElementById("library-stage");
+
+    stageEl.addEventListener("pointerdown", (e) => {
+      if (e.target.closest("button")) return;
+      pointerStartX = e.clientX;
+      pointerStartY = e.clientY;
+    });
+
+    stageEl.addEventListener("pointerup", (e) => {
+      if (pointerStartX === null) return;
+      const dx = e.clientX - pointerStartX;
+      const dy = e.clientY - pointerStartY;
+      pointerStartX = null;
+      pointerStartY = null;
+      if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+        stepStack(dx < 0 ? 1 : -1);
+      }
+    });
+
+    window.addEventListener("keydown", (e) => {
+      const searchOpen = !document.getElementById("search-modal").classList.contains("hidden");
+      if (e.key === "Escape") {
+        if (searchOpen) {
+          closeSearchModal();
+        } else if (!document.getElementById("book-modal").classList.contains("hidden")) {
+          closeBookModal();
+        } else if (state.path.length > 0) {
+          riseLevel();
+        } else if (state.mode === "wing") {
+          returnToEntrance();
+        }
+        return;
+      }
+      if (searchOpen) return;
+      if (e.key === "ArrowLeft") stepStack(-1);
+      if (e.key === "ArrowRight") stepStack(1);
+    });
+
+    // =========================================================================
+    // Library Search Dialog
+    // =========================================================================
+    let searchScope = "all"; // "all" | "manga" | "novel" | "art"
+
+    function collectSearchIndex() {
+      const entries = [];
+      const seen = new Set();
+      Object.values(LIBRARY_DATA).forEach((wing) => {
+        wing.stacks.forEach((stack, stackIdx) => {
+          if (stack.kind === "books") {
+            stack.books.forEach((book) => {
+              const key = `${wing.id}:${book.title}`;
+              if (seen.has(key)) return;
+              seen.add(key);
+              entries.push({
+                book,
+                wingId: wing.id,
+                wingName: wing.name,
+                locationLabel: `${wing.name} › ${stack.title}`,
+                navTarget: { wingId: wing.id, path: [], activeIndex: stackIdx }
+              });
+            });
+          } else if (stack.kind === "directory") {
+            stack.children.forEach((child, childIdx) => {
+              child.books.forEach((book) => {
+                const key = `${wing.id}:${book.title}`;
+                if (seen.has(key)) return;
+                seen.add(key);
+                entries.push({
+                  book,
+                  wingId: wing.id,
+                  wingName: wing.name,
+                  locationLabel: `${wing.name} › ${stack.title} › ${child.title}`,
+                  navTarget: {
+                    wingId: wing.id,
+                    path: [{ parentStackId: stack.id, parentTitle: stack.title, parentIdx: stackIdx }],
+                    activeIndex: childIdx
+                  }
+                });
+              });
+            });
+          }
+        });
+      });
+      return entries;
+    }
+
+    const SEARCH_INDEX = collectSearchIndex();
+
+    function openSearchModal() {
+      searchScope = state.mode === "wing" ? state.wingId : "all";
+      document.getElementById("search-modal").classList.remove("hidden");
+      renderSearchScopes();
+      renderSearchResults();
+      setTimeout(() => document.getElementById("search-input").focus(), 40);
+    }
+
+    function closeSearchModal() {
+      document.getElementById("search-modal").classList.add("hidden");
+    }
+
+    function clearSearchInput() {
+      const input = document.getElementById("search-input");
+      input.value = "";
+      input.focus();
+      renderSearchResults();
+    }
+
+    function applySearchSample(keyword) {
+      const input = document.getElementById("search-input");
+      input.value = keyword;
+      searchScope = "all";
+      renderSearchScopes();
+      renderSearchResults();
+    }
+
+    function setSearchScope(scope) {
+      searchScope = scope;
+      renderSearchScopes();
+      renderSearchResults();
+    }
+
+    function renderSearchScopes() {
+      const scopes = [
+        { id: "all", label: "全館" },
+        { id: "manga", label: "📚 マンガ館" },
+        { id: "novel", label: "📖 ノベル館" },
+        { id: "art", label: "🎨 CG・画集館" }
+      ];
+      document.getElementById("search-scope-chips").innerHTML = scopes.map((sc) => `
+        <button
+          onclick="setSearchScope('${sc.id}')"
+          class="shrink-0 px-2 py-1 rounded-md font-medium transition-all ${
+            searchScope === sc.id
+              ? "brass-plaque"
+              : "bg-slate-800/90 text-slate-300 hover:text-amber-200 border border-slate-700"
+          }"
+        >
+          ${sc.label}
+        </button>
+      `).join("");
+    }
+
+    function renderSearchResults() {
+      const q = document.getElementById("search-input").value.trim().toLowerCase();
+      const filtered = SEARCH_INDEX.filter((item) => {
+        if (searchScope !== "all" && item.wingId !== searchScope) return false;
+        if (!q) return true;
+        const haystack = `${item.book.title} ${item.book.author} ${item.book.tag} ${item.book.status} ${item.locationLabel}`.toLowerCase();
+        return haystack.includes(q);
+      });
+
+      const container = document.getElementById("search-results");
+      if (filtered.length === 0) {
+        container.innerHTML = `
+          <div class="py-10 text-center text-xs text-slate-400">
+            一致する蔵書が見つかりませんでした
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = `
+        <div class="text-[10px] font-mono text-slate-400 px-1">${filtered.length} 件ヒット</div>
+        ${filtered.slice(0, 18).map((item) => {
+          const encodedBook = encodeURIComponent(JSON.stringify(item.book));
+          const encodedTarget = encodeURIComponent(JSON.stringify(item.navTarget));
+          return `
+            <div class="p-2 rounded-xl bg-slate-950/75 border border-slate-800 hover:border-amber-500/45 transition-all flex items-center gap-2.5">
+              <div class="w-11 shrink-0 cursor-pointer" onclick="openBookFromSearch('${encodedBook}', '${item.wingName}')">
+                ${buildCoverHTML(item.book, true)}
+              </div>
+              <div class="flex-1 min-w-0 cursor-pointer" onclick="openBookFromSearch('${encodedBook}', '${item.wingName}')">
+                <div class="text-xs font-bold text-slate-100 truncate">${item.book.title}</div>
+                <div class="text-[10px] text-slate-400 truncate">${item.book.author} ・ 全${item.book.volumes}巻（${item.book.status}）</div>
+                <div class="text-[10px] text-amber-200/80 truncate mt-0.5 font-mono">${item.locationLabel}</div>
+              </div>
+              <button
+                onclick="warpToShelf('${encodedTarget}')"
+                title="この本が並んでいる書架へ移動"
+                class="shrink-0 px-2 py-1.5 rounded-lg brass-plaque-dark hover:brightness-125 text-[10px] font-medium"
+              >
+                棚へ →
+              </button>
+            </div>
+          `;
+        }).join("")}
+      `;
+    }
+
+    function openBookFromSearch(encodedBook, wingName) {
+      closeSearchModal();
+      openBookModal(encodedBook, wingName);
+    }
+
+    function warpToShelf(encodedTarget) {
+      const target = JSON.parse(decodeURIComponent(encodedTarget));
+      closeSearchModal();
+      state.mode = "wing";
+      state.wingId = target.wingId;
+      state.path = target.path;
+      state.activeIndex = target.activeIndex;
+      renderAll();
+    }
+
+    // =========================================================================
+    // Book Pull-out Modal
+    // =========================================================================
+    function openQuickResume() {
+      const firstBook = LIBRARY_DATA.manga.stacks[0].books[0];
+      openBookModal(encodeURIComponent(JSON.stringify(firstBook)), "マンガ館");
+    }
+
+    function openBookModal(encoded, wingOverride) {
+      const book = JSON.parse(decodeURIComponent(encoded));
+      const wingName = wingOverride || LIBRARY_DATA[state.wingId].name;
+      document.getElementById("modal-cover").innerHTML = buildCoverHTML(book, false);
+      document.getElementById("modal-tag").textContent = `${wingName} / ${book.tag}`;
+      document.getElementById("modal-title").textContent = book.title;
+      document.getElementById("modal-author").textContent = `著者：${book.author}`;
+      document.getElementById("modal-meta").innerHTML = `
+        <span class="px-2 py-0.5 rounded bg-slate-800 text-amber-200 font-mono">全 ${book.volumes} 巻</span>
+        <span class="px-2 py-0.5 rounded bg-slate-800 text-slate-200">${book.status}（第${book.currentVol}巻 / ${book.progress}%）</span>
+      `;
+      document.getElementById("modal-toast").classList.add("hidden");
+      document.getElementById("book-modal").classList.remove("hidden");
+    }
+
+    function closeBookModal() {
+      document.getElementById("book-modal").classList.add("hidden");
+    }
+
+    function simulateRead() {
+      document.getElementById("modal-toast").classList.remove("hidden");
+    }
+
+    // Init
+    setViewport("mobile");
+    setShowTopNav(true);
+    setSpeed(1);
+  </script>
+</body>
+</html>
