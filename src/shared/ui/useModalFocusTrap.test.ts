@@ -294,8 +294,11 @@ describe("useModalFocusTrap", () => {
     expect(document.activeElement).not.toBe(transientBtn);
 
     // 4. オープン前に activeElement が非 HTMLElement (null) の場合でも安全に開閉できること
-    vi.spyOn(document, "activeElement", "get").mockReturnValueOnce(null);
+    const activeElementSpy = vi
+      .spyOn(document, "activeElement", "get")
+      .mockReturnValue(null);
     rerender(createElement(FocusTrapHarness, { isOpen: true }));
+    activeElementSpy.mockRestore();
     rerender(createElement(FocusTrapHarness, { isOpen: false }));
   });
 
