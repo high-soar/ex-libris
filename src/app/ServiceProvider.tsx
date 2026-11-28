@@ -652,9 +652,24 @@ export function ServiceProvider({
     const handleOnline = (): void => {
       void resolvedCoverExtractionScheduler.syncQueue();
     };
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      const snapshot = resolvedCoverExtractionScheduler.getSnapshot();
+      if (
+        snapshot.phase === "idle" &&
+        snapshot.pendingCount > 0 &&
+        snapshot.pauseReasons.length === 0
+      ) {
+        void resolvedCoverExtractionScheduler.syncQueue();
+      }
+    };
     window.addEventListener("online", handleOnline);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       window.removeEventListener("online", handleOnline);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [resolvedCoverExtractionScheduler]);
 

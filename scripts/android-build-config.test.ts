@@ -19,6 +19,18 @@ describe("Android build, Capacitor & Remote Agent governance invariants", () => 
     expect(capacitorConfig.android?.adjustMarginsForEdgeToEdge).toBe("auto");
   });
 
+  it("AndroidManifest.xml が WebView の online イベント検知に必要な ACCESS_NETWORK_STATE 権限を宣言していること", () => {
+    const manifestPath = path.resolve(
+      repoRoot,
+      "android/app/src/main/AndroidManifest.xml",
+    );
+    expect(fs.existsSync(manifestPath)).toBe(true);
+    const manifest = fs.readFileSync(manifestPath, "utf8");
+
+    expect(manifest).toContain("android.permission.INTERNET");
+    expect(manifest).toContain("android.permission.ACCESS_NETWORK_STATE");
+  });
+
   it("MainActivity.java が黒ウィンドウ背景色と暗色背景向け白システムバーアイコンを設定していること", () => {
     const mainActivityPath = path.resolve(
       repoRoot,
