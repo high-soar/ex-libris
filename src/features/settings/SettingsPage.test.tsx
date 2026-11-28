@@ -391,6 +391,12 @@ describe("SettingsPage", () => {
     );
   }
 
+  it("マウント時にwindow.scrollTo(0, 0)を呼び出して前画面のスクロール引き継ぎを防ぐこと (TR-03)", async () => {
+    const scrollToSpy = vi.spyOn(window, "scrollTo");
+    await renderSettings();
+    expect(scrollToSpy).toHaveBeenCalledWith(0, 0);
+  });
+
   it("全Storybookストーリーを描画し6つの直下子コンポーネントへPropsを正しく配線すること (AC-ST-07, AC-ST-08)", async () => {
     const { unmount: u1 } = await renderAndFlush(<Unlinked />);
     expect(screen.getByTestId("settings-main-content")).not.toHaveAttribute(

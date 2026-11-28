@@ -1210,7 +1210,25 @@ describe("BookshelfPage", () => {
     });
     unmount3();
 
-    // 4. ローカルファイル選択時 (TR-02a) に残留 scrollY をクリアすること
+    // 4. scrollY === 0 保存時の復帰でもマウント・全データ確定時に window.scrollTo(0, 0) で先頭へ復元すること (R1-21)
+    scrollToSpy.mockClear();
+    useBookshelfUiStateStore.getState().saveScrollY(0);
+    const { unmount: unmountZero } = await renderAndFlush(
+      <TestServiceProvider
+        readingProgressRepo={createMockReadingProgressRepo()}
+        googleAuthBridge={createMockGoogleAuthBridge()}
+        driveSyncRootsRepo={createMockDriveSyncRootsRepo()}
+      >
+        <RouterProvider initialPath="/">
+          <BookshelfPage />
+        </RouterProvider>
+      </TestServiceProvider>,
+    );
+    expect(scrollToSpy).toHaveBeenCalledWith(0, 0);
+    expect(useBookshelfUiStateStore.getState().scrollY).toBe(0);
+    unmountZero();
+
+    // 5. ローカルファイル選択時 (TR-02a) に残留 scrollY をクリアすること
     useBookshelfUiStateStore.getState().saveScrollY(120);
     await renderAndFlush(<Default />);
     const input = screen.getByTestId("local-zip-file-input");
