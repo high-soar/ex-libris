@@ -21,9 +21,12 @@ Review changes critically and independently in an isolated subagent context. Foc
    - **Implementation, Unit Tests & Storybook (`src/`, `.storybook/`)**: Check [docs/guidelines/testing.md](../../docs/guidelines/testing.md) and [c-ut-workflow](../skills/c-ut-workflow/SKILL.md):
      - TDD Red-Green-Refactor commit trail
      - 4-Layer isolation (Streaming/ZIP Engine using deterministic binary fixtures without network; Metadata Providers using local XML/JSON/GraphQL fixtures; Storage using Dexie + `fake-indexeddb` + `resetTestDb()` with non-test/native gating for test hooks; WebGL2 Viewer, Diagnostics & Bridges isolating GPU/Workers/Capacitor plugins)
-     - Worker crash resilience (`error`/`messageerror` fail-fast RPC rejection without infinite hang) and session-lifetime vs transient-epoch guard parity
+     - Bidirectional `related_tests` / `related_specs` traceability across `docs/specs/` (including `db-schema.md` and `providers/*.md` when IT scenarios change) and `main` squash SHA + `changes/archive/` path normalization in [bug-and-handover-log.md](../../docs/quality/bug-and-handover-log.md)
+     - Worker crash resilience (`error`/`messageerror` fail-fast RPC rejection without infinite hang, `dispose()` settling pending RPCs with `AbortError`), transient network vs permanent error separation, and session-lifetime vs transient-epoch guard parity
+     - Android native safety (`ACCESS_NETWORK_STATE` for WebView `online` recovery, `getBridge().saveCall`/`getSavedCall`/`releaseCall`, `RejectedExecutionException` & `getContext()` null guards)
+     - Modal focus trap & SPA scroll isolation (`useLayoutEffect` focus capture before `inert`, `fallbackFocusRef`, forward-navigation scroll reset / `0px` restore, `afterEach(() => { vi.restoreAllMocks(); })` for `vi.spyOn`)
      - Mandatory 1-to-1 `*.stories.tsx` and `*.test.tsx` (`composeStories`) for every `*.tsx`, and `*.test.ts` for every `*.ts` (respecting documented exceptions in `testing.md §1.5`)
-     - Strict parent-child component test isolation (`vi.spyOn(...).mockImplementation(() => null)`)
+     - Strict parent-child component test isolation (`vi.spyOn(...).mockImplementation(() => null)`) and zero React `act(...)` warnings
      - 100% C0/C1/Functions/Lines coverage without unauthorized `v8 ignore`
      - Storybook VRT snapshots updated for 1280px / 375px
      - Defect log and Design Sync (cause `D` must include `docs/specs/` update in the same PR)

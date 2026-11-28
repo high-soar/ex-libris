@@ -3,7 +3,7 @@ type: guideline
 title: "テスト・実装規律の正本（SSOT）"
 description: "ExLibrisの4層テスト体系（Streaming Engine / Metadata Provider / Dexie Storage / WebGL2 Viewer & Bridge）、TDDコミット規約、1対1 Story/UT、親子分離、C0/C1 100%、VRT、およびKaizen再発防止ルールの正本。"
 status: "Approved"
-updated: "2026-11-23"
+updated: "2026-11-28"
 tags:
   [
     testing,
@@ -123,8 +123,9 @@ flowchart TB
 - **生 WebGL2 パイプラインのテストとヘッドレス SwiftShader VRT/IT**:
   - WebGL2 レンダラー（Mipmap 生成、シャープネス/白黒レベル補正シェーダー Uniform、`gl.MAX_TEXTURE_SIZE` 上限検知時の分割/リサイズフォールバック、コンテキストロスト `webglcontextlost` ハンドリング）は、注入可能な `WebGL2RenderingContext` モックによる単体テスト（C0/C1 100%）と、Playwright Chromium（`--use-gl=angle --use-angle=swiftshader`）による実シェーダー描画テストの双方で保証する。
 - **Android ネイティブプラグイン ＆ UI ジェスチャー・ライフサイクル検証規律**:
-  - Java ネイティブプラグイン（Google OAuth / VolumeKey 等）では、`ActivityResultContracts.StartIntentSenderForResult` ＋ `saveCall`/`getSavedCall`/`freeSavedCall`、401 時の `clearToken` 先行呼び出し、`HttpURLConnection` での `POST` + `X-HTTP-Method-Override: PATCH`、`load()` / `handleOnDestroy()` での `static volatile` 状態リセットを徹底し、`scripts/android-build-config.test.ts` と CI `android-compile` ジョブで機械検証する。
+  - Java ネイティブプラグイン（Google OAuth / VolumeKey 等）では、`ActivityResultContracts.StartIntentSenderForResult` ＋ `getBridge().saveCall`/`getSavedCall`/`releaseCall`（`@Deprecated` な `freeSavedCall()` は使用しない）、401 時の `clearToken` 先行呼び出し、`HttpURLConnection` での `POST` + `X-HTTP-Method-Override: PATCH`、`executor.execute()` の `RejectedExecutionException` 捕捉・`getContext()` `null` ガード（`R1-17`）、および `load()` / `handleOnDestroy()` での `static volatile` 状態リセットを徹底し、`scripts/android-build-config.test.ts` と CI `android-compile` ジョブで機械検証する。
   - Android 15+ 強制 Edge-to-Edge 環境でのシステムバー重なりを防ぐため、`capacitor.config.ts` の `adjustMarginsForEdgeToEdge: "auto"`、`MainActivity` のシステムバー外観固定、およびヘッダー/HUD の `env(safe-area-inset-*)` を `scripts/android-build-config.test.ts` とコンポーネント UT で継続保証する。
+  - Android Chromium WebView で端末のオンライン復帰（`window` `online` イベント）を機能させるには `AndroidManifest.xml` への `android.permission.ACCESS_NETWORK_STATE` 宣言が必須であり、バックグラウンド中の復帰にも備え `document` `visibilitychange`（`visible`）自動再開と併せて UT および `scripts/android-build-config.test.ts` で検証する（`No. 83`, `No. 85`）。
   - Web 側でネイティブイベントを購読する際は `add*Listener` を先行登録してから有効化し、Promise には `.catch(() => {})`、および非同期解除ウィンドウでの誤発火を防ぐ `!isRemoved` ガードラッパーを付与する。
   - タッチジェスチャーでは `pointerStartRef` と `touchStartRef` を分離管理し（`pointercancel` による Touch 座標誤破棄防止）、複数の画面タップゾーンは幾何学的に排他配置して境界座標テストを行う。
   - 子コンポーネントのマウント `useEffect` から通知され得る致命的エラー状態（WebGL2 初期化失敗等）は親の非同期初期化リセット対象から分離し、`initialSnapshot` なしの通常マウント経路で子スパイが同期 `onFatalError` を発火してワーカー未起動かつエラー維持となることを UT で検証する。
@@ -144,8 +145,9 @@ flowchart TB
 
 ## 3. 単体テスト・VRT・結合テスト（IT）の衛生・非同期規律（継承 Kaizen）
 
-1. **非同期スケジューラ・Hook の世代管理と `AbortSignal` 伝播**:
+1. **非同期スケジューラ・Hook の世代管理・一時障害分離と `AbortSignal` 伝播**:
    - 表紙抽出 2 段キュー（ビューポート優先 `high` ＋ バックグラウンド低速 `low`）やプリフェッチ・検索 Hook では、複数 `await` を跨ぐ処理に世代カウンタ（エポック）を導入し、各 `await` 直後に `isMountedRef.current`・エポック一致・`signal.aborted` を再検証する。また優先度跨ぎのレート制限では全体の最終通信完了時刻を基準にスロットリングを行う。
+   - 一時通信断・`AUTH_NETWORK_ERROR`・`5xx` 等の一過性障害で永続エラー状態を汚染せずバックオフ待機（`pending` 維持）へ分離し、永続化失敗時は `try/finally` で実行中ロックを必ず解除した上で診断ログ記録・安全継続する（`R1-02`, `R1-03`, `R1-08`）。また Worker クライアントの `dispose()` は保留中 RPC を `AbortError` で即時 reject する（`R1-10`）。
 2. **VRT 孤児スナップショット検知ガードと全件更新**:
    - `test/vrt/vrt.spec.ts` にて `storybook-static/index.json` の対象ストーリー一覧と `test/vrt/snapshots/*.png` が 1対1 で完全一致すること（0件空振り防止＋孤児 PNG 0件）を検証し、`maxDiffPixelRatio: 0.001` を維持する。
 3. **Playwright IT の確定的初期化待機・明示ビューポート・仮想時計 ＆ CI 契約検証**:
@@ -153,8 +155,9 @@ flowchart TB
    - `SpreadMode = "auto"` 環境下で単ページ表示・ページ順を検証する結合テストでは、暗黙の既定ウィンドウ幅へ依存せず必ず `page.setViewportSize({ width: 375, height: 667 })` を明示指定する（`R1-15`）。
    - 条件分岐（`if (await el.isVisible())`）による暗黙スキップや `page.waitForTimeout`、固定カレンダー日付（Time-bomb）は禁止し、`expect.poll` および `window.Date` `Proxy` 仮想時計（または `Date.now()` 相対オフセット）に統一する。
    - `.github/workflows/release.yml` 等を変更する際は `scripts/android-build-config.test.ts` で CI `quality-gate` 成功検証・SemVer 後退防止・品質レポート検出正規表現（`v<major>.<minor>.md`）の契約テストを追加維持する（`R1-16`, `R1-20`）。
-4. **モーダル・非同期永続化ロールバック**:
-   - 非同期保存失敗時は直前の state へロールバックして `role="alert"` で通知する。確認・競合モーダルは処理中の Escape/背景タップ閉鎖を抑止し、背面 `inert` 化とフォーカストラップを行う。
+4. **モーダル A11y・SPA スクロール制御・UT 警告ゼロ化規律**:
+   - 非同期保存失敗時は直前の state へロールバックして `role="alert"` で通知する。確認・選択モーダル／ボトムシートは処理中の Escape/背景タップ閉鎖を抑止し、背面 `inert` 化（`useLayoutEffect` で `inert` 適用前に `document.activeElement` を捕捉し、`document.body`/`document.documentElement` を復帰対象外として `fallbackFocusRef` へ安全復帰）および循環フォーカストラップを行う（`R1-23`）。
+   - SPA 遷移時は順方向で `window.scrollTo(0, 0)`、戻り遷移時は `0px` を含む保存位置を復元する。`src/test/setup.ts` で JSDOM `window.scrollTo` スタブ・`window.scrollY = 0` リセットを行い、Page UT の `afterEach` では必ず先頭で `cleanup()` を呼んでからストアをリセットして React `act(...)` 警告 0 件を維持する。また `vi.spyOn(...)` を使用するテストファイルは `describe` 先頭に `afterEach(() => { vi.restoreAllMocks(); })` を必須配置する（`R1-20`, `R1-21`, `R1-26`）。
 
 ---
 
@@ -197,4 +200,4 @@ TDD 初回 Red 以降（Green/Refactor、VRT/IT、独立 AI レビュー、横�
   - 主要導線・操作方向の IT シナリオ網羅漏れ、仕様間・ドキュメント間の記載漏れ、および契約未整備は `B`（境界値）ではなく **`D`（Design: 設計・検証観点考慮漏れ）** に分類する（`B` は 0 件・サイズ上限・JSDOM/Node ESM/DPR 等の技術的・環境的境界値に限定する）。
 - **原因分類 `D` の設計書即時同期とコミット記録規約**:
   - 原因が `D` の場合、必ず同一 PR 内で `docs/specs/`（App 全体正本＋進行中の差分仕様）を同時修正し、コード修正コミットと設計同期コミットの双方を台帳へ明記する（Markdown 表セル内ではパイプ記号を使用せず `/` 区切り等を用いること）。
-  - PR を `--squash --delete-branch` でマージした後は、消滅するトピックブランチ上の個別コミット SHA 単体ではなく、**`main` ブランチ上に実在する squash コミット SHA および PR 番号を主表記として記録**（必要に応じて PR 内コミット SHA を括弧で併記）し、後続 PR や台帳整理時に必ず整合させる。
+  - PR を `--squash --delete-branch` でマージした後は、消滅するトピックブランチ上の個別コミット SHA 単体ではなく、**`main` ブランチ上に実在する squash コミット SHA および PR 番号を主表記として記録**（必要に応じて PR 内コミット SHA を括弧で併記）し、後続 PR や台帳整理時に必ず整合させる。特に Step 2 設計 PR や Step 4 IT PR 自体のマージ前に台帳へ記入した行（およびアーカイブ移動した差分仕様パス）は、直後の後続 PR または Milestone Step 2 / Step 3 にて `PR #XX @ <main-squash-sha>` および `docs/specs/changes/archive/...` へ必ず正規化する（`R1-05`）。
