@@ -469,8 +469,52 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
       "Google Drive 同期中に予期しないエラーが発生しました",
     );
 
-    // SCR-01 ヘッダー「同期」ボタンからの手動同期失敗でも role="alert" が維持されること
+    // SCR-01 ヘッダー「同期」ボタンからの手動同期失敗で新規同期リクエストが発火・失敗し role="alert" が維持されること
+    await page.evaluate(() => {
+      const client = window.__exLibrisServices?.mockDriveSyncClient;
+      if (!client) {
+        throw new Error("mockDriveSyncClient is not available");
+      }
+      const originalListChanges = client.listChanges.bind(client);
+      let headerSyncAttempts = 0;
+      (
+        window as unknown as {
+          __headerSyncErrorAttempts?: number;
+          __restoreListChangesForHeaderRetry?: () => void;
+        }
+      ).__headerSyncErrorAttempts = 0;
+      client.listChanges = async (options) => {
+        headerSyncAttempts += 1;
+        (
+          window as unknown as { __headerSyncErrorAttempts?: number }
+        ).__headerSyncErrorAttempts = headerSyncAttempts;
+        return originalListChanges(options);
+      };
+      (
+        window as unknown as {
+          __restoreListChangesForHeaderRetry?: () => void;
+        }
+      ).__restoreListChangesForHeaderRetry = () => {
+        client.listChanges = originalListChanges;
+      };
+    });
     await page.getByTestId("header-sync-drive-button").click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as unknown as { __headerSyncErrorAttempts?: number })
+              .__headerSyncErrorAttempts ?? 0,
+        ),
+      )
+      .toBeGreaterThanOrEqual(1);
+    await page.evaluate(() => {
+      (
+        window as unknown as {
+          __restoreListChangesForHeaderRetry?: () => void;
+        }
+      ).__restoreListChangesForHeaderRetry?.();
+    });
     await expect(bookshelfSyncError).toBeVisible();
     await expect(bookshelfSyncError).toHaveAttribute("role", "alert");
 
