@@ -43,6 +43,7 @@ related_tests:
   - src/engine/zip/decompressSlice.test.ts
   - src/engine/zip/errors.test.ts
   - src/engine/zip/zipParser.test.ts
+  - src/shared/bookshelf/seriesOrdering.test.ts
   - src/shared/sync/coverExtractionStateStore.test.ts
   - src/shared/ui/CoverThumbnail.test.tsx
   - src/shared/ui/useViewportVolumeObserver.test.ts
@@ -72,18 +73,19 @@ related_tests:
 
 ## 2. モジュール構成と責務境界（4層・純粋テスト規約）
 
-| モジュールパス                                     | レイヤー | 責務                                                                                                                                                                                              |
-| :------------------------------------------------- | :------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/engine/constants.ts`                          | 共通定数 | 表紙抽出関連定数（`COVER_BG_MAX_PER_SECOND`, `COVER_MAX_LONG_EDGE_PX`, `COVER_WEBP_QUALITY`, `COVER_RATE_LIMIT_MAX_RETRIES`, `COVER_RATE_LIMIT_BASE_BACKOFF_MS`）を `ENGINE_BUDGETS` で一元管理   |
-| `src/engine/zip/decompressSlice.ts`                | Layer 2  | Store (`0`) / Deflate (`8`: `DecompressionStream("deflate-raw")` ＋ `fflate.inflateSync` フォールバック) 伸長純関数（`DecodeWorkerCore` と `CoverResizeWorkerCore` で共用）                       |
-| `src/engine/cover/types.ts`                        | Layer 2  | `CoverResizeWorkerApi`, `CoverExtractionPauseReason`, `CoverExtractionPhase`, `CoverExtractionProgressSnapshot`, `CoverExtractionVolumeUpdateEvent`, `CoverExtractionScheduler` 等の純粋型定義    |
-| `src/engine/cover/CoverResizeWorkerCore.ts`        | Layer 2  | Worker グローバル非依存の伸長・`createImageBitmap`・`OffscreenCanvas` 長辺上限 350px 縮小・WebP `Blob` 変換・`finally` 即時 `bitmap.close()` 実装                                                 |
-| `src/engine/cover/cover.worker.ts`                 | Layer 2  | `registerZipArchiveErrorTransferHandler()` 登録、`CoverResizeWorkerCore` 初期化、および `Comlink.expose` のみの薄いブートストラップ（条件分岐ゼロ）                                               |
-| `src/engine/cover/CoverExtractionSchedulerCore.ts` | Layer 2  | 2 段優先度キュー（`viewport-high` / `background-low`）、優先度跨ぎレート制御、理由別 `pause`/`resume`、`429`/`403` 指数バックオフ、`zipIndexCache` 自己修復、DB 保存連携の状態機械                |
-| `src/engine/cover/MockCoverArchiveRangeReader.ts`  | Layer 2  | 通常 Web プレビュー（非ネイティブ・非 WebDriver）で外部通信ゼロ（`NFR-05`）のまま決定論的モック ZIP バイナリを返す表紙抽出用 `ArchiveRangeReader`                                                 |
-| `src/app/coverWorkerClient.ts`                     | Layer 4  | `cover.worker.ts` の生成・Comlink ラップ・`prepareDecodeTransfer` 送信バッファ分離・`error`/`messageerror` クラッシュ検知時即時 `DECODE_FAILED` reject・`dispose()` 管理                          |
-| `src/shared/sync/coverExtractionStateStore.ts`     | Layer 4  | `SCR-01` / `SCR-02` / `SCR-04` 横断の表紙抽出進捗スナップショット（`phase`, `totalCount`, `readyCount`, `pendingCount`, `errorCount`, `activeVolumeId`, `pauseReasons`）を保持する Zustand ストア |
-| `src/shared/ui/useViewportVolumeObserver.ts`       | Layer 4  | `SCR-01` / `SCR-02` の `data-cover-volume-id` 要素を `IntersectionObserver`（`rootMargin: "200px 0px"`）で監視し、`viewport-high` 対象巻 ID 集合をスケジューラへ通知する共通フック                |
+| モジュールパス                                     |  レイヤー  | 責務                                                                                                                                                                                                                      |
+| :------------------------------------------------- | :--------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/engine/constants.ts`                          |  共通定数  | 表紙抽出関連定数（`COVER_BG_MAX_PER_SECOND`, `COVER_MAX_LONG_EDGE_PX`, `COVER_WEBP_QUALITY`, `COVER_RATE_LIMIT_MAX_RETRIES`, `COVER_RATE_LIMIT_BASE_BACKOFF_MS`）を `ENGINE_BUDGETS` で一元管理                           |
+| `src/engine/zip/decompressSlice.ts`                |  Layer 2   | Store (`0`) / Deflate (`8`: `DecompressionStream("deflate-raw")` ＋ `fflate.Inflate` ストリーミングフォールバック) 伸長純関数および伸長サイズ上限ガード（`DecodeWorkerCore` / `CoverResizeWorkerCore` 共用）              |
+| `src/engine/cover/types.ts`                        |  Layer 2   | `CoverResizeWorkerApi`, `CoverWorkerClientHandle`, `CoverExtractionPauseReason`, `CoverExtractionPhase`, `CoverExtractionProgressSnapshot`, `CoverExtractionVolumeUpdateEvent`, `CoverExtractionScheduler` 等の純粋型定義 |
+| `src/engine/cover/CoverResizeWorkerCore.ts`        |  Layer 2   | Worker グローバル非依存の伸長（`expectedUncompressedSize` 上限ガード付き）・`createImageBitmap`・`OffscreenCanvas` 長辺上限 350px 縮小・WebP `Blob` 変換・`finally` 即時 `bitmap.close()` 実装                            |
+| `src/engine/cover/cover.worker.ts`                 |  Layer 2   | `registerZipArchiveErrorTransferHandler()` 登録、`CoverResizeWorkerCore` 初期化、および `Comlink.expose` のみの薄いブートストラップ（条件分岐ゼロ）                                                                       |
+| `src/engine/cover/CoverExtractionSchedulerCore.ts` |  Layer 2   | 2 段優先度キュー（`viewport-high` / `background-low`）、優先度跨ぎレート制御、理由別 `pause`/`resume`、`429`/`403`・一時通信障害指数バックオフ、`zipIndexCache` 自己修復、DB 保存連携・耐障害性状態機械                   |
+| `src/engine/cover/MockCoverArchiveRangeReader.ts`  |  Layer 2   | 通常 Web プレビュー（非ネイティブ・非 WebDriver）で外部通信ゼロ（`NFR-05`）のまま決定論的モック ZIP バイナリを返す表紙抽出用 `ArchiveRangeReader`                                                                         |
+| `src/shared/bookshelf/seriesOrdering.ts`           | 共有純関数 | シリーズ並び順（`sortSeriesItems`）および代表表紙巻解決（`resolveRepresentativeVolume`）の UI 非依存 SSOT（`CoverExtractionSchedulerCore` と `bookshelfViewModel` の双方から参照）                                        |
+| `src/app/coverWorkerClient.ts`                     |  Layer 4   | `cover.worker.ts` の生成・Comlink ラップ・`prepareDecodeTransfer` 送信バッファ分離・`error`/`messageerror` クラッシュ検知時即時 `DECODE_FAILED` reject・`dispose()` 時保留中/破棄後 RPC 即時 `AbortError` reject          |
+| `src/shared/sync/coverExtractionStateStore.ts`     |  Layer 4   | `SCR-01` / `SCR-02` / `SCR-04` 横断の表紙抽出進捗スナップショット（`phase`, `totalCount`, `readyCount`, `pendingCount`, `errorCount`, `activeVolumeId`, `pauseReasons`）を保持する Zustand ストア                         |
+| `src/shared/ui/useViewportVolumeObserver.ts`       |  Layer 4   | `SCR-01` / `SCR-02` の `data-cover-volume-id` 要素を `IntersectionObserver`（`rootMargin: "200px 0px"`）で監視し、`viewport-high` 対象巻 ID 集合をスケジューラへ通知する共通フック                                        |
 
 ---
 
@@ -105,6 +107,7 @@ related_tests:
 export interface EncodeCoverWebpOptions {
   readonly maxLongEdgePx?: number;
   readonly webpQuality?: number;
+  readonly expectedUncompressedSize?: number;
 }
 
 export interface EncodeCoverWebpResult {
@@ -123,7 +126,7 @@ export interface CoverResizeWorkerApi {
 ```
 
 1. **`CoverResizeWorkerCore.encodeCoverWebp` 処理手順**:
-   - `decompressZipSlice(compressedData, compressionMethod, deps)` で伸長バイト列を取得し、`new Blob([rawBytes])` から `createImageBitmap(blob)` を実行する（失敗時は `ZipArchiveError("DECODE_FAILED", ...)`）。
+   - `decompressZipSlice(compressedData, compressionMethod, { ...deps, maxUncompressedBytes: computeMaxDecompressedBytes(options?.expectedUncompressedSize) })` で伸長バイト列を取得し（`expectedUncompressedSize + 1KB` マージン、かつ絶対上限 `160 MiB` を超過した場合は Zip Bomb / OOM 防止のため即時切断して `ZipArchiveError("DECODE_FAILED", ...)` を送出）、`new Blob([rawBytes])` から `createImageBitmap(blob)` を実行する（失敗時は `ZipArchiveError("DECODE_FAILED", ...)`）。
    - `bitmap` 取得後は必ず `try { ... } finally { bitmap.close(); }` ブロック内で処理し、後続の検証・描画・エンコードのいずれで例外が発生しても **`bitmap.close()` が 100% 実行される** ことを保証する。
    - `bitmap.width <= 0 || bitmap.height <= 0`（または非有限値）の場合は `ZipArchiveError("DECODE_FAILED", ...)` を送出する。
    - 縮小寸法の算出（拡大禁止）：
@@ -134,9 +137,10 @@ export interface CoverResizeWorkerApi {
      - `targetHeight = Math.max(1, Math.round(bitmap.height * scale))`
    - `createOffscreenCanvas(targetWidth, targetHeight)`（デフォルト `new OffscreenCanvas(w, h)`）から `"2d"` コンテキストを取得し（`null` 時は `DECODE_FAILED`）、`imageSmoothingEnabled = true`, `imageSmoothingQuality = "high"` を設定して `ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight)` を実行する。
    - `await canvas.convertToBlob({ type: "image/webp", quality: options?.webpQuality ?? ENGINE_BUDGETS.COVER_WEBP_QUALITY })` を呼び出し、`blob.size > 0` を検証（0 バイト時は `DECODE_FAILED`）して `{ blob, width: targetWidth, height: targetHeight }` を返却する。
-2. **`coverWorkerClient` の転送保護・異常終了自己復旧**:
+2. **`coverWorkerClient` の転送保護・異常終了自己復旧・破棄時 RPC 決済**:
    - Main Thread から Worker へ `compressedData` を渡す際は、`coordinatorTransfer.prepareDecodeTransfer(compressedData)` を用いて部分 `subarray` の余剰バッファ転送・共有デタッチを防止する。
    - `cover.worker.ts` の `"error"` / `"messageerror"` イベントを購読し、クラッシュ発生時は `diagnosticLogger.error("cover", "Cover Workerが異常終了しました", detail)` を記録して当該セッションを `broken` 化し、保留中・後続 RPC を即時 `ZipArchiveError("DECODE_FAILED", ...)` で reject する。
+   - `dispose()` 時は保留中の全 `pendingRejects` を `DOMException(..., "AbortError")` で明示 reject してから `clear()` し、破棄後の新規 RPC 呼び出しも即座に `AbortError` で reject する（`loopPromise` の永久ハングを防止）。
    - `CoverExtractionSchedulerCore` は Worker セッションが `broken` になった場合、古いセッションを `dispose()` して次回タスク実行時に新しい Worker セッションを遅延再生成する（単一の破損画像によるセッション恒久停止を防止する）。
 
 ---
@@ -212,7 +216,7 @@ export interface CoverExtractionScheduler {
    - **`retryFailedCovers(options)` の `"pending"` イベント即時配信**: `VolumesRepository.resetErrorCoversToPending` で `"pending"` に戻された全巻について、即座に `subscribeVolumeUpdated({ volumeId, seriesId, coverStatus: "pending", coverBlob: null, coverUpdatedAt: null })` を配信してから `await syncQueue()` を実行する。これにより `SCR-01` / `SCR-02` 上の該当カードが単一の購読経路で即座に `"pending"` 表示（`data-cover-volume-id` 付与）へ復帰し、画面内にあればそのまま `viewport-high` へ再昇格する。
 2. **`background-low` 内の 2 段階優先順位**:
    - 本棚ホーム（`SCR-01`）のシリーズカード表紙がいち早く揃うよう、`background-low` 候補は以下の順で決定論的に並べる：
-     1. **第 1 優先（シリーズ代表表紙巻）**: 有効シリーズ一覧（`sortBookshelfSeriesItems(..., "lastReadDesc")` 順）の各代表表紙巻（`representativeVolumeId` が所属有効巻内にあればその巻、なければ先頭巻）のうち `coverStatus === "pending"` のもの。
+     1. **第 1 優先（シリーズ代表表紙巻）**: 有効シリーズ一覧（`src/shared/bookshelf/seriesOrdering.ts` の `sortSeriesItems(..., "lastReadDesc")` 順）の各代表表紙巻（`resolveRepresentativeVolumeNonEmpty` により `representativeVolumeId` が所属有効巻内にあればその巻、なければ先頭巻）のうち `coverStatus === "pending"` のもの。
      2. **第 2 優先（残りの収録巻）**: 上記以外の `coverStatus === "pending"` 有効巻（所属シリーズの並び順 → `compareVolumesForDisplay` 昇順。所属シリーズ未解決の孤立有効巻がある場合は末尾に `compareVolumesForDisplay` 昇順で付加）。
 3. **`viewport-high`（画面内即時優先）への昇格・画面外降格・動的再監視境界**:
    - `SCR-01`（代表表紙が `pending` の `SeriesCard`）および `SCR-02`（`pending` の `SeriesSummaryCard` 代表巻・`SeriesVolumeListSection` 各巻行）は、`useViewportVolumeObserver`（`IntersectionObserver` `rootMargin: "200px 0px"`、`typeof IntersectionObserver === "undefined"` の JSDOM 等では安全に no-op フォールバック）で可視集合を検知し、`setViewportVolumeIds(screen, visibleIds)` へ通知する。
@@ -225,6 +229,7 @@ export interface CoverExtractionScheduler {
 1. **同時実行数 `1`（直列ループ）とエポック管理**:
    - 進行中の抽出タスクは常に最大 **1 冊** とする。
    - 内部に単調増加する `schedulerEpoch` カウンタを持ち、`pause()`・`resetForTest()`・`dispose()`・認証切断・進行中巻の対象除外を伴う `syncQueue()` 時にインクリメントして、各 `await` 直後に `epoch === this.schedulerEpoch && !signal.aborted && !this.disposed` を検証する。
+   - **プリエンプション時の投入済み `encodeCoverWebp` の扱い（許容事項）**: `pause("reader")` 等の発火時点で既に `cover.worker.ts` へ投入済みの `encodeCoverWebp` 処理自体は中断せず、完了後の `assertEpochActive` チェックにより結果（`Blob`）を破棄して DB へ書き込まない方針とする（HTTP Range 通信は `AbortController.abort()` で同期遮断済みのため帯域競合は発生せず、単一表紙の縮小完了待ちは実用上許容範囲とする）。
 2. **`viewport-high` 即時実行と `background-low` 最終通信完了時刻基準スロットリング**:
    - ネットワーク通信（`RandomAccessReader.readRange`）を 1 回以上実行したタスクの終了時に `lastNetworkCompletedAt = now()` を記録する。
    - 次の 1 冊を取り出す際：
@@ -233,19 +238,21 @@ export interface CoverExtractionScheduler {
        - `minIntervalMs = Math.ceil(1000 / ENGINE_BUDGETS.COVER_BG_MAX_PER_SECOND)`（`500ms`）に対し、`waitMs = lastNetworkCompletedAt === null ? 0 : Math.max(0, lastNetworkCompletedAt + minIntervalMs - now())` を算出する。
        - `waitMs > 0` の間は割り込み可能なタイマーで待機する。待機中に `viewport-high` へ候補が昇格した場合は **タイマーを即時起床（中断）** して先頭ループへ戻り、待ち時間ゼロで `viewport-high` を先に処理する。待機中に `pause()` が呼ばれた場合は即座にループを終了する。
 
-### 4.4 単一巻抽出フロー・`zipIndexCache` 自己修復・エラー分類＆指数バックオフ
+### 4.4 単一巻抽出フロー・`zipIndexCache` 自己修復・エラー分類＆指数バックオフ・永続化耐障害性
 
 1. **1 冊あたりの抽出ステップ**:
    - 抽出開始前に最新の `VolumesRepository.getById(volumeId)` を確認し、既に `coverStatus === "ready"`、論理削除（`isTrashed === 1`）、または現在の `enabledRootIds` 外になっていた場合は通信せずスキップする。
    - 注入された `createRangeReader(volume)`（実機 Android および Playwright WebDriver 環境では `GoogleDriveRangeReader`［`getAccessToken: (opts) => googleAuthBridge.getValidAccessToken(opts)`, `onDiagnostic` は `logger.warn` / `logger.error` へ `"cover"` スコープで転送］、非ネイティブ通常ブラウザ `npm run dev` プレビュー環境では外部通信ゼロのインメモリ合成 1 ページ ZIP リーダー `MockCoverArchiveRangeReader`［`NFR-05`］）を構築する。
    - **目次解決（0 RTT キャッシュ優先 ＋ 1 回限り自己修復）**:
      - `reader.totalSize === volume.fileSize`（実サイズ一致リーダー）の場合、`cacheKey = "gdrive:${volume.driveFileId}:${volume.md5Checksum ?? volume.fileSize}"` で `zipIndexCacheRepo.get(cacheKey)` を参照し、`validateZipIndexEntries` を通過すれば `fromIndexCache = true`（0 RTT）で採用する。未保持・不正時は `parseZipDirectory(reader, signal)`（1 RTT）を実行し、実サイズ一致リーダーであれば成功時に `zipIndexCacheRepo.put(cacheKey, entries)` へ非ブロッキング保存する（非ネイティブ開発プレビューの合成リーダーでは模擬 `volume.fileSize` とバイト長が異なるため `zipIndexCache` 読み書きをスキップして不整合を防ぐ）。
-     - `targetEntry = entries[volume.coverPageIndex]`（`0 <= volume.coverPageIndex < entries.length`）に対して `readCompressedPageSlice(reader, targetEntry, signal)` → `coverWorker.encodeCoverWebp(slice, targetEntry.compressionMethod)` を実行する。
+     - `targetEntry = entries[volume.coverPageIndex]`（`0 <= volume.coverPageIndex < entries.length`）に対して `readCompressedPageSlice(reader, targetEntry, signal)` → `coverWorker.encodeCoverWebp(slice, targetEntry.compressionMethod, { expectedUncompressedSize: targetEntry.uncompressedSize })` を実行する。
      - **`fromIndexCache === true` 時の 1 回限り自己修復**: キャッシュ由来エントリで `volume.coverPageIndex >= entries.length`、または `CORRUPT_ZIP` / `DECODE_FAILED` が発生した場合は、`await zipIndexCacheRepo.delete(cacheKey)` の上で `parseZipDirectory(reader, signal)` による再解析・キャッシュ更新とページ抽出を **同一試行内で 1 回だけ** フォールバック実行する。
-   - **DB 永続化とイベント配信**:
-     - `VolumesRepository.saveCoverReady({ volumeId: volume.id, expectedMd5Checksum: volume.md5Checksum, expectedFileSize: volume.fileSize, coverBlob: result.blob })` を呼び出す。
-     - 整合ガードを通過して保存された場合、`readyCount` / `pendingCount` を更新して `subscribeProgress` および `subscribeVolumeUpdated({ volumeId, seriesId, coverStatus: "ready", coverBlob, coverUpdatedAt })` を発火する。
-2. **中断・レート制限・認証切れ・個別ファイル異常の厳格分類**:
+   - **DB 永続化・イベント配信・永続化失敗時の安全継続（`R1-02`, `R1-08`）**:
+     - `runLoop` での `processVolume` 呼び出しは必ず `try/finally` で囲んで `activeVolumeId` を解除し、`ensureLoopRunning` にも `.catch` ＋ `logger.error("cover", ...)` を備えて未処理 rejection と `"running"` 固着を防止する。
+     - `VolumesRepository.saveCoverReady({ volumeId: volume.id, expectedMd5Checksum: volume.md5Checksum, expectedFileSize: volume.fileSize, coverBlob: result.blob })` を呼び出す。整合ガードを通過して保存された場合、`readyCount` / `pendingCount` を更新して `subscribeProgress` および `subscribeVolumeUpdated({ volumeId, seriesId, coverStatus: "ready", coverBlob, coverUpdatedAt })` を発火する。
+     - **`saveCoverReady` / `saveCoverError` の IndexedDB 例外（`QuotaExceededError`・トランザクション中断等）時**: Core 内の `try/catch` で捕捉して `logger.error("cover", ...)` を記録し、DB 上の `coverStatus = "pending"` を維持したまま当該セッションのキューから安全スキップ（無限再試行ループ防止）して次巻へ継続する（次回 `syncQueue()` またはアプリ再起動時に再試行可能）。
+     - **`syncQueue()` / `retryFailedCovers()` の Dexie 呼び出し失敗時**: Core 内で catch して `logger.error("cover", ...)` を記録し、未処理 rejection を送出せず安全に resolve（`retryFailedCovers` は `0` 返却）させる。
+2. **中断・レート制限・認証切れ・一時通信障害・個別ファイル異常の厳格分類**:
    - **① プリエンプション／中断（`AbortError` または `signal.aborted` または `pauseReasons.size > 0`）**:
      - **エラー扱いにせず**、当該巻を `pending` のまま元の優先度キュー先頭へ戻して終了する（`coverStatus` は `"pending"` 維持、リトライ回数も消費しない）。
    - **② レート制限（`error instanceof ZipArchiveError && error.isRateLimited === true`：`429` または `403` Rate Limit）**:
@@ -253,8 +260,12 @@ export interface CoverExtractionScheduler {
      - `3` 回のリトライすべてが再び Rate Limit で失敗した場合（計 4 回失敗）は、`diagnosticLogger.warn("cover", ...)` を記録し `VolumesRepository.saveCoverError(...)` で当該巻を `coverStatus = "error"` に確定させて次巻へ進む。
    - **③ 未認証・トークン失効（`error instanceof ZipArchiveError && error.isUnauthorized === true`）**:
      - **`googleAuthBridge.getCachedSession() === null` またはトークン取得失敗（`error.httpStatus !== 401`：`AUTH_REQUIRED` / `AUTH_CANCELLED` / `AUTH_FAILED`）の場合**: 蔵書全体を誤って `"error"` で汚染しないよう、当該巻は `"pending"` のままキューへ戻し、`pause("unauthenticated")` を設定して認証セッション回復（`GoogleAuthBridge.subscribeSession` 非 `null` 通知、または有効セッション下での手動同期完了／`retryFailedCovers()` 実行）までスケジューラを一時停止する。
-     - **トークンリフレッシュ成功後も `googleAuthBridge.getCachedSession() !== null`（連携維持）のまま再リクエスト HTTP `401` が返った場合**: セッション自体は有効なまま特定ファイル要求のみ拒否されているため、`pause("unauthenticated")` による恒久スタックを避け、④と同様に当該巻のみ `saveCoverError`（`coverStatus = "error"`）として記録して次巻へ進む。
-   - **④ 恒久的／個別アーカイブ異常（`404`, 非 Rate Limit の `403`, `5xx`, 通信断, `CORRUPT_ZIP`, `EMPTY_ARCHIVE`, `ENCRYPTED_ZIP`, `UNSUPPORTED_COMPRESSION`, `DECODE_FAILED`, `coverPageIndex` 範囲外）**:
+     - **トークンリフレッシュ成功後も `googleAuthBridge.getCachedSession() !== null`（連携維持）のまま再リクエスト HTTP `401` が返った場合**: セッション自体は有効なまま特定ファイル要求のみ拒否されているため、`pause("unauthenticated")` による恒久スタックを避け、⑤と同様に当該巻のみ `saveCoverError`（`coverStatus = "error"`）として記録して次巻へ進む。
+   - **④ 一時通信・サーバー障害（オフライン・通信断［`READ_ERROR` かつ `httpStatus === undefined`］、`AUTH_NETWORK_ERROR`、HTTP `5xx`）**:
+     - 蔵書全体がオフラインやサーバー一時障害で恒久 `"error"` 汚染されるのを防ぐため、`saveCoverError` は呼び出さない。
+     - 連続一時障害回数 `transientErrorAttempts` が `COVER_RATE_LIMIT_MAX_RETRIES`（`3`）未満の間は、当該巻を `"pending"` のままキュー先頭へ戻し、`phase = "backoff"` で指数バックオフ（**`1000ms → 2000ms → 4000ms`**）待機後に再試行する（1 冊でも成功または非一時エラー確定した時点でカウンタを `0` へリセット）。
+     - `3` 回のリトライすべてに失敗した場合（計 4 回連続失敗）は、`diagnosticLogger.warn("cover", ...)` を記録し、当該巻を `"pending"` のままキュー先頭へ戻した上で当該セッションの自動ループを待機停止（`phase = "idle"`、`pendingCount` 維持、`errorCount` 非加算）とする。次回 `syncQueue()`・`resume()`・`retryFailedCovers()` 呼び出し時に待機停止を解除して自動再試行を再開する。
+   - **⑤ 恒久的／個別アーカイブ異常（`404`, 非 Rate Limit の `403`, `416`, `CORRUPT_ZIP`, `EMPTY_ARCHIVE`, `ENCRYPTED_ZIP`, `UNSUPPORTED_COMPRESSION`, `DECODE_FAILED`, `coverPageIndex` 範囲外）**:
      - リトライを行わず `diagnosticLogger.warn("cover", ...)` を記録し、`VolumesRepository.saveCoverError({ volumeId: volume.id, expectedMd5Checksum: volume.md5Checksum, expectedFileSize: volume.fileSize })` で `coverStatus = "error"`, `coverBlob = null` を保存し、`subscribeVolumeUpdated`（`coverStatus: "error"`）と進捗更新を通知して直ちに次巻へ進む。
 
 ### 4.5 実行環境境界・プリエンプション・一時停止理由（`pauseReasons`）の連携規約
@@ -280,13 +291,13 @@ export interface CoverExtractionScheduler {
 
 ## 5. 受け入れ条件（`AC-COV-xx`）
 
-|    AC ID    | 受け入れ条件                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| :---------: | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AC-COV-01` | `CoverResizeWorkerCore`（および条件分岐ゼロの `cover.worker.ts`）は Store/Deflate 圧縮スライスから画像をデコードし、長辺上限 `350px`（短小画像は拡大せず等倍維持）・WebP（`quality: 0.8`）の `Blob` を生成するとともに、成否を問わず `bitmap.close()` を即座に実行する。                                                                                                                                                            |
-| `AC-COV-02` | Google 連携済みかつ有効ルート配下に `coverStatus === "pending"` の非ゴミ箱巻が存在するとき、手動同期完了直後およびアプリ起動／画面表示時に自動稼働し、`error` 巻はユーザー明示再試行（または Drive 側ファイル更新検知）まで自動再試行しない。                                                                                                                                                                                       |
-| `AC-COV-03` | `IntersectionObserver`（`rootMargin: "200px 0px"`）で可視判定された `pending` 巻は `viewport-high` として待機 0ms で最優先処理（画面外離脱時は `background-low` へ降格、エラー再試行時の `"pending"` 復帰カードも再監視昇格）され、画面外の `background-low` は「①シリーズ代表表紙巻 → ②残りの収録巻」の順かつ最終通信完了時刻基準で最大 **2 冊/秒（最小 500ms 間隔）** に制御される（待機中の `viewport-high` 到着時は即時起床）。 |
-| `AC-COV-04` | 表紙抽出時に `gdrive:${driveFileId}:${md5Checksum ?? fileSize}` の `zipIndexCache` があれば 0 RTT で目次を再利用し、未キャッシュ時は解析した目次を `zipIndexCache` へ保存して後続の `SCR-03` オープンを 0 RTT 化する（キャッシュ不整合時は 1 回限り再解析自己修復を行う）。                                                                                                                                                         |
-| `AC-COV-05` | 抽出成功（`ready`）・失敗（`error`）・エラー再試行リセット（`pending`）の全 DB 更新において、**`volumes.updatedAt` および `series.updatedAt` が一切変更されない** こと、かつ抽出中に `md5Checksum` / `fileSize` 変化やゴミ箱化が起きた巻へ古い結果を上書きしないこと。                                                                                                                                                              |
-| `AC-COV-06` | `429` および Rate Limit 系 `403` 応答時はキュー全体を指数バックオフ（`1s → 2s → 4s`、同一巻最大 3 回リトライ後に `error` 化）し、セッション失効・未認証時は蔵書を `error` 化せず `pending` 維持のまま一時停止する（有効セッション維持下の個別 `401` は恒久スタックさせず当該巻 `error` として次巻へ進む）。                                                                                                                         |
-| `AC-COV-07` | `SCR-03`（`/read/local`・`/read/volume/:volumeId`）への遷移瞬間（直接 URL・`popstate` 含む）、手動 Drive 同期実行中、および進行中巻の所属ルート無効化／解除時は進行中の表紙 Range 通信・待機タイマーが同期的に `abort()` され、リーダー終了（`TR-07` / `TR-08` / `TR-10`）・同期完了時に自動再開する（`NFR-04`）。                                                                                                                  |
-| `AC-COV-08` | `src/engine/cover/`（`MockCoverArchiveRangeReader.ts` 含む、`cover.worker.ts` / `types.ts` を除く）、`decompressSlice.ts`、`coverWorkerClient.ts`、`coverExtractionStateStore.ts`、`useViewportVolumeObserver.ts`、および拡張後の `GoogleDriveRangeReader` / `VolumesRepository` がすべて C0/C1/Functions/Lines 100% 単体テストを PASS する。                                                                                       |
+|    AC ID    | 受け入れ条件                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| :---------: | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AC-COV-01` | `CoverResizeWorkerCore`（および条件分岐ゼロの `cover.worker.ts`）は Store/Deflate 圧縮スライス（`expectedUncompressedSize` 超過上限ガード付き）から画像をデコードし、長辺上限 `350px`（短小画像は拡大せず等倍維持）・WebP（`quality: 0.8`）の `Blob` を生成するとともに、成否を問わず `bitmap.close()` を即座に実行する。                                                                                                                                                               |
+| `AC-COV-02` | Google 連携済みかつ有効ルート配下に `coverStatus === "pending"` の非ゴミ箱巻が存在するとき、手動同期完了直後およびアプリ起動／画面表示時に自動稼働し、`error` 巻はユーザー明示再試行（または Drive 側ファイル更新検知）まで自動再試行しない。                                                                                                                                                                                                                                           |
+| `AC-COV-03` | `IntersectionObserver`（`rootMargin: "200px 0px"`）で可視判定された `pending` 巻は `viewport-high` として待機 0ms で最優先処理（画面外離脱時は `background-low` へ降格、エラー再試行時の `"pending"` 復帰カードも再監視昇格）され、画面外の `background-low` は「①シリーズ代表表紙巻 → ②残りの収録巻」の順かつ最終通信完了時刻基準で最大 **2 冊/秒（最小 500ms 間隔）** に制御される（待機中の `viewport-high` 到着時は即時起床）。                                                     |
+| `AC-COV-04` | 表紙抽出時に `gdrive:${driveFileId}:${md5Checksum ?? fileSize}` の `zipIndexCache` があれば 0 RTT で目次を再利用し、未キャッシュ時は解析した目次を `zipIndexCache` へ保存して後続の `SCR-03` オープンを 0 RTT 化する（キャッシュ不整合時は 1 回限り再解析自己修復を行う）。                                                                                                                                                                                                             |
+| `AC-COV-05` | 抽出成功（`ready`）・失敗（`error`）・エラー再試行リセット（`pending`）の全 DB 更新において、**`volumes.updatedAt` および `series.updatedAt` が一切変更されない** こと、かつ抽出中に `md5Checksum` / `fileSize` 変化やゴミ箱化が起きた巻へ古い結果を上書きしないこと。                                                                                                                                                                                                                  |
+| `AC-COV-06` | `429` および Rate Limit 系 `403` 応答時はキュー全体を指数バックオフ（`1s → 2s → 4s`、同一巻最大 3 回リトライ後に `error` 化）し、オフライン・通信断・`AUTH_NETWORK_ERROR`・`5xx` の一時通信障害時は指数バックオフ（`1s → 2s → 4s`）後に上限到達しても恒久 `error` 化せず `pending` 維持のまま待機停止し、セッション失効・未認証時は `pending` 維持のまま一時停止する（有効セッション維持下の個別 `401`・`404`・非 Rate Limit `403`・破損アーカイブは当該巻 `error` として次巻へ進む）。 |
+| `AC-COV-07` | `SCR-03`（`/read/local`・`/read/volume/:volumeId`）への遷移瞬間（直接 URL・`popstate` 含む）、手動 Drive 同期実行中、および進行中巻の所属ルート無効化／解除時は進行中の表紙 Range 通信・待機タイマーが同期的に `abort()` され、リーダー終了（`TR-07` / `TR-08` / `TR-10`）・同期完了時に自動再開する（`NFR-04`）。                                                                                                                                                                      |
+| `AC-COV-08` | `src/engine/cover/`（`MockCoverArchiveRangeReader.ts` 含む、`cover.worker.ts` / `types.ts` を除く）、`src/shared/bookshelf/seriesOrdering.ts`、`decompressSlice.ts`、`coverWorkerClient.ts`、`coverExtractionStateStore.ts`、`useViewportVolumeObserver.ts`、および拡張後の `GoogleDriveRangeReader` / `VolumesRepository` がすべて C0/C1/Functions/Lines 100% 単体テストを PASS する。                                                                                                 |

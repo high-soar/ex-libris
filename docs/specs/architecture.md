@@ -68,6 +68,7 @@ related_tests:
   - src/providers/gdrive/googleDriveSyncClient.test.ts
   - src/providers/gdrive/mockDriveSyncClient.test.ts
   - src/providers/gdrive/driveSyncEngine.test.ts
+  - src/shared/bookshelf/seriesOrdering.test.ts
   - src/shared/constants/app.test.ts
   - src/shared/router/RouterProvider.test.tsx
   - src/shared/router/routeMatcher.test.ts
@@ -349,6 +350,7 @@ export interface DecodeWorkerApi {
   decodePageSlice(
     compressedData: Uint8Array,
     compressionMethod: ZipCompressionMethod,
+    expectedUncompressedSize?: number,
   ): Promise<{
     bitmap: ImageBitmap;
     width: number;
