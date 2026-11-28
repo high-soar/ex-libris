@@ -3,7 +3,7 @@ type: spec-engine
 title: "2段優先度・表紙 WebP 自動抽出スケジューラ ＆ 閲覧優先プリエンプション仕様書"
 description: "専用 cover.worker（長辺350px WebP縮小・即時 bitmap.close()）、CoverExtractionSchedulerCore（viewport-high 即時優先＋background-low 最大2冊/秒）、zipIndexCache 0RTT共有・自己修復、429/403指数バックオフ、およびSCR-03/Drive同期プリエンプションの正本"
 status: "Review (#26)"
-updated: "2026-11-27"
+updated: "2026-11-28"
 tags:
   [
     engine,
@@ -80,8 +80,10 @@ related_tests:
 | `src/engine/cover/CoverResizeWorkerCore.ts`        | Layer 2  | Worker グローバル非依存の伸長・`createImageBitmap`・`OffscreenCanvas` 長辺上限 350px 縮小・WebP `Blob` 変換・`finally` 即時 `bitmap.close()` 実装                                                 |
 | `src/engine/cover/cover.worker.ts`                 | Layer 2  | `registerZipArchiveErrorTransferHandler()` 登録、`CoverResizeWorkerCore` 初期化、および `Comlink.expose` のみの薄いブートストラップ（条件分岐ゼロ）                                               |
 | `src/engine/cover/CoverExtractionSchedulerCore.ts` | Layer 2  | 2 段優先度キュー（`viewport-high` / `background-low`）、優先度跨ぎレート制御、理由別 `pause`/`resume`、`429`/`403` 指数バックオフ、`zipIndexCache` 自己修復、DB 保存連携の状態機械                |
+| `src/engine/cover/MockCoverArchiveRangeReader.ts`  | Layer 2  | 通常 Web プレビュー（非ネイティブ・非 WebDriver）で外部通信ゼロ（`NFR-05`）のまま決定論的モック ZIP バイナリを返す表紙抽出用 `ArchiveRangeReader`                                                 |
 | `src/app/coverWorkerClient.ts`                     | Layer 4  | `cover.worker.ts` の生成・Comlink ラップ・`prepareDecodeTransfer` 送信バッファ分離・`error`/`messageerror` クラッシュ検知時即時 `DECODE_FAILED` reject・`dispose()` 管理                          |
 | `src/shared/sync/coverExtractionStateStore.ts`     | Layer 4  | `SCR-01` / `SCR-02` / `SCR-04` 横断の表紙抽出進捗スナップショット（`phase`, `totalCount`, `readyCount`, `pendingCount`, `errorCount`, `activeVolumeId`, `pauseReasons`）を保持する Zustand ストア |
+| `src/shared/ui/useViewportVolumeObserver.ts`       | Layer 4  | `SCR-01` / `SCR-02` の `data-cover-volume-id` 要素を `IntersectionObserver`（`rootMargin: "200px 0px"`）で監視し、`viewport-high` 対象巻 ID 集合をスケジューラへ通知する共通フック                |
 
 ---
 
@@ -287,4 +289,4 @@ export interface CoverExtractionScheduler {
 | `AC-COV-05` | 抽出成功（`ready`）・失敗（`error`）・エラー再試行リセット（`pending`）の全 DB 更新において、**`volumes.updatedAt` および `series.updatedAt` が一切変更されない** こと、かつ抽出中に `md5Checksum` / `fileSize` 変化やゴミ箱化が起きた巻へ古い結果を上書きしないこと。                                                                                                                                                              |
 | `AC-COV-06` | `429` および Rate Limit 系 `403` 応答時はキュー全体を指数バックオフ（`1s → 2s → 4s`、同一巻最大 3 回リトライ後に `error` 化）し、セッション失効・未認証時は蔵書を `error` 化せず `pending` 維持のまま一時停止する（有効セッション維持下の個別 `401` は恒久スタックさせず当該巻 `error` として次巻へ進む）。                                                                                                                         |
 | `AC-COV-07` | `SCR-03`（`/read/local`・`/read/volume/:volumeId`）への遷移瞬間（直接 URL・`popstate` 含む）、手動 Drive 同期実行中、および進行中巻の所属ルート無効化／解除時は進行中の表紙 Range 通信・待機タイマーが同期的に `abort()` され、リーダー終了（`TR-07` / `TR-08` / `TR-10`）・同期完了時に自動再開する（`NFR-04`）。                                                                                                                  |
-| `AC-COV-08` | `src/engine/cover/`（`cover.worker.ts` / `types.ts` を除く）、`decompressSlice.ts`、`coverWorkerClient.ts`、`coverExtractionStateStore.ts`、および拡張後の `GoogleDriveRangeReader` / `VolumesRepository` がすべて C0/C1/Functions/Lines 100% 単体テストを PASS する。                                                                                                                                                              |
+| `AC-COV-08` | `src/engine/cover/`（`MockCoverArchiveRangeReader.ts` 含む、`cover.worker.ts` / `types.ts` を除く）、`decompressSlice.ts`、`coverWorkerClient.ts`、`coverExtractionStateStore.ts`、`useViewportVolumeObserver.ts`、および拡張後の `GoogleDriveRangeReader` / `VolumesRepository` がすべて C0/C1/Functions/Lines 100% 単体テストを PASS する。                                                                                       |

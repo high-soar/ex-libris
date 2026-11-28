@@ -35,6 +35,7 @@ related_tests:
   - src/features/reader/ReaderPage.test.tsx
   - src/features/series-detail/SeriesDetailPage.test.tsx
   - test/it/local-reader.spec.ts
+  - test/it/settings-oauth.spec.ts
   - test/it/drive-sync.spec.ts
   - test/it/bookshelf-drive-reader.spec.ts
   - test/it/cover-extraction.spec.ts

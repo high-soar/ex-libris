@@ -3,7 +3,7 @@ type: spec-feature
 title: "シリーズ詳細・巻一覧画面仕様書（SCR-02: Series Detail）"
 description: "SCR-02（/series/:seriesId）の作品サマリ、続きを読むクイック起動、単巻＋合本混在の所属有効巻一覧・進捗バー、ビューポート優先表紙抽出連携・エラー再試行導線、未存在/0件エンプティ案内、およびTR-01/TR-04/TR-05/TR-07・スクロール復元・優先度4戻る制御の正本"
 status: "Review (#26)"
-updated: "2026-11-27"
+updated: "2026-11-28"
 tags:
   [
     feature,
@@ -124,14 +124,15 @@ related_tests:
 
 ## 3. コンポーネント構成・親子分離・Storybook VRT 決定論性契約
 
-| コンポーネント            | ファイルパス                                             | 責務（テスト分離方針）                                                                                                                           |
-| :------------------------ | :------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SeriesDetailPage`        | `src/features/series-detail/SeriesDetailPage.tsx`        | `Series` / `Volumes` / `ReadingProgress` / `DriveSyncRoots` 取得統合、表紙インプレース更新・`IntersectionObserver`・エラー再試行、スクロール保持 |
-| `SeriesDetailHeader`      | `src/features/series-detail/SeriesDetailHeader.tsx`      | セーフエリア対応上部ヘッダー、「本棚へ戻る」ボタン、タイトル、バージョン表示（Pure Presentational）                                              |
-| `SeriesSummaryCard`       | `src/features/series-detail/SeriesSummaryCard.tsx`       | 代表表紙、作品タイトル、著者、巻数/読了サマリ、クイック起動プライマリ CTA（Pure Presentational）                                                 |
-| `SeriesVolumeListSection` | `src/features/series-detail/SeriesVolumeListSection.tsx` | シリーズ内表紙エラー再試行バー、単巻・合本バッジ・サイズ・ステータス・進捗バー付きの所属巻一覧表示と巻選択コールバック（Pure Presentational）    |
-| `SeriesDetailEmptyState`  | `src/features/series-detail/SeriesDetailEmptyState.tsx`  | 未存在 `seriesId` または有効巻 0 件時の案内カード＋「本棚へ戻る」ボタン（Pure Presentational）                                                   |
-| `CoverThumbnail`          | `src/shared/ui/CoverThumbnail.tsx`                       | `SCR-01` / `SCR-02` 共用の表紙 `Blob` `ObjectURL` 表示（厳格 `revokeObjectURL`）・`error` バッジ・タイポグラフィプレースホルダコンポーネント     |
+| コンポーネント              | ファイルパス                                             | 責務（テスト分離方針）                                                                                                                           |
+| :-------------------------- | :------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SeriesDetailPage`          | `src/features/series-detail/SeriesDetailPage.tsx`        | `Series` / `Volumes` / `ReadingProgress` / `DriveSyncRoots` 取得統合、表紙インプレース更新・`IntersectionObserver`・エラー再試行、スクロール保持 |
+| `SeriesDetailHeader`        | `src/features/series-detail/SeriesDetailHeader.tsx`      | セーフエリア対応上部ヘッダー、「本棚へ戻る」ボタン、タイトル、バージョン表示（Pure Presentational）                                              |
+| `SeriesSummaryCard`         | `src/features/series-detail/SeriesSummaryCard.tsx`       | 代表表紙、作品タイトル、著者、巻数/読了サマリ、クイック起動プライマリ CTA（Pure Presentational）                                                 |
+| `SeriesVolumeListSection`   | `src/features/series-detail/SeriesVolumeListSection.tsx` | シリーズ内表紙エラー再試行バー、単巻・合本バッジ・サイズ・ステータス・進捗バー付きの所属巻一覧表示と巻選択コールバック（Pure Presentational）    |
+| `SeriesDetailEmptyState`    | `src/features/series-detail/SeriesDetailEmptyState.tsx`  | 未存在 `seriesId` または有効巻 0 件時の案内カード＋「本棚へ戻る」ボタン（Pure Presentational）                                                   |
+| `CoverThumbnail`            | `src/shared/ui/CoverThumbnail.tsx`                       | `SCR-01` / `SCR-02` 共用の表紙 `Blob` `ObjectURL` 表示（厳格 `revokeObjectURL`）・`error` バッジ・タイポグラフィプレースホルダコンポーネント     |
+| `useViewportVolumeObserver` | `src/shared/ui/useViewportVolumeObserver.ts`             | `SCR-01` / `SCR-02` 共用の `data-cover-volume-id` 要素 `IntersectionObserver` 監視による `viewport-high` 表紙抽出優先度同期フック                |
 
 - **親子分離 UT**: 親 `SeriesDetailPage` の単体テストでは直下の子コンポーネント（`SeriesDetailHeader`, `SeriesSummaryCard`, `SeriesVolumeListSection`, `SeriesDetailEmptyState`）をすべて `vi.spyOn(...).mockImplementation(() => null)` で完全分離する。同様に `SeriesSummaryCard` / `SeriesVolumeListSection` の単体テストでは `CoverThumbnail` を `vi.spyOn` で分離し、`ObjectURL` ライフサイクル自体は `CoverThumbnail.test.tsx` で 100% 単体検証する。
 - **Storybook / VRT 決定論性保証**: `SeriesDetailPageProps` にオプショナルな `initialSnapshot?: SeriesDetailPageInitialSnapshot`（`loading` / `ready`［`series` + 進捗・`coverStatus` 付き巻配列 + オプショナルな再試行活性制御用 `isGoogleConnected` / `isSyncing`（省略時は `true` / `false` 既定）］/ `empty` を同期注入し初期非同期 IndexedDB フェッチ・認証確認・表紙スケジューラ購読をスキップする Prop）を設け、1280px / 375px VRT を 100% 決定論的に描画する。
