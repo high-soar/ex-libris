@@ -1,5 +1,11 @@
 import { composeStories } from "@storybook/react";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { StrictMode, type ReactElement, useRef } from "react";
 import {
   afterEach,
@@ -432,6 +438,7 @@ describe("BookshelfPage", () => {
   });
 
   afterEach(async () => {
+    cleanup();
     vi.restoreAllMocks();
     await resetTestDb();
     resetBookshelfUiState();
@@ -499,8 +506,9 @@ describe("BookshelfPage", () => {
     };
 
   async function renderAndFlush(element: ReactElement) {
-    const rendered = render(element);
+    let rendered!: ReturnType<typeof render>;
     await act(async () => {
+      rendered = render(element);
       await flushMicrotasks();
     });
     return rendered;

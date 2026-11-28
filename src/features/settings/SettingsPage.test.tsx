@@ -1,5 +1,11 @@
 import { composeStories } from "@storybook/react";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { type ReactElement } from "react";
 import {
   afterEach,
@@ -273,6 +279,7 @@ describe("SettingsPage", () => {
   });
 
   afterEach(async () => {
+    cleanup();
     vi.restoreAllMocks();
     await resetTestDb();
     resetDriveSyncState();
@@ -338,8 +345,9 @@ describe("SettingsPage", () => {
     };
 
   async function renderAndFlush(element: ReactElement) {
-    const rendered = render(element);
+    let rendered!: ReturnType<typeof render>;
     await act(async () => {
+      rendered = render(element);
       await flushMicrotasks();
     });
     return rendered;

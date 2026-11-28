@@ -1,10 +1,13 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { ServiceProvider } from "../../app/ServiceProvider";
+import { NoopCoverExtractionScheduler } from "../../engine/cover/CoverExtractionSchedulerCore";
 import { RouterProvider } from "../../shared/router/RouterProvider";
 import type { LocalReadingHistoryItem } from "../../storage/repositories/readingProgressRepository";
 import type { VolumeRecord } from "../../storage/types";
 import { BookshelfPage } from "./BookshelfPage";
 import type { BookshelfSeriesCardItem } from "./bookshelfViewModel";
+
+const STORY_COVER_SCHEDULER = new NoopCoverExtractionScheduler();
 
 // 2026-11-25 21:30:00 JST (12:30:00 UTC)
 const FIXED_SYNCED_AT = Date.UTC(2026, 10, 25, 12, 30, 0);
@@ -133,7 +136,7 @@ const meta: Meta<typeof BookshelfPage> = {
   },
   decorators: [
     (Story) => (
-      <ServiceProvider>
+      <ServiceProvider coverExtractionScheduler={STORY_COVER_SCHEDULER}>
         <RouterProvider initialPath="/">
           <Story />
         </RouterProvider>

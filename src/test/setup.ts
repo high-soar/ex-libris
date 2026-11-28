@@ -1,5 +1,6 @@
 import "fake-indexeddb/auto";
 import "@testing-library/jest-dom/vitest";
+import { afterEach } from "vitest";
 
 if (
   typeof Blob !== "undefined" &&
@@ -19,4 +20,16 @@ if (
       reader.readAsArrayBuffer(this);
     });
   };
+}
+
+if (typeof window !== "undefined") {
+  window.scrollTo = () => {};
+
+  afterEach(() => {
+    Object.defineProperty(window, "scrollY", {
+      configurable: true,
+      writable: true,
+      value: 0,
+    });
+  });
 }
