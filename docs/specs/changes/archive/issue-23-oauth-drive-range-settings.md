@@ -3,7 +3,7 @@ type: spec-delta
 title: "Issue #23 差分仕様: Google OAuth（Single-Flight）・GoogleDriveRangeReader・SCR-04 設定基盤"
 description: "Androidネイティブ GoogleAuthPlugin（drive.readonly）・Webモック自動フォールバック、Single-Flightトークン管理、GoogleDriveRangeReader（HTTP Range・401 1回リトライ・200 OOM防御）、Dexie version(3) 先行定義＆ルートフォルダ管理UI、およびSCR-04（/settings）ルーティング・戻る優先度制御を定義する差分仕様"
 status: "Completed (Archived)"
-updated: "2026-11-23"
+updated: "2026-11-28"
 issue: "#23"
 tags:
   [
@@ -38,6 +38,10 @@ related_tests:
   - src/app/ServiceProvider.test.tsx
   - src/app/coordinatorClient.test.ts
   - src/app/serviceContext.test.ts
+  - src/bridges/oauth/capacitorGoogleAuthAdapter.test.ts
+  - src/bridges/oauth/googleAuthErrors.test.ts
+  - src/bridges/oauth/googleAuthTokenManager.test.ts
+  - src/bridges/oauth/mockGoogleAuthAdapter.test.ts
   - src/diagnostics/diagnosticLogger.test.ts
   - src/engine/io/GoogleDriveRangeReader.test.ts
   - src/engine/workers/CoordinatorCore.test.ts
@@ -52,10 +56,15 @@ related_tests:
   - src/features/settings/GoogleAccountSection.test.tsx
   - src/features/settings/SettingsHeader.test.tsx
   - src/features/settings/SettingsPage.test.tsx
+  - src/providers/gdrive/driveApiErrors.test.ts
+  - src/providers/gdrive/driveFolderInput.test.ts
+  - src/providers/gdrive/googleDriveFolderClient.test.ts
+  - src/providers/gdrive/mockDriveFolderClient.test.ts
   - src/shared/router/RouterProvider.test.tsx
   - src/shared/router/routeMatcher.test.ts
   - src/shared/router/routerContext.test.ts
   - src/storage/db.test.ts
+  - src/storage/repositories/driveSyncRootsRepository.test.ts
   - test/vrt/vrt.spec.ts
   - test/it/smoke.spec.ts
   - test/it/settings-oauth.spec.ts

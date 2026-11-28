@@ -3,7 +3,7 @@ type: spec-feature
 title: "仮想本棚ホーム画面仕様書（SCR-01: Bookshelf）"
 description: "SCR-01（/）のダークテーマシェル、手動Drive同期トリガー、4軸基本ソート対応シリーズカードグリッド、「続きを読む」クイック起動（TR-02b）、ビューポート優先の表紙WebP自動抽出・進捗/再試行表示、設定導線・段階別ガイドバナー、ローカルZIP/CBZ選択導線・閲覧履歴、診断ログコピー、およびTR-01/TR-02a/TR-02b/TR-03/TR-05/TR-08/TR-09仕様の正本"
 status: "Review (#26)"
-updated: "2026-11-27"
+updated: "2026-11-28"
 tags:
   [
     feature,
@@ -161,6 +161,7 @@ related_tests:
 | `driveSyncStateStore`       | `src/shared/sync/driveSyncStateStore.ts`               | `SCR-01` / `SCR-04` 横断の Drive 手動同期状態（実行中・最終同期日時・結果・エラー・完了カウンタ）を管理する Zustand ストア   |
 | `coverExtractionStateStore` | `src/shared/sync/coverExtractionStateStore.ts`         | `SCR-01` / `SCR-02` / `SCR-04` 横断の表紙 WebP 自動抽出進捗・待機/エラー冊数スナップショットを保持する Zustand ストア        |
 | `CoverThumbnail`            | `src/shared/ui/CoverThumbnail.tsx`                     | `coverBlob` の `URL.createObjectURL` / `URL.revokeObjectURL` 厳格管理、`error` 識別バッジ、未抽出時プレースホルダ描画        |
+| `useViewportVolumeObserver` | `src/shared/ui/useViewportVolumeObserver.ts`           | `data-cover-volume-id` 要素の `IntersectionObserver` 監視による `viewport-high` 表紙抽出優先度同期フック                     |
 | `BookshelfPage`             | `src/features/bookshelf/BookshelfPage.tsx`             | ローカル ZIP 検証、`TR-01`〜`TR-03` スクロール保持＆プリエンプション、表紙インプレース更新・`IntersectionObserver` 統合      |
 | `BookshelfHeader`           | `src/features/bookshelf/BookshelfHeader.tsx`           | タイトル、バージョン、手動「同期」ボタン、「ローカル ZIP を開く」、診断ログコピー、「設定」ボタン（Pure Presentational）     |
 | `DriveSetupBanner`          | `src/features/bookshelf/DriveSetupBanner.tsx`          | Google 未連携／有効ルートフォルダ 0 件時の段階別ガイドバナー（準備完了・初期確認中は `null`、Pure Presentational）           |

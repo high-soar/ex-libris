@@ -48,6 +48,8 @@ related_tests:
   - src/providers/gdrive/mockDriveSyncClient.test.ts
   - src/providers/gdrive/driveSyncEngine.test.ts
   - src/shared/sync/driveSyncStateStore.test.ts
+  - test/it/smoke.spec.ts
+  - test/it/settings-oauth.spec.ts
   - test/it/drive-sync.spec.ts
   - test/it/bookshelf-drive-reader.spec.ts
   - test/it/cover-extraction.spec.ts
