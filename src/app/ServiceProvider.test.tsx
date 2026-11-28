@@ -1470,4 +1470,46 @@ describe("ServiceProvider", () => {
     });
     expect(scheduler4.pause).toHaveBeenCalledTimes(1);
   });
+
+  it("端末オンライン復帰（window onlineイベント）時にcoverExtractionScheduler.syncQueue()が自動呼出され、アンマウント後は解除されること (AC-COV-06)", async () => {
+    const syncQueue = vi.fn(async () => {});
+    const scheduler: CoverExtractionScheduler = {
+      syncQueue,
+      setViewportVolumeIds: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      retryFailedCovers: vi.fn(async () => 0),
+      getSnapshot: vi.fn(() => ({
+        phase: "idle" as const,
+        totalCount: 1,
+        readyCount: 0,
+        pendingCount: 1,
+        errorCount: 0,
+        activeVolumeId: null,
+        pauseReasons: [],
+      })),
+      subscribeProgress: vi.fn(() => () => {}),
+      subscribeVolumeUpdated: vi.fn(() => () => {}),
+      resetForTest: vi.fn(async () => {}),
+      dispose: vi.fn(),
+    };
+
+    const { unmount } = render(
+      <ServiceProvider coverExtractionScheduler={scheduler}>
+        <div>online-resume</div>
+      </ServiceProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    syncQueue.mockClear();
+
+    window.dispatchEvent(new Event("online"));
+    expect(syncQueue).toHaveBeenCalledTimes(1);
+
+    unmount();
+    window.dispatchEvent(new Event("online"));
+    expect(syncQueue).toHaveBeenCalledTimes(1);
+  });
 });
