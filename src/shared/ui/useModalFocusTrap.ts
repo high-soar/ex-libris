@@ -50,6 +50,7 @@ export function useModalFocusTrap({
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+    const fallbackElement = fallbackFocusRef?.current ?? null;
 
     const initialFocusables = getFocusableElements(container);
     if (initialFocusables.length > 0) {
@@ -97,9 +98,8 @@ export function useModalFocusTrap({
         previouslyFocused.focus();
         return;
       }
-      const fallback = fallbackFocusRef?.current ?? null;
-      if (canRestoreFocus(fallback)) {
-        fallback.focus();
+      if (canRestoreFocus(fallbackElement)) {
+        fallbackElement.focus();
       }
     };
   }, [isOpen, containerRef, fallbackFocusRef]);
