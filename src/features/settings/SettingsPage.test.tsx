@@ -421,6 +421,10 @@ describe("SettingsPage", () => {
     expect(getPickerProps()).toMatchObject({
       isOpen: false,
     });
+    expect(getSyncRootsProps().openFolderPickerButtonRef).toBeDefined();
+    expect(getPickerProps().fallbackFocusRef).toBe(
+      getSyncRootsProps().openFolderPickerButtonRef,
+    );
     expect(getDiagnosticsProps().entries).toHaveLength(3);
     u1();
 

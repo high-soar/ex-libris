@@ -1,4 +1,4 @@
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, type RefObject, useRef } from "react";
 import type { DriveFolderMetadata } from "../../providers/gdrive/types";
 import { useModalFocusTrap } from "../../shared/ui/useModalFocusTrap";
 import type { DriveFolderBreadcrumbItem } from "./types";
@@ -12,6 +12,7 @@ export interface DriveFolderPickerModalProps {
   readonly isLoadingMore: boolean;
   readonly isSaving: boolean;
   readonly errorMessage: string | null;
+  readonly fallbackFocusRef?: RefObject<HTMLElement | null>;
   readonly onNavigateBreadcrumb: (index: number) => void;
   readonly onOpenFolder: (folder: DriveFolderMetadata) => void;
   readonly onSelectFolder: (folder: DriveFolderMetadata) => void;
@@ -182,6 +183,7 @@ export function DriveFolderPickerModal({
   isLoadingMore,
   isSaving,
   errorMessage,
+  fallbackFocusRef,
   onNavigateBreadcrumb,
   onOpenFolder,
   onSelectFolder,
@@ -190,7 +192,7 @@ export function DriveFolderPickerModal({
   onClose,
 }: DriveFolderPickerModalProps): ReactNode {
   const dialogRef = useRef<HTMLElement | null>(null);
-  useModalFocusTrap({ isOpen, containerRef: dialogRef });
+  useModalFocusTrap({ isOpen, containerRef: dialogRef, fallbackFocusRef });
 
   if (!isOpen) {
     return null;

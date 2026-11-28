@@ -515,9 +515,11 @@ test.describe("SCN-03: Google OAuth連携・Driveフォルダ設定・診断ロ�
       );
     });
 
-    // 優先度 2: フォルダピッカーモーダル開中のハードウェア戻る -> モーダルのみ閉鎖し /settings に留まる
-    await page.getByTestId("open-folder-picker-button").click();
+    // 優先度 2: フォルダピッカーモーダル開中のハードウェア戻る -> モーダルのみ閉鎖し /settings に留まりトリガーへフォーカス復帰
+    const openPickerBtn = page.getByTestId("open-folder-picker-button");
+    await openPickerBtn.click();
     await expect(page.getByTestId("drive-folder-picker-modal")).toBeVisible();
+    await expect(page.getByTestId("close-folder-picker-button")).toBeFocused();
     await page.evaluate(async () => {
       const bridge = window.__exLibrisServices?.appBridge as
         MockAppBridge | undefined;
@@ -525,22 +527,25 @@ test.describe("SCN-03: Google OAuth連携・Driveフォルダ設定・診断ロ�
     });
     await expect(page.getByTestId("drive-folder-picker-modal")).toHaveCount(0);
     await expect(page).toHaveURL(/\/settings$/);
+    await expect(openPickerBtn).toBeFocused();
 
-    // Escape キーによるモーダル閉鎖
-    await page.getByTestId("open-folder-picker-button").click();
+    // Escape キーによるモーダル閉鎖とトリガーへのフォーカス復帰
+    await openPickerBtn.click();
     await expect(page.getByTestId("drive-folder-picker-modal")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("drive-folder-picker-modal")).toHaveCount(0);
     await expect(page).toHaveURL(/\/settings$/);
+    await expect(openPickerBtn).toBeFocused();
 
-    // バックドロップクリックによるモーダル閉鎖
-    await page.getByTestId("open-folder-picker-button").click();
+    // バックドロップクリックによるモーダル閉鎖とトリガーへのフォーカス復帰
+    await openPickerBtn.click();
     await expect(page.getByTestId("drive-folder-picker-modal")).toBeVisible();
     await page
       .getByTestId("folder-picker-backdrop")
       .click({ position: { x: 8, y: 8 } });
     await expect(page.getByTestId("drive-folder-picker-modal")).toHaveCount(0);
     await expect(page).toHaveURL(/\/settings$/);
+    await expect(openPickerBtn).toBeFocused();
 
     // 優先度 4: モーダル閉鎖後の /settings でハードウェア戻る -> '/' へ復帰
     await page.evaluate(async () => {

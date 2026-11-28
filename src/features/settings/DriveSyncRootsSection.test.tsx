@@ -76,8 +76,13 @@ describe("DriveSyncRootsSection", () => {
     const onChangeFolderInput = vi.fn();
     const onAddFolderByInput = vi.fn();
 
+    const openFolderPickerButtonRef = {
+      current: null as HTMLButtonElement | null,
+    };
+
     render(
       <ConnectedEmpty
+        openFolderPickerButtonRef={openFolderPickerButtonRef}
         onOpenFolderPicker={onOpenFolderPicker}
         onChangeFolderInput={onChangeFolderInput}
         onAddFolderByInput={onAddFolderByInput}
@@ -92,6 +97,7 @@ describe("DriveSyncRootsSection", () => {
     const input = screen.getByTestId("folder-input");
     const addBtn = screen.getByTestId("add-folder-by-input-button");
 
+    expect(openFolderPickerButtonRef.current).toBe(pickerBtn);
     expect(pickerBtn).toBeEnabled();
     expect(pickerBtn).toHaveClass("touch-manipulation");
     expect(input).toBeEnabled();

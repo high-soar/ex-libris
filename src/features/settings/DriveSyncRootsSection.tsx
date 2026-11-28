@@ -1,4 +1,4 @@
-import type { FormEvent, ReactNode } from "react";
+import type { FormEvent, ReactNode, RefObject } from "react";
 import type { DriveSyncRootRecord } from "../../storage/types";
 
 export interface DriveSyncRootsSectionProps {
@@ -8,6 +8,7 @@ export interface DriveSyncRootsSectionProps {
   readonly isSubmitting: boolean;
   readonly isSyncing?: boolean;
   readonly errorMessage: string | null;
+  readonly openFolderPickerButtonRef?: RefObject<HTMLButtonElement | null>;
   readonly onChangeFolderInput: (value: string) => void;
   readonly onAddFolderByInput: () => void;
   readonly onOpenFolderPicker: () => void;
@@ -91,6 +92,7 @@ export function DriveSyncRootsSection({
   isSubmitting,
   isSyncing = false,
   errorMessage,
+  openFolderPickerButtonRef,
   onChangeFolderInput,
   onAddFolderByInput,
   onOpenFolderPicker,
@@ -130,6 +132,7 @@ export function DriveSyncRootsSection({
           </p>
         </div>
         <button
+          ref={openFolderPickerButtonRef}
           type="button"
           data-testid="open-folder-picker-button"
           disabled={isAdditionDisabled}

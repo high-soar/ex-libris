@@ -1,7 +1,7 @@
 import { composeStories } from "@storybook/react";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DriveFolderPickerModal } from "./DriveFolderPickerModal";
 import * as stories from "./DriveFolderPickerModal.stories";
 
@@ -16,6 +16,9 @@ const {
 } = composeStories(stories);
 
 describe("DriveFolderPickerModal", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   it("Closedストーリーでモーダルとバックドロップを描画しないこと (AC-ST-02)", () => {
     const { container } = render(<Closed />);
 
@@ -251,6 +254,27 @@ describe("DriveFolderPickerModal", () => {
 
     rerender(<SubdirectoryWithPagination isOpen={false} />);
     expect(document.activeElement).toBe(trigger);
+
+    // 背面 inert 等でオープン時に activeElement が document.body になっても fallbackFocusRef へ復帰すること
+    const fallbackRef = { current: trigger };
+    const bodyActiveSpy = vi
+      .spyOn(document, "activeElement", "get")
+      .mockReturnValue(document.body);
+    rerender(
+      <SubdirectoryWithPagination
+        isOpen={true}
+        fallbackFocusRef={fallbackRef}
+      />,
+    );
+    bodyActiveSpy.mockRestore();
+    rerender(
+      <SubdirectoryWithPagination
+        isOpen={false}
+        fallbackFocusRef={fallbackRef}
+      />,
+    );
+    expect(document.activeElement).toBe(trigger);
+
     trigger.remove();
   });
 });

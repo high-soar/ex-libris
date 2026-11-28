@@ -1,4 +1,4 @@
-import { type RefObject, useEffect } from "react";
+import { type RefObject, useLayoutEffect } from "react";
 
 export interface UseModalFocusTrapOptions {
   readonly isOpen: boolean;
@@ -22,7 +22,12 @@ function getFocusableElements(container: HTMLElement): HTMLElement[] {
 }
 
 function canRestoreFocus(element: HTMLElement | null): element is HTMLElement {
-  if (element === null || !element.isConnected) {
+  if (
+    element === null ||
+    element === document.body ||
+    element === document.documentElement ||
+    !element.isConnected
+  ) {
     return false;
   }
   if (element.hasAttribute("disabled") || element.closest("[inert]") !== null) {
@@ -36,7 +41,7 @@ export function useModalFocusTrap({
   containerRef,
   fallbackFocusRef,
 }: UseModalFocusTrapOptions): void {
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isOpen) {
       return;
     }

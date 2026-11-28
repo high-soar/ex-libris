@@ -257,6 +257,7 @@ export function SettingsPage({
   const pickerEpochRef = useRef<number>(0);
   const addInputAbortRef = useRef<AbortController | null>(null);
   const pickerAbortRef = useRef<AbortController | null>(null);
+  const openFolderPickerButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const isAuthBusyRef = useRef<boolean>(isAuthBusy);
   isAuthBusyRef.current = isAuthBusy;
@@ -1007,6 +1008,7 @@ export function SettingsPage({
             isSubmitting={isSubmittingRoot}
             isSyncing={isSyncing}
             errorMessage={syncRootsErrorMessage}
+            openFolderPickerButtonRef={openFolderPickerButtonRef}
             onChangeFolderInput={handleChangeFolderInput}
             onAddFolderByInput={handleAddFolderByInput}
             onOpenFolderPicker={handleOpenFolderPicker}
@@ -1051,6 +1053,7 @@ export function SettingsPage({
         isLoadingMore={isPickerLoadingMore}
         isSaving={isSavingSyncRoot}
         errorMessage={pickerErrorMessage}
+        fallbackFocusRef={openFolderPickerButtonRef}
         onNavigateBreadcrumb={handleNavigateBreadcrumb}
         onOpenFolder={handleOpenFolder}
         onSelectFolder={handleSelectFolder}

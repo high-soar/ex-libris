@@ -300,6 +300,34 @@ describe("useModalFocusTrap", () => {
     rerender(createElement(FocusTrapHarness, { isOpen: true }));
     activeElementSpy.mockRestore();
     rerender(createElement(FocusTrapHarness, { isOpen: false }));
+
+    // 5. 背面 inert による自動 blur 等でオープン時に activeElement が document.body の場合は fallbackFocusRef へ復帰すること
+    document.body.focus();
+    const bodyActiveSpy = vi
+      .spyOn(document, "activeElement", "get")
+      .mockReturnValue(document.body);
+    rerender(
+      createElement(FocusTrapHarness, { isOpen: true, useFallbackRef: true }),
+    );
+    bodyActiveSpy.mockRestore();
+    rerender(
+      createElement(FocusTrapHarness, { isOpen: false, useFallbackRef: true }),
+    );
+    expect(document.activeElement).toBe(fallback);
+
+    // 6. オープン時に activeElement が document.documentElement の場合も fallbackFocusRef へ復帰すること
+    trigger.focus();
+    const htmlActiveSpy = vi
+      .spyOn(document, "activeElement", "get")
+      .mockReturnValue(document.documentElement);
+    rerender(
+      createElement(FocusTrapHarness, { isOpen: true, useFallbackRef: true }),
+    );
+    htmlActiveSpy.mockRestore();
+    rerender(
+      createElement(FocusTrapHarness, { isOpen: false, useFallbackRef: true }),
+    );
+    expect(document.activeElement).toBe(fallback);
   });
 
   it("containerRefがnullのときは何も実行せず安全に終了すること", () => {
