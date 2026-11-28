@@ -24,11 +24,13 @@ export class DecodeWorkerCore implements DecodeWorkerApi {
   async decodePageSlice(
     compressedData: Uint8Array,
     compressionMethod: ZipCompressionMethod,
+    _expectedUncompressedSize?: number,
   ): Promise<{
     bitmap: ImageBitmap;
     width: number;
     height: number;
   }> {
+    void _expectedUncompressedSize;
     try {
       const rawBytes = await decompressZipSlice(
         compressedData,

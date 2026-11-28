@@ -1408,4 +1408,286 @@ describe("CoverExtractionSchedulerCore", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(scheduler4.getSnapshot().errorCount).toBe(0);
   });
+
+  it("saveCoverReady/saveCoverErrorがrejectしてもactiveVolumeIdが残留せず診断エラー記録の上で次巻へ継続すること (R1-02)", async () => {
+    await seedEnabledRoot("root-1");
+    await db.series.put(makeSeries({ id: "s-1" }));
+    const zipBytes = makeZipBytes();
+    await db.volumes.bulkPut([
+      makeVolume(zipBytes.byteLength, {
+        id: "v-ready-fail",
+        driveFileId: "df-ready-fail",
+        volumeNumber: 1,
+      }),
+      makeVolume(zipBytes.byteLength, {
+        id: "v-error-fail",
+        driveFileId: "df-error-fail",
+        volumeNumber: 2,
+      }),
+      makeVolume(zipBytes.byteLength, {
+        id: "v-ok",
+        driveFileId: "df-ok",
+        volumeNumber: 3,
+      }),
+    ]);
+
+    const baseRepo = new DexieVolumesRepository(db);
+    const logger = createDiagnosticLogger();
+    const scheduler = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        logger,
+        volumesRepo: {
+          getById: (id) => baseRepo.getById(id),
+          listVisibleByEnabledRoots: (ids) =>
+            baseRepo.listVisibleByEnabledRoots(ids),
+          saveCoverReady: async (input) => {
+            if (input.volumeId === "v-ready-fail") {
+              throw new Error("QuotaExceededError on saveCoverReady");
+            }
+            return baseRepo.saveCoverReady(input);
+          },
+          saveCoverError: async (input) => {
+            if (input.volumeId === "v-error-fail") {
+              throw new Error("QuotaExceededError on saveCoverError");
+            }
+            return baseRepo.saveCoverError(input);
+          },
+          resetErrorCoversToPending: (input) =>
+            baseRepo.resetErrorCoversToPending(input),
+        },
+        createRangeReader: (volume) => ({
+          sourceId: `gdrive:${volume.driveFileId}`,
+          totalSize: volume.fileSize,
+          async readRange(offset, length) {
+            if (volume.id === "v-error-fail") {
+              throw new ZipArchiveError("CORRUPT_ZIP", "broken zip");
+            }
+            const end = Math.min(offset + length, zipBytes.byteLength);
+            return zipBytes.subarray(offset, end);
+          },
+        }),
+      }),
+    );
+
+    await scheduler.syncQueue();
+    await vi.waitFor(() => {
+      expect(scheduler.getSnapshot().phase).toBe("idle");
+      expect(scheduler.getSnapshot().readyCount).toBe(1);
+    });
+
+    expect(scheduler.getSnapshot().activeVolumeId).toBeNull();
+    expect(scheduler.getSnapshot().pendingCount).toBe(0);
+    // DB 上は保存失敗した 2 巻が error 汚染されず pending 維持（v-ok のみ ready）
+    expect((await db.volumes.get("v-ready-fail"))?.coverStatus).toBe("pending");
+    expect((await db.volumes.get("v-error-fail"))?.coverStatus).toBe("pending");
+    expect((await db.volumes.get("v-ok"))?.coverStatus).toBe("ready");
+
+    const errorLogs = logger
+      .getEntries()
+      .filter((entry) => entry.level === "error" && entry.scope === "cover");
+    expect(errorLogs.length).toBeGreaterThanOrEqual(2);
+    expect(
+      errorLogs.some((entry) =>
+        entry.detail?.includes("QuotaExceededError on saveCoverReady"),
+      ),
+    ).toBe(true);
+    expect(
+      errorLogs.some((entry) =>
+        entry.detail?.includes("QuotaExceededError on saveCoverError"),
+      ),
+    ).toBe(true);
+
+    scheduler.dispose();
+  });
+
+  it("runLoop内で予期しない例外が発生しても未処理rejectionにならず診断エラーログを記録すること (R1-02)", async () => {
+    await seedEnabledRoot("root-1");
+    await db.series.put(makeSeries({ id: "s-1" }));
+    const zipBytes = makeZipBytes();
+    await db.volumes.bulkPut([
+      makeVolume(zipBytes.byteLength, {
+        id: "v-1",
+        driveFileId: "df-1",
+        volumeNumber: 1,
+      }),
+      makeVolume(zipBytes.byteLength, {
+        id: "v-2",
+        driveFileId: "df-2",
+        volumeNumber: 2,
+      }),
+    ]);
+
+    const logger = createDiagnosticLogger();
+    let sleepCount = 0;
+    const scheduler = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        logger,
+        now: () => 1000,
+        sleep: async () => {
+          sleepCount += 1;
+          if (sleepCount === 1) {
+            throw new Error("unexpected sleep failure");
+          }
+        },
+      }),
+    );
+
+    await scheduler.syncQueue();
+    await vi.waitFor(() => {
+      expect(scheduler.getSnapshot().readyCount).toBe(2);
+      expect(scheduler.getSnapshot().phase).toBe("idle");
+    });
+
+    expect(
+      logger
+        .getEntries()
+        .some(
+          (entry) =>
+            entry.level === "error" &&
+            entry.scope === "cover" &&
+            entry.detail?.includes("unexpected sleep failure"),
+        ),
+    ).toBe(true);
+
+    scheduler.dispose();
+  });
+
+  it("オフライン通信断・AUTH_NETWORK_ERROR・5xxは指数バックオフ再試行し上限到達後も恒久errorにせずpending維持で待機停止すること (R1-03, AC-COV-06)", async () => {
+    await seedEnabledRoot("root-1");
+    await db.series.put(makeSeries({ id: "s-1" }));
+    const zipBytes = makeZipBytes();
+    await db.volumes.bulkPut([
+      makeVolume(zipBytes.byteLength, {
+        id: "v-net-1",
+        driveFileId: "df-net-1",
+        volumeNumber: 1,
+      }),
+      makeVolume(zipBytes.byteLength, {
+        id: "v-net-2",
+        driveFileId: "df-net-2",
+        volumeNumber: 2,
+      }),
+    ]);
+
+    const sleepCalls: number[] = [];
+    const logger = createDiagnosticLogger();
+    let mode: "offline" | "503" | "recover" = "offline";
+    let readAttempts = 0;
+
+    const scheduler = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        logger,
+        sleep: async (ms) => {
+          sleepCalls.push(ms);
+        },
+        createRangeReader: (volume) => ({
+          sourceId: `gdrive:${volume.driveFileId}`,
+          totalSize: volume.fileSize,
+          async readRange(offset, length) {
+            readAttempts += 1;
+            if (mode === "offline") {
+              throw new ZipArchiveError(
+                "READ_ERROR",
+                "Failed to fetch (offline / AUTH_NETWORK_ERROR)",
+              );
+            }
+            if (mode === "503") {
+              throw new ZipArchiveError(
+                "READ_ERROR",
+                "503 Service Unavailable",
+                undefined,
+                {
+                  httpStatus: 503,
+                  isRateLimited: false,
+                },
+              );
+            }
+            const end = Math.min(offset + length, zipBytes.byteLength);
+            return zipBytes.subarray(offset, end);
+          },
+        }),
+      }),
+    );
+
+    // 1. オフライン継続時: 1000 -> 2000 -> 4000ms バックオフ後、計4回失敗で pending 維持のまま待機停止 (idle)
+    await scheduler.syncQueue();
+    await vi.waitFor(() => {
+      expect(readAttempts).toBe(4);
+      expect(scheduler.getSnapshot().phase).toBe("idle");
+    });
+
+    expect(sleepCalls).toEqual([1000, 2000, 4000]);
+    expect(scheduler.getSnapshot()).toMatchObject({
+      phase: "idle",
+      readyCount: 0,
+      pendingCount: 2,
+      errorCount: 0,
+      activeVolumeId: null,
+    });
+    expect((await db.volumes.get("v-net-1"))?.coverStatus).toBe("pending");
+    expect((await db.volumes.get("v-net-2"))?.coverStatus).toBe("pending");
+
+    // 2. 5xx (503) で再試行しても同様に恒久 error 汚染しない
+    mode = "503";
+    sleepCalls.length = 0;
+    readAttempts = 0;
+    await scheduler.syncQueue();
+    await vi.waitFor(() => {
+      expect(readAttempts).toBe(4);
+      expect(scheduler.getSnapshot().phase).toBe("idle");
+    });
+    expect(sleepCalls).toEqual([1000, 2000, 4000]);
+    expect(scheduler.getSnapshot().errorCount).toBe(0);
+    expect((await db.volumes.get("v-net-1"))?.coverStatus).toBe("pending");
+
+    // 3. 通信回復後に syncQueue() すると全巻が正常に ready 完了すること
+    mode = "recover";
+    await scheduler.syncQueue();
+    await vi.waitFor(() => {
+      expect(scheduler.getSnapshot().readyCount).toBe(2);
+      expect(scheduler.getSnapshot().phase).toBe("idle");
+    });
+    expect((await db.volumes.get("v-net-1"))?.coverStatus).toBe("ready");
+    expect((await db.volumes.get("v-net-2"))?.coverStatus).toBe("ready");
+
+    scheduler.dispose();
+  });
+
+  it("syncQueueおよびretryFailedCovers内のDexie障害をCore内でcatchしlogger.errorへ記録してresolveすること (R1-08)", async () => {
+    const zipBytes = makeZipBytes();
+    const logger = createDiagnosticLogger();
+    const baseRepo = new DexieVolumesRepository(db);
+
+    const scheduler = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        logger,
+        driveSyncRootsRepo: {
+          listActive: vi.fn(async () => {
+            throw new Error("IndexedDB unavailable");
+          }),
+        },
+        volumesRepo: {
+          getById: (id) => baseRepo.getById(id),
+          listVisibleByEnabledRoots: (ids) =>
+            baseRepo.listVisibleByEnabledRoots(ids),
+          saveCoverReady: (input) => baseRepo.saveCoverReady(input),
+          saveCoverError: (input) => baseRepo.saveCoverError(input),
+          resetErrorCoversToPending: (input) =>
+            baseRepo.resetErrorCoversToPending(input),
+        },
+      }),
+    );
+
+    await expect(scheduler.syncQueue()).resolves.toBeUndefined();
+    await expect(scheduler.retryFailedCovers()).resolves.toBe(0);
+
+    const errorLogs = logger
+      .getEntries()
+      .filter((entry) => entry.level === "error" && entry.scope === "cover");
+    expect(errorLogs).toHaveLength(2);
+    expect(errorLogs[0]?.detail).toContain("IndexedDB unavailable");
+    expect(errorLogs[1]?.detail).toContain("IndexedDB unavailable");
+
+    scheduler.dispose();
+  });
 });

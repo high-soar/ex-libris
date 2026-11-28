@@ -754,4 +754,60 @@ describe("coordinatorClient", () => {
     });
     channelSession.dispose();
   });
+
+  it("dispose時に保留中RPCをAbortErrorでrejectし、破棄後の新規非同期RPCも即時AbortErrorでrejectし同期RPCは無害化すること (R1-10)", async () => {
+    const rawApi: CoordinatorWorkerApi = {
+      openArchive: vi.fn(() => new Promise<OpenArchiveResult>(() => undefined)),
+      requestVisiblePages: vi.fn(
+        () => new Promise<DecodedPageFrame[]>(() => undefined),
+      ),
+      updateAccessToken: vi.fn(),
+      setHostCallbacks: vi.fn(),
+      cancelEpochBelow: vi.fn(),
+      closeArchive: vi.fn(() => new Promise<void>(() => undefined)),
+    };
+    const session = createCoordinatorSession({
+      registerErrorHandler: vi.fn(),
+      createWorker: () => ({
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        terminate: vi.fn(),
+      }),
+      wrapWorker: () => rawApi,
+    });
+
+    const pendingOpen = session.api.openArchive(
+      createDummyLocalSource(),
+      null,
+      1,
+    );
+    const pendingPages = session.api.requestVisiblePages([0], [], 1);
+
+    session.dispose();
+
+    await expect(pendingOpen).rejects.toMatchObject({ name: "AbortError" });
+    await expect(pendingPages).rejects.toMatchObject({ name: "AbortError" });
+
+    // 破棄後の新規非同期 RPC も即座に AbortError で reject
+    await expect(
+      session.api.openArchive(createDummyLocalSource(), null, 2),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    await expect(
+      session.api.requestVisiblePages([1], [], 2),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    await expect(session.api.closeArchive()).rejects.toMatchObject({
+      name: "AbortError",
+    });
+
+    // 破棄後の同期 RPC は rawApi を呼ばず無害化
+    session.api.updateAccessToken("token-after-dispose");
+    session.api.setHostCallbacks(null);
+    session.api.cancelEpochBelow(3);
+    expect(rawApi.openArchive).toHaveBeenCalledTimes(1);
+    expect(rawApi.requestVisiblePages).toHaveBeenCalledTimes(1);
+    expect(rawApi.closeArchive).not.toHaveBeenCalled();
+    expect(rawApi.updateAccessToken).not.toHaveBeenCalled();
+    expect(rawApi.setHostCallbacks).not.toHaveBeenCalled();
+    expect(rawApi.cancelEpochBelow).not.toHaveBeenCalled();
+  });
 });

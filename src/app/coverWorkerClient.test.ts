@@ -265,16 +265,14 @@ describe("coverWorkerClient", () => {
       syncClient.api.encodeCoverWebp(new Uint8Array([1]), 0),
     ).rejects.toThrow("sync failure");
 
-    // dispose 後にイベント発火しても無視され、dispose 後の RPC は rawApi へ委譲される
+    // dispose 後にイベント発火しても無視され、dispose 後の新規 RPC は AbortError で即時 reject される
     syncClient.dispose();
     capturedListeners[0]?.(Object.assign(new Event(""), { filename: "x.ts" }));
     expect(syncClient.isBroken()).toBe(false);
-    expect(
-      await syncClient.api.encodeCoverWebp(new Uint8Array([1]), 0),
-    ).toEqual({
-      blob: minimalBlob,
-      width: 5,
-      height: 5,
+    await expect(
+      syncClient.api.encodeCoverWebp(new Uint8Array([1]), 0),
+    ).rejects.toMatchObject({
+      name: "AbortError",
     });
 
     // 空 type・filename あり（lineno/colno 未定義）でのクラッシュ詳細フォーマット確認
@@ -299,5 +297,33 @@ describe("coverWorkerClient", () => {
     expect(client2.isBroken()).toBe(true);
     expect(logger.getEntries()[0]?.detail).toContain("type=error");
     expect(logger.getEntries()[0]?.detail).toContain("location=w.ts:0:0");
+  });
+
+  it("dispose時に保留中encodeCoverWebpをAbortErrorでrejectし、破棄後の新規RPCも即時AbortErrorでrejectすること (R1-10)", async () => {
+    const terminate = vi.fn();
+    const rawEncode = vi.fn(
+      () => new Promise<EncodeCoverWebpResult>(() => undefined),
+    );
+    const client = createCoverWorkerClient({
+      createWorker: () => ({
+        terminate,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+      wrapWorker: () => ({
+        encodeCoverWebp: rawEncode,
+      }),
+      registerErrorHandler: vi.fn(),
+    });
+
+    const inFlight = client.api.encodeCoverWebp(new Uint8Array([1, 2, 3]), 0);
+    client.dispose();
+
+    await expect(inFlight).rejects.toMatchObject({ name: "AbortError" });
+    await expect(
+      client.api.encodeCoverWebp(new Uint8Array([4, 5]), 0),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(rawEncode).toHaveBeenCalledTimes(1);
+    expect(terminate).toHaveBeenCalledTimes(1);
   });
 });

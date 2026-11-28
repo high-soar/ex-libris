@@ -4,6 +4,7 @@ import type { ZipCompressionMethod } from "../types";
 export interface DecompressZipSliceDeps {
   readonly createDecompressionStream?:
     ((format: "deflate-raw") => DecompressionStream) | null;
+  readonly maxUncompressedBytes?: number;
 }
 
 async function readAllStreamChunks(

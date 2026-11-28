@@ -59,4 +59,47 @@ describe("decompressZipSlice", () => {
       decompressZipSlice(corrupt, 8, { createDecompressionStream: null }),
     ).rejects.toThrow();
   });
+
+  it("伸長サイズがmaxUncompressedBytesを超過した場合はStore/DecompressionStream/fflateいずれの経路でもDECODE_FAILEDを送出すること (R1-11)", async () => {
+    const raw = new Uint8Array(4096).fill(0x41);
+    const deflated = deflateSync(raw);
+
+    // 1. Store (0) 経路
+    await expect(
+      decompressZipSlice(raw, 0, { maxUncompressedBytes: 1024 }),
+    ).rejects.toMatchObject({
+      name: "ZipArchiveError",
+      code: "DECODE_FAILED",
+    });
+
+    // 2. DecompressionStream 経路（上限超過時に fflate フォールバックへ落とさず即時 DECODE_FAILED）
+    await expect(
+      decompressZipSlice(deflated, 8, {
+        createDecompressionStream: (format) => new DecompressionStream(format),
+        maxUncompressedBytes: 1024,
+      }),
+    ).rejects.toMatchObject({
+      name: "ZipArchiveError",
+      code: "DECODE_FAILED",
+    });
+
+    // 3. fflate フォールバック経路
+    await expect(
+      decompressZipSlice(deflated, 8, {
+        createDecompressionStream: null,
+        maxUncompressedBytes: 1024,
+      }),
+    ).rejects.toMatchObject({
+      name: "ZipArchiveError",
+      code: "DECODE_FAILED",
+    });
+
+    // 4. 上限ちょうどは正常通過すること
+    expect(
+      await decompressZipSlice(deflated, 8, {
+        createDecompressionStream: null,
+        maxUncompressedBytes: 4096,
+      }),
+    ).toEqual(raw);
+  });
 });
