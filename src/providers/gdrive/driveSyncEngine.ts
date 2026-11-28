@@ -468,20 +468,16 @@ export class DefaultDriveSyncEngine implements DriveSyncEngine {
     };
 
     // Pass 1: フォルダ単位の変更イベント検知 -> フルスキャンへ自動フォールバック
+    const isTrackedFolderId = (folderId: string): boolean =>
+      enabledRootIds.has(folderId) || knownSubfolderIds.has(folderId);
+
     for (const change of collapsedChanges.values()) {
       throwIfAborted(signal);
-      if (
-        change.removed &&
-        (enabledRootIds.has(change.fileId) ||
-          knownSubfolderIds.has(change.fileId))
-      ) {
+      if (change.removed && isTrackedFolderId(change.fileId)) {
         return { fallbackToFullScan: true };
       }
       if (change.file?.mimeType === GOOGLE_DRIVE_FOLDER_MIME_TYPE) {
-        if (
-          enabledRootIds.has(change.file.id) ||
-          knownSubfolderIds.has(change.file.id)
-        ) {
+        if (isTrackedFolderId(change.file.id)) {
           return { fallbackToFullScan: true };
         }
         const parentId = change.file.parents[0];
