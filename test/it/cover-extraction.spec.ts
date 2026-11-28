@@ -625,6 +625,8 @@ test.describe("SCN-06: 2段優先度・表紙WebP自動抽出＆閲覧優先プ�
     expect(indexJ).toBeGreaterThan(indexB);
 
     // 残 pending がある状態でリロードし、sessionStorage 経由で自動再開されることを確認
+    // （リロード前の同一セッション内リクエスト境界 seq を記録し、スロットル連続遷移検証へ使用）
+    const seqBeforeReload = routeController.getLatestSeq();
     reloadGate.release();
     await page.reload();
     await waitForServicesReady(page);
@@ -644,14 +646,19 @@ test.describe("SCN-06: 2段優先度・表紙WebP自動抽出＆閲覧優先プ�
       .toBe(10);
     await expect(page.getByTestId("bookshelf-cover-status")).toHaveCount(0);
 
-    // background-low 連続実行（画面外巻同士）が最大 2 冊/秒（最小間隔 500ms、タイマ誤差考慮 420ms 以上）に制御されていること
+    // R1-12: 同一セッション内（リロード前 seq <= seqBeforeReload）の background-low 連続実行が
+    // 全連続ペアで最大 2 冊/秒（最小間隔 500ms、タイマ誤差考慮 420ms 以上）に厳格制御されていること
     const bgFileIds = ["cov-j-1", "cov-i-1", "cov-h-1", "cov-g-1"];
     const bgWindowByFile = new Map<
       string,
       { firstReceivedAt: number; lastCompletedAt: number }
     >();
     for (const req of routeController.requests) {
-      if (!bgFileIds.includes(req.fileId) || req.status !== 206) {
+      if (
+        req.seq > seqBeforeReload ||
+        !bgFileIds.includes(req.fileId) ||
+        req.status !== 206
+      ) {
         continue;
       }
       const prev = bgWindowByFile.get(req.fileId);
@@ -671,16 +678,12 @@ test.describe("SCN-06: 2段優先度・表紙WebP自動抽出＆閲覧優先プ�
       (a, b) => a.firstReceivedAt - b.firstReceivedAt,
     );
     expect(orderedBgWindows.length).toBeGreaterThanOrEqual(3);
-    let throttledTransitions = 0;
     for (let i = 1; i < orderedBgWindows.length; i += 1) {
       const gapMs =
         orderedBgWindows[i].firstReceivedAt -
         orderedBgWindows[i - 1].lastCompletedAt;
-      if (gapMs >= 420) {
-        throttledTransitions += 1;
-      }
+      expect(gapMs).toBeGreaterThanOrEqual(420);
     }
-    expect(throttledTransitions).toBeGreaterThanOrEqual(2);
 
     // IndexedDB 上の WebP Blob 形式・サイズ・実デコード寸法（長辺<=350px・短小画像非拡大）と updatedAt 非汚染を厳密検証
     const postCheck = await page.evaluate(async () => {
@@ -950,10 +953,58 @@ test.describe("SCN-06: 2段優先度・表紙WebP自動抽出＆閲覧優先プ�
     );
     expect(nonReaderRequestsDuringTr02b).toEqual([]);
 
-    // TR-08 で SCR-01 へ復帰する前に次の進行中表紙通信をゲート保持して再開を確認
+    // R1-24: page.goBack() で SCR-01 へ復帰（再開確認）したのち、UI クリックを介さない
+    // page.goForward() (popstate) で AppShell useLayoutEffect 単体の同期プリエンプション (AC-COV-07) を検証
+    abortedFileIds.length = 0;
+    const holdPopstate = routeController.holdNextFile(readerExclude);
+    await page.goBack();
+    await expect(page).toHaveURL(/\/$/);
+
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            window.__exLibrisServices?.coverExtractionScheduler?.getSnapshot()
+              .pauseReasons ?? [],
+        ),
+      )
+      .not.toContain("reader");
+    const heldFilePopstate = await holdPopstate.arrived;
+
+    // A2) popstate (page.goForward()): 遷移ハンドラを経由せず AppShell useLayoutEffect 単体で同期 pause("reader") されること
+    const seqBeforePopstate = routeController.getLatestSeq();
+    routeController.clearRequests();
+    await page.goForward();
+    await expect(page).toHaveURL(/\/read\/volume\/.+/);
+
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            window.__exLibrisServices?.coverExtractionScheduler?.getSnapshot()
+              .pauseReasons ?? [],
+        ),
+      )
+      .toContain("reader");
+    await expect
+      .poll(() => abortedFileIds.includes(heldFilePopstate))
+      .toBe(true);
+    holdPopstate.release();
+
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready", {
+      timeout: 15_000,
+    });
+    await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    expect(
+      routeController.requests.filter(
+        (req) => req.seq > seqBeforePopstate && req.fileId !== "preempt-op-1",
+      ),
+    ).toEqual([]);
+
+    // 非リーダー (SCR-01) へ page.goBack() で復帰すると表紙抽出が自動再開することを確認し、B) TR-04 へ継続
     abortedFileIds.length = 0;
     const holdTr04 = routeController.holdNextFile(readerExclude);
-    await page.keyboard.press("Escape");
+    await page.goBack();
     await expect(page).toHaveURL(/\/$/);
 
     await expect
