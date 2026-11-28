@@ -39,6 +39,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.json.JSONObject;
@@ -117,7 +118,7 @@ public class GoogleAuthPlugin extends Plugin {
         }
 
         SharedPreferences prefs = getAuthPreferences();
-        boolean isLinked = prefs.getBoolean(PREF_KEY_IS_LINKED, false);
+        boolean isLinked = prefs != null && prefs.getBoolean(PREF_KEY_IS_LINKED, false);
         if (!isLinked) {
             call.resolve(buildStatusResult("unlinked"));
             return;
@@ -338,26 +339,30 @@ public class GoogleAuthPlugin extends Plugin {
             return;
         }
 
-        executor.execute(() -> {
-            try {
-                Context context = getContext();
-                if (context != null) {
-                    try {
-                        ClearTokenRequest clearRequest = ClearTokenRequest.builder().setToken(previousToken).build();
-                        Tasks.await(
-                            Identity.getAuthorizationClient(context).clearToken(clearRequest),
-                            REVOKE_TIMEOUT_MS,
-                            TimeUnit.MILLISECONDS
-                        );
-                    } catch (Exception ignored) {
-                        // Best-effort GMS local token cache clear
+        try {
+            executor.execute(() -> {
+                try {
+                    Context context = getContext();
+                    if (context != null) {
+                        try {
+                            ClearTokenRequest clearRequest = ClearTokenRequest.builder().setToken(previousToken).build();
+                            Tasks.await(
+                                Identity.getAuthorizationClient(context).clearToken(clearRequest),
+                                REVOKE_TIMEOUT_MS,
+                                TimeUnit.MILLISECONDS
+                            );
+                        } catch (Exception ignored) {
+                            // Best-effort GMS local token cache clear
+                        }
                     }
+                    revokeTokenBestEffort(previousToken);
+                } finally {
+                    call.resolve();
                 }
-                revokeTokenBestEffort(previousToken);
-            } finally {
-                call.resolve();
-            }
-        });
+            });
+        } catch (RejectedExecutionException ignored) {
+            call.resolve();
+        }
     }
 
     private void executeAuthorizeForRefresh(
@@ -541,7 +546,8 @@ public class GoogleAuthPlugin extends Plugin {
         }
 
         if (allowCachedPrefEmail) {
-            String cachedEmail = trimToNull(getAuthPreferences().getString(PREF_KEY_EMAIL, null));
+            SharedPreferences prefs = getAuthPreferences();
+            String cachedEmail = prefs != null ? trimToNull(prefs.getString(PREF_KEY_EMAIL, null)) : null;
             if (cachedEmail != null && !FALLBACK_EMAIL_LABEL.equals(cachedEmail)) {
                 callback.onResolved(cachedEmail);
                 return;
@@ -554,10 +560,14 @@ public class GoogleAuthPlugin extends Plugin {
             return;
         }
 
-        executor.execute(() -> {
-            String resolved = fetchUserEmailFromDriveAbout(accessToken);
-            callback.onResolved(resolved != null ? resolved : FALLBACK_EMAIL_LABEL);
-        });
+        try {
+            executor.execute(() -> {
+                String resolved = fetchUserEmailFromDriveAbout(accessToken);
+                callback.onResolved(resolved != null ? resolved : FALLBACK_EMAIL_LABEL);
+            });
+        } catch (RejectedExecutionException ignored) {
+            callback.onResolved(FALLBACK_EMAIL_LABEL);
+        }
     }
 
     @SuppressWarnings("deprecation")
@@ -657,13 +667,21 @@ public class GoogleAuthPlugin extends Plugin {
         return AuthorizationRequest.builder().setRequestedScopes(Collections.singletonList(new Scope(DRIVE_READONLY_SCOPE))).build();
     }
 
-    @NonNull
+    @Nullable
     private SharedPreferences getAuthPreferences() {
-        return getContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        Context context = getContext();
+        if (context == null) {
+            return null;
+        }
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
     }
 
     private void saveAuthPreferences(@NonNull String email) {
-        SharedPreferences.Editor editor = getAuthPreferences().edit();
+        SharedPreferences prefs = getAuthPreferences();
+        if (prefs == null) {
+            return;
+        }
+        SharedPreferences.Editor editor = prefs.edit();
         editor.putBoolean(PREF_KEY_IS_LINKED, true);
         if (!FALLBACK_EMAIL_LABEL.equals(email)) {
             editor.putString(PREF_KEY_EMAIL, email);
@@ -674,7 +692,11 @@ public class GoogleAuthPlugin extends Plugin {
     }
 
     private void clearAuthPreferences() {
-        getAuthPreferences().edit().clear().apply();
+        SharedPreferences prefs = getAuthPreferences();
+        if (prefs == null) {
+            return;
+        }
+        prefs.edit().clear().apply();
     }
 
     private void clearSignInProgress() {

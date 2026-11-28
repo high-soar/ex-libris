@@ -173,6 +173,7 @@ function createMockDriveSyncMetaRepo(
       startPageToken: null,
       lastDriveSyncAt: null,
       syncedRootFolderIds: [],
+      syncedFolderIds: null,
     })),
     saveSyncState: vi.fn(async (state) => state),
     clearSyncState: vi.fn(async () => undefined),
@@ -1741,6 +1742,7 @@ describe("SettingsPage", () => {
         startPageToken: "tok-1",
         lastDriveSyncAt: Date.UTC(2026, 10, 25, 11, 0, 0),
         syncedRootFolderIds: ["folder-comics"],
+        syncedFolderIds: null,
       })),
     });
     const authBridge = createMockGoogleAuthBridge({

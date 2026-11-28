@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GoogleAuthError } from "../../bridges/oauth/googleAuthErrors";
 import type { GoogleAuthBridge } from "../../bridges/oauth/types";
 import { createDiagnosticLogger } from "../../diagnostics/diagnosticLogger";
@@ -27,6 +27,9 @@ function createJsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("GoogleDriveFolderClient", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   it("resolveFolderByIdでroot/空IDをfetch前に拒否し、正常フォルダ・非フォルダ・ゴミ箱・不正応答を判別すること (AC-GD-07)", async () => {
     const authBridge = createMockAuthBridge();
     const fetchFn = vi.fn<typeof fetch>();

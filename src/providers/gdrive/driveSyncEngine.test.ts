@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { db, resetTestDb } from "../../storage/db";
 import { DexieDriveSyncMetaRepository } from "../../storage/repositories/driveSyncMetaRepository";
 import { DexieDriveSyncRootsRepository } from "../../storage/repositories/driveSyncRootsRepository";
@@ -53,6 +53,10 @@ function createTestContext(options?: {
 describe("DefaultDriveSyncEngine", () => {
   beforeEach(async () => {
     await resetTestDb();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("有効ルートが0件のときはAPI通信を行わずskipped-no-rootsを返し既存データを保護すること (AC-GD-09)", async () => {
@@ -1066,5 +1070,233 @@ describe("DefaultDriveSyncEngine", () => {
     expect(shallowVol?.rootFolderId).toBe("mock-folder-comics");
     expect(shallowVol?.parentFolderId).toBe("d1");
     expect(shallowVol?.rawFileName).toBe("浅い祖先ファイル 第01巻.cbz");
+  });
+
+  it("多段サブフォルダの中間フォルダ完全削除・ルート外移動が増分同期でフルスキャンフォールバックし配下巻を削除すること (AC-GD-10, R1-22)", async () => {
+    const mockClient = new MockDriveSyncClient();
+    const ctx = createTestContext({ client: mockClient });
+
+    await ctx.driveSyncRootsRepo.upsertRoot({
+      folderId: "mock-folder-comics",
+      folderName: "Comics",
+    });
+
+    // root -> mid-del -> series-del -> file-del.cbz
+    mockClient.upsertItem(
+      {
+        id: "mid-del",
+        name: "中間削除フォルダ",
+        mimeType: GOOGLE_DRIVE_FOLDER_MIME_TYPE,
+        parents: ["mock-folder-comics"],
+        size: null,
+        md5Checksum: null,
+        modifiedTime: 1000,
+        trashed: false,
+      },
+      false,
+    );
+    mockClient.upsertItem(
+      {
+        id: "series-del",
+        name: "作品削除フォルダ",
+        mimeType: GOOGLE_DRIVE_FOLDER_MIME_TYPE,
+        parents: ["mid-del"],
+        size: null,
+        md5Checksum: null,
+        modifiedTime: 1000,
+        trashed: false,
+      },
+      false,
+    );
+    mockClient.upsertItem(
+      {
+        id: "file-del",
+        name: "[著者] 中間削除対象 第01巻.cbz",
+        mimeType: "application/zip",
+        parents: ["series-del"],
+        size: 1000,
+        md5Checksum: "md5-del",
+        modifiedTime: 1000,
+        trashed: false,
+      },
+      false,
+    );
+
+    // root -> mid-move -> series-move -> file-move.cbz
+    mockClient.upsertItem(
+      {
+        id: "mid-move",
+        name: "中間移動フォルダ",
+        mimeType: GOOGLE_DRIVE_FOLDER_MIME_TYPE,
+        parents: ["mock-folder-comics"],
+        size: null,
+        md5Checksum: null,
+        modifiedTime: 1000,
+        trashed: false,
+      },
+      false,
+    );
+    mockClient.upsertItem(
+      {
+        id: "series-move",
+        name: "作品移動フォルダ",
+        mimeType: GOOGLE_DRIVE_FOLDER_MIME_TYPE,
+        parents: ["mid-move"],
+        size: null,
+        md5Checksum: null,
+        modifiedTime: 1000,
+        trashed: false,
+      },
+      false,
+    );
+    mockClient.upsertItem(
+      {
+        id: "file-move",
+        name: "[著者] 中間移動対象 第01巻.cbz",
+        mimeType: "application/zip",
+        parents: ["series-move"],
+        size: 2000,
+        md5Checksum: "md5-move",
+        modifiedTime: 1000,
+        trashed: false,
+      },
+      false,
+    );
+
+    const full1 = await ctx.engine.sync();
+    expect(full1.mode).toBe("full");
+    const meta1 = await ctx.driveSyncMetaRepo.getSyncState();
+    expect(meta1.syncedFolderIds).toEqual(
+      expect.arrayContaining([
+        "mid-del",
+        "series-del",
+        "mid-move",
+        "series-move",
+      ]),
+    );
+    expect(meta1.syncedFolderIds).not.toContain("mock-folder-comics");
+
+    // 1) 中間フォルダを完全削除（removed: true, file: null）
+    mockClient.removeItem("mid-del", true);
+    const afterDelete = await ctx.engine.sync();
+    expect(afterDelete.mode).toBe("full");
+    expect(
+      (await ctx.volumesRepo.getByDriveFileId("file-del"))?.isTrashed,
+    ).toBe(1);
+    expect(
+      (await ctx.volumesRepo.getByDriveFileId("file-move"))?.isTrashed,
+    ).toBe(0);
+    const meta2 = await ctx.driveSyncMetaRepo.getSyncState();
+    expect(meta2.syncedFolderIds).not.toContain("mid-del");
+    expect(meta2.syncedFolderIds).toContain("mid-move");
+
+    // 2) 中間フォルダをルート外フォルダへ移動（folder 変更イベント）
+    mockClient.upsertItem(
+      {
+        id: "mid-move",
+        name: "中間移動フォルダ",
+        mimeType: GOOGLE_DRIVE_FOLDER_MIME_TYPE,
+        parents: ["mock-folder-other"],
+        size: null,
+        md5Checksum: null,
+        modifiedTime: 2000,
+        trashed: false,
+      },
+      true,
+    );
+    const afterMove = await ctx.engine.sync();
+    expect(afterMove.mode).toBe("full");
+    expect(
+      (await ctx.volumesRepo.getByDriveFileId("file-move"))?.isTrashed,
+    ).toBe(1);
+    const meta3 = await ctx.driveSyncMetaRepo.getSyncState();
+    expect(meta3.syncedFolderIds).not.toContain("mid-move");
+  });
+
+  it("syncedFolderIds未保存の既存DB状態では自動フルスキャンで補完され、増分同期で発見した中間フォルダもsyncedFolderIdsへ追記永続化されること (AC-GD-10, R1-22)", async () => {
+    const mockClient = new MockDriveSyncClient();
+    const ctx = createTestContext({ client: mockClient });
+
+    await ctx.driveSyncRootsRepo.upsertRoot({
+      folderId: "mock-folder-comics",
+      folderName: "Comics",
+    });
+    const firstFull = await ctx.engine.sync();
+    expect(firstFull.mode).toBe("full");
+
+    // アップグレード直後を模擬: startPageToken / syncedRootFolderIds はあるが syncedFolderIds のみ未保存(null)
+    const beforeUpgradeMeta = await ctx.driveSyncMetaRepo.getSyncState();
+    await ctx.driveSyncMetaRepo.saveSyncState({
+      startPageToken: beforeUpgradeMeta.startPageToken,
+      lastDriveSyncAt: beforeUpgradeMeta.lastDriveSyncAt,
+      syncedRootFolderIds: beforeUpgradeMeta.syncedRootFolderIds,
+      syncedFolderIds: null,
+    });
+    expect(
+      (await ctx.driveSyncMetaRepo.getSyncState()).syncedFolderIds,
+    ).toBeNull();
+
+    const upgradedSync = await ctx.engine.sync();
+    expect(upgradedSync.mode).toBe("full");
+    expect(
+      (await ctx.driveSyncMetaRepo.getSyncState()).syncedFolderIds,
+    ).toEqual(
+      expect.arrayContaining(["mock-folder-action", "mock-folder-scifi"]),
+    );
+
+    // 増分同期中に未知の多段中間フォルダ配下ファイルを取り込んだ場合、解決済み中間フォルダも syncedFolderIds へ追記されること
+    mockClient.upsertItem(
+      {
+        id: "inc-mid",
+        name: "増分中間",
+        mimeType: GOOGLE_DRIVE_FOLDER_MIME_TYPE,
+        parents: ["mock-folder-comics"],
+        size: null,
+        md5Checksum: null,
+        modifiedTime: 3000,
+        trashed: false,
+      },
+      false,
+    );
+    mockClient.upsertItem(
+      {
+        id: "inc-leaf",
+        name: "増分作品",
+        mimeType: GOOGLE_DRIVE_FOLDER_MIME_TYPE,
+        parents: ["inc-mid"],
+        size: null,
+        md5Checksum: null,
+        modifiedTime: 3000,
+        trashed: false,
+      },
+      false,
+    );
+    mockClient.upsertItem(
+      {
+        id: "inc-file",
+        name: "[著者] 増分発見 第01巻.cbz",
+        mimeType: "application/zip",
+        parents: ["inc-leaf"],
+        size: 1234,
+        md5Checksum: "md5-inc",
+        modifiedTime: 3000,
+        trashed: false,
+      },
+      true,
+    );
+
+    const incResult = await ctx.engine.sync();
+    expect(incResult.mode).toBe("incremental");
+    expect(
+      (await ctx.driveSyncMetaRepo.getSyncState()).syncedFolderIds,
+    ).toEqual(expect.arrayContaining(["inc-mid", "inc-leaf"]));
+
+    // 直後に増分で発見された中間フォルダ inc-mid を完全削除するとフルスキャンへフォールバックし inc-file が isTrashed=1
+    mockClient.removeItem("inc-mid", true);
+    const afterIncDelete = await ctx.engine.sync();
+    expect(afterIncDelete.mode).toBe("full");
+    expect(
+      (await ctx.volumesRepo.getByDriveFileId("inc-file"))?.isTrashed,
+    ).toBe(1);
   });
 });

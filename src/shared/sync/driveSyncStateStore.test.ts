@@ -82,6 +82,7 @@ describe("driveSyncStateStore", () => {
         startPageToken: "tok-1",
         lastDriveSyncAt: 1_700_000_050_000,
         syncedRootFolderIds: ["root-1"],
+        syncedFolderIds: null,
       })),
     };
 
@@ -107,6 +108,7 @@ describe("driveSyncStateStore", () => {
       startPageToken: string | null;
       lastDriveSyncAt: number | null;
       syncedRootFolderIds: readonly string[];
+      syncedFolderIds: readonly string[] | null;
     }>();
     const slowMetaRepo: Pick<DriveSyncMetaRepository, "getSyncState"> = {
       getSyncState: vi.fn(() => metaDeferred.promise),
@@ -131,6 +133,7 @@ describe("driveSyncStateStore", () => {
       startPageToken: "old",
       lastDriveSyncAt: 1_700_000_010_000,
       syncedRootFolderIds: [],
+      syncedFolderIds: null,
     });
     await hydratePromise;
     expect(useDriveSyncStateStore.getState().lastSyncedAt).toBe(
@@ -144,6 +147,7 @@ describe("driveSyncStateStore", () => {
       startPageToken: string | null;
       lastDriveSyncAt: number | null;
       syncedRootFolderIds: readonly string[];
+      syncedFolderIds: readonly string[] | null;
     }>();
     const skippedSlowMetaRepo: Pick<DriveSyncMetaRepository, "getSyncState"> = {
       getSyncState: vi.fn(() => skippedMetaDeferred.promise),
@@ -175,6 +179,7 @@ describe("driveSyncStateStore", () => {
       startPageToken: "tok-prev",
       lastDriveSyncAt: 1_700_000_080_000,
       syncedRootFolderIds: ["root-1"],
+      syncedFolderIds: null,
     });
     await skippedHydratePromise;
     expect(useDriveSyncStateStore.getState().lastSyncedAt).toBe(
