@@ -9,6 +9,7 @@ const DRIVE_SYNC_META_KEYS = [
   DRIVE_START_PAGE_TOKEN_META_KEY,
   LAST_DRIVE_SYNC_AT_META_KEY,
   SYNCED_ROOT_FOLDER_IDS_META_KEY,
+  SYNCED_FOLDER_IDS_META_KEY,
 ] as const;
 
 export interface DriveSyncMetaState {
@@ -24,7 +25,7 @@ export interface DriveSyncMetaRepository {
   clearSyncState(): Promise<void>;
 }
 
-function normalizeRootFolderIds(ids: readonly string[]): string[] {
+function normalizeFolderIds(ids: readonly string[]): string[] {
   const unique = new Set<string>();
   for (const rawId of ids) {
     const trimmed = rawId.trim();
@@ -72,30 +73,31 @@ function parseLastDriveSyncAt(
   return parsed;
 }
 
-function parseSyncedRootFolderIds(
+function parseFolderIdList(
   rawValue: unknown,
+  metaKey: string,
   corruptKeys: string[],
-): string[] {
+): string[] | null {
   if (typeof rawValue !== "string") {
-    corruptKeys.push(SYNCED_ROOT_FOLDER_IDS_META_KEY);
-    return [];
+    corruptKeys.push(metaKey);
+    return null;
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawValue);
   } catch {
-    corruptKeys.push(SYNCED_ROOT_FOLDER_IDS_META_KEY);
-    return [];
+    corruptKeys.push(metaKey);
+    return null;
   }
   if (!Array.isArray(parsed)) {
-    corruptKeys.push(SYNCED_ROOT_FOLDER_IDS_META_KEY);
-    return [];
+    corruptKeys.push(metaKey);
+    return null;
   }
   const normalized: string[] = [];
   for (const item of parsed) {
     if (typeof item !== "string" || item.trim().length === 0) {
-      corruptKeys.push(SYNCED_ROOT_FOLDER_IDS_META_KEY);
-      return [];
+      corruptKeys.push(metaKey);
+      return null;
     }
     normalized.push(item.trim());
   }
@@ -121,7 +123,7 @@ export class DexieDriveSyncMetaRepository implements DriveSyncMetaRepository {
 
   getSyncState(): Promise<DriveSyncMetaState> {
     return this.enqueue(async () => {
-      const [tokenRecord, syncAtRecord, rootIdsRecord] =
+      const [tokenRecord, syncAtRecord, rootIdsRecord, folderIdsRecord] =
         await this.database.syncMeta.bulkGet([...DRIVE_SYNC_META_KEYS]);
       const corruptKeys: string[] = [];
 
@@ -132,8 +134,19 @@ export class DexieDriveSyncMetaRepository implements DriveSyncMetaRepository {
         ? parseLastDriveSyncAt(syncAtRecord.value, corruptKeys)
         : null;
       const syncedRootFolderIds = rootIdsRecord
-        ? parseSyncedRootFolderIds(rootIdsRecord.value, corruptKeys)
+        ? (parseFolderIdList(
+            rootIdsRecord.value,
+            SYNCED_ROOT_FOLDER_IDS_META_KEY,
+            corruptKeys,
+          ) ?? [])
         : [];
+      const syncedFolderIds = folderIdsRecord
+        ? parseFolderIdList(
+            folderIdsRecord.value,
+            SYNCED_FOLDER_IDS_META_KEY,
+            corruptKeys,
+          )
+        : null;
 
       if (corruptKeys.length > 0) {
         await this.database.syncMeta.bulkDelete(corruptKeys);
@@ -143,7 +156,7 @@ export class DexieDriveSyncMetaRepository implements DriveSyncMetaRepository {
         startPageToken,
         lastDriveSyncAt,
         syncedRootFolderIds,
-        syncedFolderIds: null,
+        syncedFolderIds,
       };
     });
   }
@@ -158,9 +171,11 @@ export class DexieDriveSyncMetaRepository implements DriveSyncMetaRepository {
         state.lastDriveSyncAt !== null && Number.isFinite(state.lastDriveSyncAt)
           ? state.lastDriveSyncAt
           : null;
-      const syncedRootFolderIds = normalizeRootFolderIds(
-        state.syncedRootFolderIds,
-      );
+      const syncedRootFolderIds = normalizeFolderIds(state.syncedRootFolderIds);
+      const syncedFolderIds =
+        state.syncedFolderIds !== null
+          ? normalizeFolderIds(state.syncedFolderIds)
+          : null;
 
       await this.database.transaction(
         "rw",
@@ -190,6 +205,15 @@ export class DexieDriveSyncMetaRepository implements DriveSyncMetaRepository {
             key: SYNCED_ROOT_FOLDER_IDS_META_KEY,
             value: JSON.stringify(syncedRootFolderIds),
           });
+
+          if (syncedFolderIds !== null) {
+            await this.database.syncMeta.put({
+              key: SYNCED_FOLDER_IDS_META_KEY,
+              value: JSON.stringify(syncedFolderIds),
+            });
+          } else {
+            await this.database.syncMeta.delete(SYNCED_FOLDER_IDS_META_KEY);
+          }
         },
       );
 
@@ -197,7 +221,7 @@ export class DexieDriveSyncMetaRepository implements DriveSyncMetaRepository {
         startPageToken,
         lastDriveSyncAt,
         syncedRootFolderIds,
-        syncedFolderIds: null,
+        syncedFolderIds,
       };
     });
   }

@@ -121,12 +121,14 @@ export class DefaultDriveSyncEngine implements DriveSyncEngine {
     const shouldForceFullScan =
       options?.forceFullScan === true ||
       syncMeta.startPageToken === null ||
+      syncMeta.syncedFolderIds === null ||
       hasUnsyncedEnabledRoot;
 
     if (!shouldForceFullScan) {
       try {
         const incrementalOutcome = await this.executeIncrementalSync(
           syncMeta.startPageToken,
+          syncMeta.syncedFolderIds,
           enabledRoots,
           enabledRootIds,
           signal,
@@ -333,12 +335,16 @@ export class DefaultDriveSyncEngine implements DriveSyncEngine {
     const trashedVolumes =
       await this.volumesRepo.markTrashedByDriveFileIds(missingDriveFileIds);
 
+    const syncedFolderIds = [...visitedFolders]
+      .filter((folderId) => !enabledRootIds.has(folderId))
+      .sort();
+
     const syncedAt = this.now();
     await this.driveSyncMetaRepo.saveSyncState({
       startPageToken,
       lastDriveSyncAt: syncedAt,
       syncedRootFolderIds: [...enabledRootIds].sort(),
-      syncedFolderIds: null,
+      syncedFolderIds,
     });
 
     return {
@@ -353,6 +359,7 @@ export class DefaultDriveSyncEngine implements DriveSyncEngine {
 
   private async executeIncrementalSync(
     startPageToken: string,
+    syncedFolderIds: readonly string[],
     enabledRoots: readonly DriveSyncRootRecord[],
     enabledRootIds: ReadonlySet<string>,
     signal?: AbortSignal,
@@ -379,10 +386,13 @@ export class DefaultDriveSyncEngine implements DriveSyncEngine {
 
     const existingInEnabledRoots =
       await this.volumesRepo.listByRootFolderIds(enabledRootIds);
-    const knownParentFolderIds = new Set<string>();
+    const knownSubfolderIds = new Set<string>(syncedFolderIds);
     for (const volume of existingInEnabledRoots) {
-      if (volume.parentFolderId !== null) {
-        knownParentFolderIds.add(volume.parentFolderId);
+      if (
+        volume.parentFolderId !== null &&
+        !enabledRootIds.has(volume.parentFolderId)
+      ) {
+        knownSubfolderIds.add(volume.parentFolderId);
       }
     }
 
@@ -463,14 +473,14 @@ export class DefaultDriveSyncEngine implements DriveSyncEngine {
       if (
         change.removed &&
         (enabledRootIds.has(change.fileId) ||
-          knownParentFolderIds.has(change.fileId))
+          knownSubfolderIds.has(change.fileId))
       ) {
         return { fallbackToFullScan: true };
       }
       if (change.file?.mimeType === GOOGLE_DRIVE_FOLDER_MIME_TYPE) {
         if (
           enabledRootIds.has(change.file.id) ||
-          knownParentFolderIds.has(change.file.id)
+          knownSubfolderIds.has(change.file.id)
         ) {
           return { fallbackToFullScan: true };
         }
@@ -536,12 +546,18 @@ export class DefaultDriveSyncEngine implements DriveSyncEngine {
     const trashedVolumes =
       await this.volumesRepo.markTrashedByDriveFileIds(toTrashDriveFileIds);
 
+    for (const [folderId, info] of ancestorCache.entries()) {
+      if (info !== null && !info.isSyncRoot) {
+        knownSubfolderIds.add(folderId);
+      }
+    }
+
     const syncedAt = this.now();
     await this.driveSyncMetaRepo.saveSyncState({
       startPageToken: nextStartPageToken,
       lastDriveSyncAt: syncedAt,
       syncedRootFolderIds: [...enabledRootIds].sort(),
-      syncedFolderIds: null,
+      syncedFolderIds: [...knownSubfolderIds].sort(),
     });
 
     return {
