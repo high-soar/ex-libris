@@ -1185,7 +1185,7 @@ describe("ServiceProvider", () => {
     await resetTestDb();
     await seedOnePendingVolume();
     fetchSpy.mockClear();
-    fetchSpy.mockResolvedValue(new Response("server-error", { status: 500 }));
+    fetchSpy.mockResolvedValue(new Response("not-found", { status: 404 }));
     vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(true);
 
     const capturedNative: ServiceContextValue[] = [];

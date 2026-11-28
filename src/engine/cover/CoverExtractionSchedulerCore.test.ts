@@ -1411,7 +1411,10 @@ describe("CoverExtractionSchedulerCore", () => {
 
   it("saveCoverReady/saveCoverErrorがrejectしてもactiveVolumeIdが残留せず診断エラー記録の上で次巻へ継続すること (R1-02)", async () => {
     await seedEnabledRoot("root-1");
-    await db.series.put(makeSeries({ id: "s-1" }));
+    await db.series.bulkPut([
+      makeSeries({ id: "s-1" }),
+      makeSeries({ id: "s-empty", title: "空シリーズ" }),
+    ]);
     const zipBytes = makeZipBytes();
     await db.volumes.bulkPut([
       makeVolume(zipBytes.byteLength, {
@@ -1423,6 +1426,7 @@ describe("CoverExtractionSchedulerCore", () => {
         id: "v-error-fail",
         driveFileId: "df-error-fail",
         volumeNumber: 2,
+        addedAt: 2000,
       }),
       makeVolume(zipBytes.byteLength, {
         id: "v-ok",
@@ -1498,6 +1502,45 @@ describe("CoverExtractionSchedulerCore", () => {
     ).toBe(true);
 
     scheduler.dispose();
+
+    // saveCoverReady が reject した時点で既に dispose 済みならエラーログも状態更新も発火しないこと
+    await resetTestDb();
+    await seedEnabledRoot("root-1");
+    await db.series.put(makeSeries({ id: "s-1" }));
+    await db.volumes.put(
+      makeVolume(zipBytes.byteLength, {
+        id: "v-dispose-on-fail",
+        driveFileId: "df-dispose-on-fail",
+        volumeNumber: 1,
+      }),
+    );
+    const failStarted = createDeferred<void>();
+    const failGate = createDeferred<void>();
+    const disposeLogger = createDiagnosticLogger();
+    const disposeScheduler = new CoverExtractionSchedulerCore(
+      createBaseDeps(zipBytes, {
+        logger: disposeLogger,
+        volumesRepo: {
+          getById: (id) => baseRepo.getById(id),
+          listVisibleByEnabledRoots: (ids) =>
+            baseRepo.listVisibleByEnabledRoots(ids),
+          saveCoverReady: async () => {
+            failStarted.resolve();
+            await failGate.promise;
+            throw new Error("late persistence failure after dispose");
+          },
+          saveCoverError: (input) => baseRepo.saveCoverError(input),
+          resetErrorCoversToPending: (input) =>
+            baseRepo.resetErrorCoversToPending(input),
+        },
+      }),
+    );
+    await disposeScheduler.syncQueue();
+    await failStarted.promise;
+    disposeScheduler.dispose();
+    failGate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(disposeLogger.getEntries()).toHaveLength(0);
   });
 
   it("runLoop内で予期しない例外が発生しても未処理rejectionにならず診断エラーログを記録すること (R1-02)", async () => {

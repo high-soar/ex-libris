@@ -88,24 +88,18 @@ function inflateWithLimit(
     chunks.push(chunk);
   });
 
-  if (compressedData.byteLength === 0) {
-    inflator.push(compressedData, true);
-  } else {
-    for (
-      let offset = 0;
-      offset < compressedData.byteLength;
-      offset += FFLATE_CHUNK_BYTES
-    ) {
-      const end = Math.min(
-        offset + FFLATE_CHUNK_BYTES,
-        compressedData.byteLength,
-      );
-      inflator.push(
-        compressedData.subarray(offset, end),
-        end >= compressedData.byteLength,
-      );
-    }
-  }
+  let offset = 0;
+  do {
+    const end = Math.min(
+      offset + FFLATE_CHUNK_BYTES,
+      compressedData.byteLength,
+    );
+    inflator.push(
+      compressedData.subarray(offset, end),
+      end >= compressedData.byteLength,
+    );
+    offset = end;
+  } while (offset < compressedData.byteLength);
 
   return combineChunks(chunks, totalLength);
 }

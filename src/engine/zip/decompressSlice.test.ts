@@ -1,6 +1,11 @@
 import { deflateSync } from "fflate";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { decompressZipSlice } from "./decompressSlice";
+import {
+  DECOMPRESS_SIZE_MARGIN_BYTES,
+  MAX_DECOMPRESSED_PAGE_BYTES,
+  computeMaxDecompressedBytes,
+  decompressZipSlice,
+} from "./decompressSlice";
 
 describe("decompressZipSlice", () => {
   afterEach(() => {
@@ -101,5 +106,20 @@ describe("decompressZipSlice", () => {
         maxUncompressedBytes: 4096,
       }),
     ).toEqual(raw);
+
+    // 5. computeMaxDecompressedBytes の未指定・異常値・正常値・絶対上限クランプ境界
+    expect(computeMaxDecompressedBytes(undefined)).toBe(
+      MAX_DECOMPRESSED_PAGE_BYTES,
+    );
+    expect(computeMaxDecompressedBytes(-1)).toBe(MAX_DECOMPRESSED_PAGE_BYTES);
+    expect(computeMaxDecompressedBytes(Number.NaN)).toBe(
+      MAX_DECOMPRESSED_PAGE_BYTES,
+    );
+    expect(computeMaxDecompressedBytes(2048)).toBe(
+      2048 + DECOMPRESS_SIZE_MARGIN_BYTES,
+    );
+    expect(computeMaxDecompressedBytes(MAX_DECOMPRESSED_PAGE_BYTES * 4)).toBe(
+      MAX_DECOMPRESSED_PAGE_BYTES,
+    );
   });
 });

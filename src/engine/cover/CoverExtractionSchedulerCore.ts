@@ -295,6 +295,23 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
     return this.enabledRootIds.has(rootFolderId) && wasPending;
   }
 
+  private handlePersistenceFailure(
+    volumeId: string,
+    message: string,
+    saveError: unknown,
+  ): null {
+    if (this.disposed) {
+      return null;
+    }
+    this.logger.error("cover", message, formatErrorDetail(saveError));
+    this.rateLimitAttempts.delete(volumeId);
+    this.transientErrorAttempts = 0;
+    this.pendingVolumesById.delete(volumeId);
+    this.pendingCount = this.pendingVolumesById.size;
+    this.emitProgress();
+    return null;
+  }
+
   private computePhase(): CoverExtractionPhase {
     if (this.pauseReasons.size > 0) {
       return this.pendingCount > 0 ? "paused" : "idle";
@@ -679,20 +696,11 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
           coverBlob: encoded.blob,
         });
       } catch (saveError) {
-        if (this.disposed) {
-          return null;
-        }
-        this.logger.error(
-          "cover",
+        return this.handlePersistenceFailure(
+          volumeId,
           `表紙WebPの保存に失敗したため当該セッションではスキップします: volumeId=${volumeId}`,
-          formatErrorDetail(saveError),
+          saveError,
         );
-        this.rateLimitAttempts.delete(volumeId);
-        this.transientErrorAttempts = 0;
-        this.pendingVolumesById.delete(volumeId);
-        this.pendingCount = this.pendingVolumesById.size;
-        this.emitProgress();
-        return null;
       }
       if (this.disposed) {
         return null;
@@ -785,18 +793,11 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
             expectedFileSize: latest.fileSize,
           });
         } catch (saveError) {
-          if (this.disposed) {
-            return null;
-          }
-          this.logger.error(
-            "cover",
+          return this.handlePersistenceFailure(
+            volumeId,
             `表紙抽出エラー状態の保存に失敗しました: volumeId=${volumeId}`,
-            formatErrorDetail(saveError),
+            saveError,
           );
-          this.pendingVolumesById.delete(volumeId);
-          this.pendingCount = this.pendingVolumesById.size;
-          this.emitProgress();
-          return null;
         }
         if (this.disposed) {
           return null;
