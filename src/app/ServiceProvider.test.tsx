@@ -1512,4 +1512,94 @@ describe("ServiceProvider", () => {
     window.dispatchEvent(new Event("online"));
     expect(syncQueue).toHaveBeenCalledTimes(1);
   });
+
+  it("アプリフォアグラウンド復帰（visibilitychange）時に一時待機停止中（idle・pending残・非pause）ならcoverExtractionScheduler.syncQueue()が自動呼出され、それ以外やアンマウント後は呼ばれないこと (AC-COV-06)", async () => {
+    const syncQueue = vi.fn(async () => {});
+    let snapshot: CoverExtractionProgressSnapshot = {
+      phase: "idle",
+      totalCount: 2,
+      readyCount: 1,
+      pendingCount: 1,
+      errorCount: 0,
+      activeVolumeId: null,
+      pauseReasons: [],
+    };
+    const scheduler: CoverExtractionScheduler = {
+      syncQueue,
+      setViewportVolumeIds: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      retryFailedCovers: vi.fn(async () => 0),
+      getSnapshot: vi.fn(() => snapshot),
+      subscribeProgress: vi.fn(() => () => {}),
+      subscribeVolumeUpdated: vi.fn(() => () => {}),
+      resetForTest: vi.fn(async () => {}),
+      dispose: vi.fn(),
+    };
+
+    const originalVisibility = Object.getOwnPropertyDescriptor(
+      document,
+      "visibilityState",
+    );
+    const setVisibility = (state: DocumentVisibilityState): void => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => state,
+      });
+    };
+
+    try {
+      const { unmount } = render(
+        <ServiceProvider coverExtractionScheduler={scheduler}>
+          <div>visibility-resume</div>
+        </ServiceProvider>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      syncQueue.mockClear();
+
+      // hidden 時は発火しない
+      setVisibility("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(syncQueue).not.toHaveBeenCalled();
+
+      // visible かつ idle・pending > 0・pauseReasons 空なら自動再開
+      setVisibility("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(syncQueue).toHaveBeenCalledTimes(1);
+
+      // すでに running 中・pending 0・pause 中は不要な再同期を行わない
+      snapshot = { ...snapshot, phase: "running" };
+      document.dispatchEvent(new Event("visibilitychange"));
+      snapshot = { ...snapshot, phase: "idle", pendingCount: 0 };
+      document.dispatchEvent(new Event("visibilitychange"));
+      snapshot = {
+        ...snapshot,
+        phase: "idle",
+        pendingCount: 1,
+        pauseReasons: ["reader"],
+      };
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(syncQueue).toHaveBeenCalledTimes(1);
+
+      // アンマウント後は発火しない
+      snapshot = {
+        ...snapshot,
+        phase: "idle",
+        pendingCount: 1,
+        pauseReasons: [],
+      };
+      unmount();
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(syncQueue).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalVisibility) {
+        Object.defineProperty(document, "visibilityState", originalVisibility);
+      } else {
+        delete (document as unknown as { visibilityState?: unknown })
+          .visibilityState;
+      }
+    }
+  });
 });
