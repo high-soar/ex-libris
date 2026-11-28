@@ -1987,6 +1987,8 @@ export function ReaderPage({
       ? resolveErrorBackLabel(readerOriginState, fallbackSeriesId)
       : undefined);
 
+  const isShaderSheetVisible = activeFatalError === null && isShaderSheetOpen;
+
   return (
     <div
       ref={containerRef}
@@ -1995,6 +1997,7 @@ export function ReaderPage({
     >
       <div
         data-testid="reader-interaction-surface"
+        inert={isShaderSheetVisible}
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
@@ -2055,17 +2058,17 @@ export function ReaderPage({
           onOpenShaderSheet={handleOpenShaderSheet}
           onCommitSeek={handleCommitSeek}
         />
-
-        <ReaderShaderSheet
-          isOpen={activeFatalError === null && isShaderSheetOpen}
-          shaderParams={shaderParams}
-          saveStatus={shaderSaveStatus}
-          onChangeShaderParams={handleChangeShaderParams}
-          onReset={handleResetShaderParams}
-          onSaveDefault={handleSaveDefaultShaderParams}
-          onClose={handleCloseShaderSheet}
-        />
       </div>
+
+      <ReaderShaderSheet
+        isOpen={isShaderSheetVisible}
+        shaderParams={shaderParams}
+        saveStatus={shaderSaveStatus}
+        onChangeShaderParams={handleChangeShaderParams}
+        onReset={handleResetShaderParams}
+        onSaveDefault={handleSaveDefaultShaderParams}
+        onClose={handleCloseShaderSheet}
+      />
 
       {activeFatalError !== null && (
         <ReaderErrorView
