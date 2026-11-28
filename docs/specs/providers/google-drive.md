@@ -50,6 +50,7 @@ related_tests:
   - src/shared/sync/driveSyncStateStore.test.ts
   - test/it/drive-sync.spec.ts
   - test/it/bookshelf-drive-reader.spec.ts
+  - test/it/cover-extraction.spec.ts
 ---
 
 # Google OAuth（Single-Flight）・Google Drive フォルダ参照 ＆ 差分同期プロバイダ仕様書

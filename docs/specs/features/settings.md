@@ -35,6 +35,7 @@ related_tests:
   - src/App.test.tsx
   - src/app/ServiceProvider.test.tsx
   - src/diagnostics/diagnosticLogger.test.ts
+  - src/features/settings/CoverExtractionSection.test.tsx
   - src/features/settings/DiagnosticsSection.test.tsx
   - src/features/settings/DriveFolderPickerModal.test.tsx
   - src/features/settings/DriveSyncExecutionSection.test.tsx
@@ -45,11 +46,13 @@ related_tests:
   - src/providers/gdrive/driveSyncEngine.test.ts
   - src/shared/router/RouterProvider.test.tsx
   - src/shared/router/routeMatcher.test.ts
+  - src/shared/sync/coverExtractionStateStore.test.ts
   - src/shared/sync/driveSyncStateStore.test.ts
   - test/vrt/vrt.spec.ts
   - test/it/settings-oauth.spec.ts
   - test/it/drive-sync.spec.ts
   - test/it/bookshelf-drive-reader.spec.ts
+  - test/it/cover-extraction.spec.ts
 ---
 
 # ストレージ連携・設定画面仕様書（`SCR-04`: Settings）

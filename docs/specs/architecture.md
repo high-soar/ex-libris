@@ -37,18 +37,23 @@ related_tests:
   - src/App.test.tsx
   - src/app/ServiceProvider.test.tsx
   - src/app/coordinatorClient.test.ts
+  - src/app/coverWorkerClient.test.ts
   - src/app/serviceContext.test.ts
   - src/bridges/app/capacitorAppBridge.test.ts
   - src/bridges/app/mockAppBridge.test.ts
   - src/diagnostics/diagnosticLogger.test.ts
   - src/engine/constants.test.ts
   - src/engine/cache/L2ByteCache.test.ts
+  - src/engine/cover/CoverExtractionSchedulerCore.test.ts
+  - src/engine/cover/CoverResizeWorkerCore.test.ts
+  - src/engine/cover/MockCoverArchiveRangeReader.test.ts
   - src/engine/io/GoogleDriveRangeReader.test.ts
   - src/engine/io/LocalFileReader.test.ts
   - src/engine/prefetch/AdaptivePrefetcher.test.ts
   - src/engine/workers/CoordinatorCore.test.ts
   - src/engine/workers/comlinkErrorHandler.test.ts
   - src/engine/workers/coordinatorTransfer.test.ts
+  - src/engine/zip/decompressSlice.test.ts
   - src/engine/zip/zipIndexValidation.test.ts
   - src/engine/zip/zipParser.test.ts
   - src/features/bookshelf/RecentLocalHistorySection.test.tsx
@@ -67,8 +72,10 @@ related_tests:
   - src/shared/router/RouterProvider.test.tsx
   - src/shared/router/routeMatcher.test.ts
   - src/shared/router/routerContext.test.ts
+  - src/shared/sync/coverExtractionStateStore.test.ts
   - src/shared/sync/driveSyncStateStore.test.ts
   - src/shared/ui/CoverThumbnail.test.tsx
+  - src/shared/ui/useViewportVolumeObserver.test.ts
   - src/storage/db.test.ts
   - src/storage/repositories/driveSyncMetaRepository.test.ts
   - src/storage/repositories/driveSyncRootsRepository.test.ts
@@ -79,6 +86,7 @@ related_tests:
   - src/storage/repositories/readerSettingsRepository.test.ts
   - src/features/bookshelf/bookshelfViewModel.test.ts
   - src/features/series-detail/SeriesDetailPage.test.tsx
+  - src/features/settings/CoverExtractionSection.test.tsx
   - src/webgl/ReaderCanvas.test.tsx
   - src/webgl/WebGLRendererCore.test.ts
   - src/webgl/l1PageCache.test.ts
@@ -90,6 +98,7 @@ related_tests:
   - test/it/settings-oauth.spec.ts
   - test/it/drive-sync.spec.ts
   - test/it/bookshelf-drive-reader.spec.ts
+  - test/it/cover-extraction.spec.ts
 ---
 
 # ExLibris 4層＋マルチスレッドアーキテクチャと共通インターフェース契約

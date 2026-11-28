@@ -27,6 +27,7 @@ related_tests:
   - src/shared/constants/app.test.ts
   - src/App.test.tsx
   - src/diagnostics/diagnosticLogger.test.ts
+  - src/engine/cover/CoverExtractionSchedulerCore.test.ts
   - src/engine/zip/zipParser.test.ts
   - src/engine/workers/CoordinatorCore.test.ts
   - src/providers/filename/mangaFilenameParser.test.ts
@@ -49,6 +50,7 @@ related_tests:
   - test/it/settings-oauth.spec.ts
   - test/it/drive-sync.spec.ts
   - test/it/bookshelf-drive-reader.spec.ts
+  - test/it/cover-extraction.spec.ts
 ---
 
 # ExLibris 全体要件定義・機能一覧・ミニMilestoneロードマップ

@@ -2,7 +2,7 @@
 type: spec-delta
 title: "Issue #26 差分仕様: 2段優先度・表紙 WebP 自動抽出 ＆ リーダー閲覧優先プリエンプション（NFR-04）"
 description: "専用 cover.worker（長辺350px WebP）、CoverExtractionSchedulerCore（viewport-high 即時優先＋background-low 2冊/秒・429/403指数バックオフ・zipIndexCache 0RTT還元）、SCR-03/Drive同期プリエンプション、および SCR-01/02/04 進捗・エラー再試行 UI を定義する差分仕様"
-status: "Review (#26)"
+status: "Completed (Archived)"
 updated: "2026-11-27"
 issue: "#26"
 tags:
@@ -42,10 +42,16 @@ related_specs:
 related_tests:
   - src/App.test.tsx
   - src/app/ServiceProvider.test.tsx
+  - src/app/coverWorkerClient.test.ts
   - src/app/serviceContext.test.ts
   - src/engine/constants.test.ts
+  - src/engine/cover/CoverExtractionSchedulerCore.test.ts
+  - src/engine/cover/CoverResizeWorkerCore.test.ts
+  - src/engine/cover/MockCoverArchiveRangeReader.test.ts
   - src/engine/io/GoogleDriveRangeReader.test.ts
   - src/engine/workers/DecodeWorkerCore.test.ts
+  - src/engine/workers/comlinkErrorHandler.test.ts
+  - src/engine/zip/decompressSlice.test.ts
   - src/engine/zip/errors.test.ts
   - src/engine/zip/zipParser.test.ts
   - src/features/bookshelf/BookshelfPage.test.tsx
@@ -56,8 +62,11 @@ related_tests:
   - src/features/series-detail/SeriesDetailPage.test.tsx
   - src/features/series-detail/SeriesSummaryCard.test.tsx
   - src/features/series-detail/SeriesVolumeListSection.test.tsx
+  - src/features/settings/CoverExtractionSection.test.tsx
   - src/features/settings/SettingsPage.test.tsx
+  - src/shared/sync/coverExtractionStateStore.test.ts
   - src/shared/ui/CoverThumbnail.test.tsx
+  - src/shared/ui/useViewportVolumeObserver.test.ts
   - src/storage/repositories/volumesRepository.test.ts
   - src/storage/repositories/zipIndexCacheRepository.test.ts
   - test/vrt/vrt.spec.ts
@@ -66,6 +75,7 @@ related_tests:
   - test/it/settings-oauth.spec.ts
   - test/it/drive-sync.spec.ts
   - test/it/bookshelf-drive-reader.spec.ts
+  - test/it/cover-extraction.spec.ts
 ---
 
 # Issue #26 差分仕様: 2段優先度・表紙 WebP 自動抽出 ＆ リーダー閲覧優先プリエンプション（`NFR-04`）
@@ -84,7 +94,7 @@ related_tests:
    - `background-low` キュー内は **「①各有効シリーズの代表表紙巻 → ②残りの収録巻」** の順で並べ、`SCR-01` の本棚カードを優先的に埋めた後に詳細巻を順次抽出する。
    - `coverStatus === "error"` の巻は無限 API ループ防止のため自動再試行対象から除外し、ユーザーの明示的な「再試行」操作時（または Drive 同期時の MD5/サイズ更新による `pending` リセット時）のみ再試行する。
 3. **直列実行・2冊/秒レート制御・`429`/`403` 指数バックオフ・未認証保護（Q3）**:
-   - 同時実行数は `1`（直列）とし、`viewport-high` は待機 `0ms` で連続実行（着手前に可視領域から外れた巻は `background-low` へ降格）、`background-low` は最終通信完了時刻基準で最小 `500ms` 間隔（最大 `2` 冊/秒、`viewport-high` 到着時は待機を即時起床）とする（[testing.md §3.1](../../guidelines/testing.md#3-単体テストvrt結合テストitの衛生非同期規律継承-kaizen)）。
+   - 同時実行数は `1`（直列）とし、`viewport-high` は待機 `0ms` で連続実行（着手前に可視領域から外れた巻は `background-low` へ降格）、`background-low` は最終通信完了時刻基準で最小 `500ms` 間隔（最大 `2` 冊/秒、`viewport-high` 到着時は待機を即時起床）とする（[testing.md §3.1](../../../guidelines/testing.md#3-単体テストvrt結合テストitの衛生非同期規律継承-kaizen)）。
    - `429` および Rate Limit 系 `403` 応答時はキュー全体を指数バックオフ（`1s → 2s → 4s`、同一巻最大 `3` 回リトライ後に `error` 化）し、未認証（`401` Single-Flight 再試行失敗 / `AUTH_REQUIRED`）時は蔵書を `error` 化せず `pending` 維持のまま一時停止する。
 4. **理由別プリエンプションと Drive 同期・ルート変更連携（Q4）**:
    - 一時停止理由を `"reader" | "drive-sync" | "unauthenticated" | "test-harness"`（`"test-harness"` は WebDriver E2E 分離専用）の集合で管理し、`SCR-03` 表示中（`TR-02a`/`02b`/`04`・直接 URL・`popstate` 含む）および手動 Drive 同期実行中（`phase === "syncing"`）は進行中通信・スリープを即座に `abort()` して一時停止する（中断巻は `pending` 維持）。
@@ -109,20 +119,20 @@ related_tests:
 
 ## 2. 新規作成・変更対象の App 全体正本一覧
 
-|   種別   | 正本ファイル                                                     | 変更概要                                                                                                                                                       |
-| :------: | :--------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **新規** | [cover-extraction.md](../engine/cover-extraction.md)             | 専用 `cover.worker`（`CoverResizeWorkerCore`）、2段優先度 `CoverExtractionSchedulerCore`、429/403 指数バックオフ、プリエンプション、`AC-COV-01`〜`08` を新設   |
-| **更新** | [zip-streaming.md](../engine/zip-streaming.md)                   | 共通伸長純関数 `decompressSlice.ts` 抽出、および `ZipArchiveError` / `GoogleDriveRangeReader` の HTTP `429`/`403` Rate Limit・`401` 未認証メタデータ付与を追記 |
-| **更新** | [db-schema.md](../db-schema.md)                                  | `VolumesRepository` の表紙保存・エラー記録・エラー再試行リセット 3 メソッド（FIFO・LWW `updatedAt` 非汚染・整合ガード）および `resetTestDb` 初期化対象を追記   |
-| **更新** | [architecture.md](../architecture.md)                            | `ENGINE_BUDGETS` 表紙定数、Layer 2 `src/engine/cover/`・Layer 3/4 の責務、および §5.2 理由別プリエンプション規約を最新化                                       |
-| **更新** | [bookshelf.md](../features/bookshelf.md)                         | `BookshelfToolbar` 表紙進捗/エラー再試行表示、`IntersectionObserver` 登録、インプレース差分反映、`TR-02a`/`02b` 同期 `pause("reader")`、`AC-BS-13` を追加      |
-| **更新** | [series-detail.md](../features/series-detail.md)                 | `SCR-02` の `IntersectionObserver` 登録、シリーズ内 `error` 巻の再試行導線、インプレース差分反映、`TR-04` 同期 `pause("reader")`、`AC-SD-07` を追加            |
-| **更新** | [reader.md](../features/reader.md)                               | `SCR-03` 入退場時の同期プリエンプション（`pause("reader")` / `resume("reader")`）および表紙抽出による `zipIndexCache` 0 RTT 恩恵（`AC-RD-20`）を明記           |
-| **更新** | [settings.md](../features/settings.md)                           | セクション④ `CoverExtractionSection`（状態バッジ・進捗バー・内訳件数・「エラー分を再試行」ボタン）・ルート変更時 `syncQueue()`・`AC-ST-09` を追加              |
-| **更新** | [screen-transitions.md](../screen-transitions.md)                | `TR-02a`/`02b`/`04`/`07`/`08`/`10` の表紙キュー一時停止/再開を本実装契約へ更新し、結合テストシナリオ **`SCN-06`**（`cover-extraction.spec.ts`）を追加          |
-| **更新** | [requirements.md](../requirements.md)                            | `related_specs` へ `cover-extraction.md` を追加しステータスを同期                                                                                              |
-| **更新** | [google-drive.md](../providers/google-drive.md)                  | `related_specs` へ `cover-extraction.md` を追加しステータスを同期                                                                                              |
-| **更新** | [bug-and-handover-log.md](../../quality/bug-and-handover-log.md) | 区分 A 実機検証項目 **`HO-13`**（完了ゲート: `親 Issue #26 完了前`）を新規登録                                                                                 |
+|   種別   | 正本ファイル                                                        | 変更概要                                                                                                                                                       |
+| :------: | :------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **新規** | [cover-extraction.md](../../engine/cover-extraction.md)             | 専用 `cover.worker`（`CoverResizeWorkerCore`）、2段優先度 `CoverExtractionSchedulerCore`、429/403 指数バックオフ、プリエンプション、`AC-COV-01`〜`08` を新設   |
+| **更新** | [zip-streaming.md](../../engine/zip-streaming.md)                   | 共通伸長純関数 `decompressSlice.ts` 抽出、および `ZipArchiveError` / `GoogleDriveRangeReader` の HTTP `429`/`403` Rate Limit・`401` 未認証メタデータ付与を追記 |
+| **更新** | [db-schema.md](../../db-schema.md)                                  | `VolumesRepository` の表紙保存・エラー記録・エラー再試行リセット 3 メソッド（FIFO・LWW `updatedAt` 非汚染・整合ガード）および `resetTestDb` 初期化対象を追記   |
+| **更新** | [architecture.md](../../architecture.md)                            | `ENGINE_BUDGETS` 表紙定数、Layer 2 `src/engine/cover/`・Layer 3/4 の責務、および §5.2 理由別プリエンプション規約を最新化                                       |
+| **更新** | [bookshelf.md](../../features/bookshelf.md)                         | `BookshelfToolbar` 表紙進捗/エラー再試行表示、`IntersectionObserver` 登録、インプレース差分反映、`TR-02a`/`02b` 同期 `pause("reader")`、`AC-BS-13` を追加      |
+| **更新** | [series-detail.md](../../features/series-detail.md)                 | `SCR-02` の `IntersectionObserver` 登録、シリーズ内 `error` 巻の再試行導線、インプレース差分反映、`TR-04` 同期 `pause("reader")`、`AC-SD-07` を追加            |
+| **更新** | [reader.md](../../features/reader.md)                               | `SCR-03` 入退場時の同期プリエンプション（`pause("reader")` / `resume("reader")`）および表紙抽出による `zipIndexCache` 0 RTT 恩恵（`AC-RD-20`）を明記           |
+| **更新** | [settings.md](../../features/settings.md)                           | セクション④ `CoverExtractionSection`（状態バッジ・進捗バー・内訳件数・「エラー分を再試行」ボタン）・ルート変更時 `syncQueue()`・`AC-ST-09` を追加              |
+| **更新** | [screen-transitions.md](../../screen-transitions.md)                | `TR-02a`/`02b`/`04`/`07`/`08`/`10` の表紙キュー一時停止/再開を本実装契約へ更新し、結合テストシナリオ **`SCN-06`**（`cover-extraction.spec.ts`）を追加          |
+| **更新** | [requirements.md](../../requirements.md)                            | `related_specs` へ `cover-extraction.md` を追加しステータスを同期                                                                                              |
+| **更新** | [google-drive.md](../../providers/google-drive.md)                  | `related_specs` へ `cover-extraction.md` を追加しステータスを同期                                                                                              |
+| **更新** | [bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) | 区分 A 実機検証項目 **`HO-13`**（完了ゲート: `親 Issue #26 完了前`）を新規登録                                                                                 |
 
 ---
 
@@ -152,13 +162,13 @@ related_tests:
      - `resetErrorCoversToPending({ enabledRootIds, seriesId? }): Promise<readonly VolumeRecord[]>`
    - **既存テストモックへの型伝播（MK-1 同時更新対象）**: 手動で `VolumesRepository` モックを定義している既存テスト（`src/app/serviceContext.test.ts`, `src/app/ServiceProvider.test.tsx`, `src/features/bookshelf/BookshelfPage.test.tsx`, `src/features/series-detail/SeriesDetailPage.test.tsx`, `src/features/reader/ReaderPage.test.tsx`）に上記 3 メソッドのモックスタブを同時追加し、MK-1 単体で `npm run typecheck` を 100% PASS させる。
 5. **`CoverExtractionSchedulerCore.ts`・`MockCoverArchiveRangeReader`・`coverExtractionStateStore.ts`**:
-   - [cover-extraction.md §4](../engine/cover-extraction.md#4-coverextractionschedulercore2段優先度レート制限プリエンプション状態機械) に従い、`viewport-high`（0ms 待機・画面外降格）＋ `background-low`（①代表表紙巻→②収録巻、`lastNetworkCompletedAt` 基準 500ms 間隔・`viewport-high` 到着時即時起床）、`syncQueue()` の最新世代直列化・進行中 `activeVolumeId` の所属ルート無効化時即時 `AbortController.abort()`・二重エンキュー防止、`zipIndexCache` 0 RTT 参照＆還元保存（実サイズ一致リーダー時のみ）＋1回限り自己修復、`429`/`403` Rate Limit 指数バックオフ（`1s → 2s → 4s`、最大 3 回リトライ）、セッション失効時 `pause("unauthenticated")`（`pending` 維持）vs 有効セッション維持下での再リクエスト HTTP `401` 時の当該巻 `saveCoverError`（恒久スタック防止）、`retryFailedCovers` 時の `CoverExtractionVolumeUpdateEvent`（`coverStatus: "pending"`）即時配信、ならびに非ネイティブ通常 Web プレビュー用のインメモリ合成 1 ページ ZIP リーダー（`MockCoverArchiveRangeReader`）および JSDOM 用 `NoopCoverExtractionScheduler` を実装する。
+   - [cover-extraction.md §4](../../engine/cover-extraction.md#4-coverextractionschedulercore2段優先度レート制限プリエンプション状態機械) に従い、`viewport-high`（0ms 待機・画面外降格）＋ `background-low`（①代表表紙巻→②収録巻、`lastNetworkCompletedAt` 基準 500ms 間隔・`viewport-high` 到着時即時起床）、`syncQueue()` の最新世代直列化・進行中 `activeVolumeId` の所属ルート無効化時即時 `AbortController.abort()`・二重エンキュー防止、`zipIndexCache` 0 RTT 参照＆還元保存（実サイズ一致リーダー時のみ）＋1回限り自己修復、`429`/`403` Rate Limit 指数バックオフ（`1s → 2s → 4s`、最大 3 回リトライ）、セッション失効時 `pause("unauthenticated")`（`pending` 維持）vs 有効セッション維持下での再リクエスト HTTP `401` 時の当該巻 `saveCoverError`（恒久スタック防止）、`retryFailedCovers` 時の `CoverExtractionVolumeUpdateEvent`（`coverStatus: "pending"`）即時配信、ならびに非ネイティブ通常 Web プレビュー用のインメモリ合成 1 ページ ZIP リーダー（`MockCoverArchiveRangeReader`）および JSDOM 用 `NoopCoverExtractionScheduler` を実装する。
 
 ### 3.2 `SCR-01` / `SCR-02` / `SCR-04` UI・`IntersectionObserver`・プリエンプション結線・VRT（MK-2）
 
 1. **`ServiceProvider` / `AppShell` への DI 配線・実行環境境界・同期プリエンプション**:
    - `ServiceContextValue`（および `ServiceProviderProps`、テスト環境限定 `window.__exLibrisServices`）に `coverExtractionScheduler: CoverExtractionScheduler`（`window.__exLibrisServices` には WebDriver 制御用の `setTestCoverExtractionAutoRun?: (enabled: boolean) => void` も追加）を追加する。
-   - **実行環境別の既定スケジューラ構築とアンマウント解放（[cover-extraction.md §4.5](../engine/cover-extraction.md#45-実行環境境界プリエンプション一時停止理由pausereasonsの連携規約)）**:
+   - **実行環境別の既定スケジューラ構築とアンマウント解放（[cover-extraction.md §4.5](../../engine/cover-extraction.md#45-実行環境境界プリエンプション一時停止理由pausereasonsの連携規約)）**:
      - `typeof Worker === "undefined"`（Vitest JSDOM）では既定で `NoopCoverExtractionScheduler` を使用し、単体テスト中の Worker 例外や外部通信発火を完全に防ぐ。
      - Android ネイティブ実機では実 `GoogleDriveRangeReader` ＋ 実 `cover.worker.ts` を自動稼働させる。
      - 非ネイティブ通常ブラウザ（`!Capacitor.isNativePlatform() && !navigator.webdriver`、`npm run dev` 等）では `MockCoverArchiveRangeReader` ＋ 実 `cover.worker.ts` を既定採用し、`www.googleapis.com` への偽トークン通信を発火させずにゼロコンフィグ（`NFR-05`）で WebP 縮小生成を動作させる。
@@ -209,7 +219,7 @@ related_tests:
 
 ### 5.1 Android 実機検証の実施判断（区分 A：`親 Issue #26 完了前`）
 
-- [workflow.md §2.2](../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット) の基準（専用 Worker `OffscreenCanvas` ＆ `ImageBitmap.close()` メモリ制御、連続スクロール時の `ObjectURL` 健全性、実 Google Drive API レート制限回避＆リーダー帯域プリエンプション、実機確認観点 4 項目）および `v0.2` MVP 最終 Issue としての総合確認の観点から、**区分 A（完了ゲート: `親 Issue #26 完了前`）** として [bug-and-handover-log.md](../../quality/bug-and-handover-log.md) に **`HO-13`** を登録する。
+- [workflow.md §2.2](../../../guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット) の基準（専用 Worker `OffscreenCanvas` ＆ `ImageBitmap.close()` メモリ制御、連続スクロール時の `ObjectURL` 健全性、実 Google Drive API レート制限回避＆リーダー帯域プリエンプション、実機確認観点 4 項目）および `v0.2` MVP 最終 Issue としての総合確認の観点から、**区分 A（完了ゲート: `親 Issue #26 完了前`）** として [bug-and-handover-log.md](../../../quality/bug-and-handover-log.md) に **`HO-13`** を登録する。
 - Step 4 最終 IT PR が Gate 1〜6 を通過した直後に `build-android.yml` (`debug`) を自動実行し、Google Drive の開発検証用 `app-debug.apk`（`app-release.apk` とは分離）へ配置して以下の試験項目表を提示する：
   1. **`HO-13-1`（実 Drive 表紙 WebP 自動抽出・2段優先度・進捗表示）**: 実 Google Drive 蔵書を同期後、`SCR-01` 表示中のシリーズカード表紙が優先的に表示され、画面外および `SCR-02` 収録巻もバックグラウンド（最大 2 冊/秒）で `403 Rate Limit` エラーなく順次抽出され、`SCR-01` / `SCR-04` の進捗表示が完了へ遷移すること。
   2. **`HO-13-2`（連続スクロール時の描画滑らかさ・メモリ健全性）**: 表紙抽出中および完了後の `SCR-01` / `SCR-02` を上下に連続スクロール・往復遷移しても WebView クラッシュ・カクつき・画像欠落が発生しないこと。

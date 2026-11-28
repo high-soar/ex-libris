@@ -46,11 +46,13 @@ related_tests:
   - src/shared/router/routerContext.test.ts
   - src/shared/sync/driveSyncStateStore.test.ts
   - src/shared/ui/CoverThumbnail.test.tsx
+  - src/shared/ui/useViewportVolumeObserver.test.ts
   - src/storage/repositories/seriesRepository.test.ts
   - src/storage/repositories/volumesRepository.test.ts
   - src/storage/repositories/readingProgressRepository.test.ts
   - test/vrt/vrt.spec.ts
   - test/it/bookshelf-drive-reader.spec.ts
+  - test/it/cover-extraction.spec.ts
 ---
 
 # シリーズ詳細・巻一覧画面仕様書（`SCR-02`: Series Detail）
