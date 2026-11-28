@@ -149,7 +149,7 @@ Phase 3 以降のすべての PR 作業において、**PR を作成しただけ
 
 ## 5. ミニリリース Milestone と品質改善（Kaizen）ループ
 
-Phase 4 以降は、直近の要望（親 Issue）を 3〜5 件程度束ねた **「ミニリリース Milestone（`v0.1`, `v0.2` 等）」** を設定し、節目に以下の **3段階ゲート** で全体横断レビュー・実機検証・品質分析（Kaizen）・完了承認を実施します。
+Phase 4 以降は、直近の要望（親 Issue）を 3〜5 件程度束ねた **「ミニリリース Milestone（`v0.1`, `v0.2` 等）」** を設定し、節目に以下の **3段階ゲート** で全体横断レビュー・実機検証・品質分析（Kaizen）・完了承認を実施します。なお、Milestone 管理上の出口ゲートを最初から可視化するため、**Milestone 起票時に機能親 Issue 群とあわせて最終レビュー（完了承認）Issue（ラベル `milestone-review`）も先に同時作成する運用**とします。
 
 1. **Step 1: 全体横断レビュー（`phase-final-review`）【👤 人間がキック（複数モデル会話並行も可）】**:
    - 複数の読み取り専用サブエージェント（`research`）を用いて、`docs/specs/`、`src/`、`test/`、および `docs/quality/bug-and-handover-log.md` の整合性をアンカリングなしで横断検証し、Milestone 承認 Issue に Round 1 レビュー結果をコメント記録する。

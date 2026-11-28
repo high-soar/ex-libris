@@ -82,7 +82,7 @@ description: "Use when breaking down a Feature Request Issue into an iterative m
 
 ## 3. ミニリリース Milestone 完了時の 3 段階運用手順
 
-ミニリリース Milestone（`v0.1`, `v0.2` 等、または Phase 3 PoC 完了節目）の完了承認 Issue では、[docs/guidelines/workflow.md](../../../docs/guidelines/workflow.md#5-ミニリリース-milestone-と品質改善kaizenループ) および [phase-final-review スキル](../phase-final-review/SKILL.md) に従い以下の 3 段階で進行します。
+ミニリリース Milestone（`v0.1`, `v0.2` 等）を起票する際は、機能親 Issue 群とあわせて **Milestone 完了承認（最終レビュー）Issue（ラベル `milestone-review`）もあらかじめ同時作成** し、完了節目では [docs/guidelines/workflow.md](../../../docs/guidelines/workflow.md#5-ミニリリース-milestone-と品質改善kaizenループ) および [phase-final-review スキル](../phase-final-review/SKILL.md) に従い以下の 3 段階で進行します。
 
 1. **Step 1（全体横断レビュー）【👤 人間が各モデルでキック】**: 各モデルのオーケストレーターで横断レビューを実行し、Milestone 承認 Issue に Round 1 結果をコメント投稿する。
 2. **Step 2（横断レビュー指摘是正 PR ＆ Android 実機検証）【🤖 指摘是正 PR は AI 自律マージ → 📱 人間による実機検証】**: `R1-xx` 是正 PR を Gate 1〜6 完遂後に自律マージし、続けて [android-apk-distribution スキル](../android-apk-distribution/SKILL.md) に従って検証 APK をビルド・Google Drive `app-debug.apk` へ分離配置の上「Android 実機検証試験項目表」を提示して実機検証を収束させる。
