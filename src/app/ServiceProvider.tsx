@@ -649,6 +649,16 @@ export function ServiceProvider({
   }, [resolvedCoverExtractionScheduler]);
 
   useEffect(() => {
+    const handleOnline = (): void => {
+      void resolvedCoverExtractionScheduler.syncQueue();
+    };
+    window.addEventListener("online", handleOnline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+    };
+  }, [resolvedCoverExtractionScheduler]);
+
+  useEffect(() => {
     window.__exLibrisServices = buildGlobalServicesState({
       appBridge: resolvedAppBridge,
       mockGoogleAuthAdapter: resolvedMockGoogleAuthAdapter,
