@@ -2,7 +2,7 @@
 type: spec-requirements
 title: "全体要件定義・機能一覧・ミニMilestoneロードマップ"
 description: "ExLibris のプロダクトゴール、前提制約、非機能要件（TTFP・メモリ予算）、全機能カタログ割当、および Phase 3〜v1.0 マイルストーン計画の正本"
-status: "Review (#26)"
+status: "Approved"
 updated: "2026-11-28"
 tags: [requirements, roadmap, mvp, non-functional, ex-libris, android]
 related_specs:
@@ -157,7 +157,7 @@ related_tests:
 | **Phase 2: コア仕様策定**                                     | 背骨 4 冊（`requirements` / `architecture` / `db-schema` / `screen-transitions`）の契約確定と `Approved (Phase 2)` 合意                                                                                                                                    | コア仕様 4 冊策定                                                                                                                                                                  | **Completed** |
 | **Phase 3: Walking Skeleton (PoC)**                           | ローカル ZIP 一時オープン → Worker 解凍・Zero-Copy 転送 → 生 WebGL2 単ページ Mipmap 描画＋前後めくり＋L1 `bitmap.close()` 解放の垂直スライス実証（Issue/PR/Gate7 通し検証）                                                                                | 1 Issue（PoC 垂直スライス）                                                                                                                                                        | **Completed** |
 | **`v0.1`: 完成版コアリーダーエンジン**                        | 固定署名＆単調増加 `versionCode` による APK 上書き更新基盤の上で、4GB超 ZIP64・CP932・高解像度画像を Fast-Path＋10MB先読み、L1(5P)/L2(80MB) キャッシュ、見開き・1ページずらし、白黒レベル/シャープネス補正、シークバー＆自動レジューム付きで完読可能にする | 5 Issues（①Android APK 上書き更新対応、②ZIP64/CP932/`zipIndexCache`、③先読み/L2/Epoch、④見開き/`MAX_TEXTURE_SIZE`、⑤自炊シェーダー/基本UI/レジューム）＋ 完了承認 `#66` (`v0.1.0`) | **Completed** |
-| **`v0.2`: Google Drive 連携 ＆ 最小仮想本棚（日常実用 MVP）** | Google OAuth 認証、指定ルートフォルダ配下のフルスキャン＆`changes` 差分同期、ファイル名パーサーによるシリーズ本棚 UI、2段優先度表紙 WebP 抽出により Google Drive 上での日常読書を開始可能にする                                                            | 4 Issues（①OAuth/DriveReader、②指定フォルダ同期/パーサー/目次キャッシュ、③本棚・シリーズ詳細・設定UI、④表紙WebP抽出キュー＆プリエンプション）                                      |  In Progress  |
+| **`v0.2`: Google Drive 連携 ＆ 最小仮想本棚（日常実用 MVP）** | Google OAuth 認証、指定ルートフォルダ配下のフルスキャン＆`changes` 差分同期、ファイル名パーサーによるシリーズ本棚 UI、2段優先度表紙 WebP 抽出により Google Drive 上での日常読書を開始可能にする                                                            | 4 Issues（①OAuth/DriveReader、②指定フォルダ同期/パーサー/目次キャッシュ、③本棚・シリーズ詳細・設定UI、④表紙WebP抽出キュー＆プリエンプション）＋ 完了承認 `#106` (`v0.2.0`)         | **Completed** |
 | **`v0.3`: 公開書誌 API ＆ 高機能検索・棚整理**                | `CapacitorHttp` 経由で NDLサーチ / AniList / Google Books から書誌を取得・再選択でき、正確な五十音ソート・10ms 台の複合検索・カスタム/スマートコレクション・1,000シリーズ規模の本棚アクセス UX（インデックスジャンプ・軸別表示・仮想化等）を実現する       | 4 Issues（①書誌3種クライアント、②名寄せ＆候補再選択・編集ロックUI、③五十音ソート＆複合検索、④カスタム/スマートコレクション＆大規模本棚UX）                                         |    Planned    |
 | **`v0.4`: 自炊リーダー UX 完成**                              | オートクロップ、作品別プリセット、見開きカバー半裁、ピンチ/ダブルタップ/ルーペ拡大、タップ領域変更、音量キー/リモコンめくり、サムネイル付きシーク＆Undo Jump、次巻連続遷移、メモ付きしおりを完備する                                                       | 4 Issues（①オートクロップ/作品別プリセット、②表紙半裁/表紙ページ変更、③拡大操作/タップ領域/音量キー、④サムネイルシーク/Undo/次巻遷移/しおり）                                      |    Planned    |
 | **`v1.0`: 複数端末同期 ＆ 蔵書健全性チェック（正式版）**      | Google Drive `appDataFolder` を用いた複数端末 LWW 自動同期（進捗・書誌・コレクション・設定）および欠巻・未所持新刊・重複アーカイブ検出を備え、最初の正式リリース（`v1.0.0`）へ到達する                                                                     | 3 Issues（①`appDataFolder` バックアップ・復元基盤、②複数端末 LWW マージ同期、③欠巻・新刊・重複アーカイブ検出）                                                                     |    Planned    |

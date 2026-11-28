@@ -2,7 +2,7 @@
 type: spec-engine
 title: "2段優先度・表紙 WebP 自動抽出スケジューラ ＆ 閲覧優先プリエンプション仕様書"
 description: "専用 cover.worker（長辺350px WebP縮小・即時 bitmap.close()）、CoverExtractionSchedulerCore（viewport-high 即時優先＋background-low 最大2冊/秒）、zipIndexCache 0RTT共有・自己修復、429/403指数バックオフ、およびSCR-03/Drive同期プリエンプションの正本"
-status: "Review (#26)"
+status: "Approved"
 updated: "2026-11-28"
 tags:
   [
