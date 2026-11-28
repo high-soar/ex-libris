@@ -338,6 +338,7 @@ export class DefaultDriveSyncEngine implements DriveSyncEngine {
       startPageToken,
       lastDriveSyncAt: syncedAt,
       syncedRootFolderIds: [...enabledRootIds].sort(),
+      syncedFolderIds: null,
     });
 
     return {
@@ -540,6 +541,7 @@ export class DefaultDriveSyncEngine implements DriveSyncEngine {
       startPageToken: nextStartPageToken,
       lastDriveSyncAt: syncedAt,
       syncedRootFolderIds: [...enabledRootIds].sort(),
+      syncedFolderIds: null,
     });
 
     return {

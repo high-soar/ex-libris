@@ -639,4 +639,185 @@ test.describe("SCN-04: 指定フォルダDriveスキャン・changes.list差分�
 
     expect(pageErrors).toEqual([]);
   });
+
+  test("(4) 多段サブフォルダ構成で中間フォルダの完全削除およびルート外移動が増分同期でフルスキャンフォールバックし配下巻がisTrashed=1になること (R1-22)", async ({
+    page,
+  }) => {
+    const pageErrors = trackPageErrors(page);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    await waitForServicesReady(page);
+    await resetTestDatabase(page);
+
+    await signInAndRegisterRoots(page, ["mock-folder-comics"]);
+
+    // 多段構成を 2 系統構築:
+    // A: mock-folder-comics -> mid-delete -> series-delete -> deep-delete-vol.cbz（完全削除検証）
+    // B: mock-folder-comics -> mid-move -> series-move -> deep-move-vol.cbz（ルート外移動検証）
+    const initialSnapshot = await page.evaluate(async () => {
+      const services = window.__exLibrisServices!;
+      const client = services.mockDriveSyncClient!;
+      const modifiedTime = Date.parse("2026-11-26T09:00:00.000Z");
+
+      client.upsertItem(
+        {
+          id: "mock-folder-mid-delete",
+          name: "中間フォルダA",
+          mimeType: "application/vnd.google-apps.folder",
+          parents: ["mock-folder-comics"],
+          size: null,
+          md5Checksum: null,
+          modifiedTime,
+          trashed: false,
+        },
+        false,
+      );
+      client.upsertItem(
+        {
+          id: "mock-folder-series-delete",
+          name: "作品フォルダA",
+          mimeType: "application/vnd.google-apps.folder",
+          parents: ["mock-folder-mid-delete"],
+          size: null,
+          md5Checksum: null,
+          modifiedTime,
+          trashed: false,
+        },
+        false,
+      );
+      client.upsertItem(
+        {
+          id: "mock-file-deep-delete",
+          name: "[著者A] 多段削除テスト 第01巻.cbz",
+          mimeType: "application/octet-stream",
+          parents: ["mock-folder-series-delete"],
+          size: 5_000_000,
+          md5Checksum: "md5-deep-delete-01",
+          modifiedTime,
+          trashed: false,
+        },
+        false,
+      );
+
+      client.upsertItem(
+        {
+          id: "mock-folder-mid-move",
+          name: "中間フォルダB",
+          mimeType: "application/vnd.google-apps.folder",
+          parents: ["mock-folder-comics"],
+          size: null,
+          md5Checksum: null,
+          modifiedTime,
+          trashed: false,
+        },
+        false,
+      );
+      client.upsertItem(
+        {
+          id: "mock-folder-series-move",
+          name: "作品フォルダB",
+          mimeType: "application/vnd.google-apps.folder",
+          parents: ["mock-folder-mid-move"],
+          size: null,
+          md5Checksum: null,
+          modifiedTime,
+          trashed: false,
+        },
+        false,
+      );
+      client.upsertItem(
+        {
+          id: "mock-file-deep-move",
+          name: "[著者B] 多段移動テスト 第01巻.cbz",
+          mimeType: "application/octet-stream",
+          parents: ["mock-folder-series-move"],
+          size: 6_000_000,
+          md5Checksum: "md5-deep-move-01",
+          modifiedTime,
+          trashed: false,
+        },
+        false,
+      );
+
+      const fullResult = await services.driveSyncEngine!.sync();
+      const syncMeta = await services.driveSyncMetaRepo!.getSyncState();
+      const volDelete = await services.volumesRepo!.getByDriveFileId(
+        "mock-file-deep-delete",
+      );
+      const volMove = await services.volumesRepo!.getByDriveFileId(
+        "mock-file-deep-move",
+      );
+      return { fullResult, syncMeta, volDelete, volMove };
+    });
+
+    expect(initialSnapshot.fullResult.mode).toBe("full");
+    expect(initialSnapshot.volDelete?.isTrashed).toBe(0);
+    expect(initialSnapshot.volMove?.isTrashed).toBe(0);
+    expect(initialSnapshot.syncMeta.syncedFolderIds).toEqual(
+      expect.arrayContaining([
+        "mock-folder-mid-delete",
+        "mock-folder-series-delete",
+        "mock-folder-mid-move",
+        "mock-folder-series-move",
+      ]),
+    );
+
+    // 1) 中間フォルダAを完全削除（removed: true, file: null）-> 増分同期でフルスキャンフォールバックし配下巻が isTrashed=1
+    const afterDelete = await page.evaluate(async () => {
+      const services = window.__exLibrisServices!;
+      const client = services.mockDriveSyncClient!;
+      client.removeItem("mock-folder-mid-delete", true);
+
+      const syncResult = await services.driveSyncEngine!.sync();
+      const volDelete = await services.volumesRepo!.getByDriveFileId(
+        "mock-file-deep-delete",
+      );
+      const volMove = await services.volumesRepo!.getByDriveFileId(
+        "mock-file-deep-move",
+      );
+      const syncMeta = await services.driveSyncMetaRepo!.getSyncState();
+      return { syncResult, volDelete, volMove, syncMeta };
+    });
+
+    expect(afterDelete.syncResult.mode).toBe("full");
+    expect(afterDelete.volDelete?.isTrashed).toBe(1);
+    expect(afterDelete.volMove?.isTrashed).toBe(0);
+    expect(afterDelete.syncMeta.syncedFolderIds).not.toContain(
+      "mock-folder-mid-delete",
+    );
+
+    // 2) 中間フォルダBをルート外（mock-folder-other）へ移動 -> 増分同期でフルスキャンフォールバックし配下巻が isTrashed=1
+    const afterMove = await page.evaluate(async () => {
+      const services = window.__exLibrisServices!;
+      const client = services.mockDriveSyncClient!;
+      client.upsertItem(
+        {
+          id: "mock-folder-mid-move",
+          name: "中間フォルダB",
+          mimeType: "application/vnd.google-apps.folder",
+          parents: ["mock-folder-other"],
+          size: null,
+          md5Checksum: null,
+          modifiedTime: Date.parse("2026-11-26T10:00:00.000Z"),
+          trashed: false,
+        },
+        true,
+      );
+
+      const syncResult = await services.driveSyncEngine!.sync();
+      const volMove = await services.volumesRepo!.getByDriveFileId(
+        "mock-file-deep-move",
+      );
+      const syncMeta = await services.driveSyncMetaRepo!.getSyncState();
+      return { syncResult, volMove, syncMeta };
+    });
+
+    expect(afterMove.syncResult.mode).toBe("full");
+    expect(afterMove.volMove?.isTrashed).toBe(1);
+    expect(afterMove.syncMeta.syncedFolderIds).not.toContain(
+      "mock-folder-mid-move",
+    );
+
+    expect(pageErrors).toEqual([]);
+  });
 });

@@ -548,6 +548,17 @@ describe("Android build, Capacitor & Remote Agent governance invariants", () => 
       ) ?? [];
     expect(refreshFailureMatches.length).toBeGreaterThanOrEqual(3);
 
+    // Activity 破棄競合時の RejectedExecutionException 保護と getContext() null ガード (R1-17)
+    expect(pluginSource).toContain(
+      "import java.util.concurrent.RejectedExecutionException;",
+    );
+    const rejectedCatchMatches =
+      pluginSource.match(/catch\s*\(\s*RejectedExecutionException\b/g) ?? [];
+    expect(rejectedCatchMatches.length).toBeGreaterThanOrEqual(2);
+    expect(pluginSource).toMatch(
+      /@Nullable\s+private\s+SharedPreferences\s+getAuthPreferences\(\)\s*\{\s*Context\s+context\s*=\s*getContext\(\);\s*if\s*\(\s*context\s*==\s*null\s*\)\s*\{\s*return\s+null;\s*\}/,
+    );
+
     // AndroidManifest は INTERNET のみを維持
     const manifest = fs.readFileSync(
       path.resolve(repoRoot, "android/app/src/main/AndroidManifest.xml"),

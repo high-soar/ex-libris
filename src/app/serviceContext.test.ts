@@ -74,6 +74,7 @@ describe("serviceContext", () => {
         startPageToken: null,
         lastDriveSyncAt: null,
         syncedRootFolderIds: [],
+        syncedFolderIds: null,
       })),
       saveSyncState: vi.fn(),
       clearSyncState: vi.fn(async () => {}),

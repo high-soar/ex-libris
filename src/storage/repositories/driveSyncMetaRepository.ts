@@ -3,6 +3,7 @@ import { ExLibrisDatabase, db } from "../db";
 export const DRIVE_START_PAGE_TOKEN_META_KEY = "driveStartPageToken";
 export const LAST_DRIVE_SYNC_AT_META_KEY = "lastDriveSyncAt";
 export const SYNCED_ROOT_FOLDER_IDS_META_KEY = "syncedRootFolderIds";
+export const SYNCED_FOLDER_IDS_META_KEY = "syncedFolderIds";
 
 const DRIVE_SYNC_META_KEYS = [
   DRIVE_START_PAGE_TOKEN_META_KEY,
@@ -14,6 +15,7 @@ export interface DriveSyncMetaState {
   readonly startPageToken: string | null;
   readonly lastDriveSyncAt: number | null;
   readonly syncedRootFolderIds: readonly string[];
+  readonly syncedFolderIds: readonly string[] | null;
 }
 
 export interface DriveSyncMetaRepository {
@@ -141,6 +143,7 @@ export class DexieDriveSyncMetaRepository implements DriveSyncMetaRepository {
         startPageToken,
         lastDriveSyncAt,
         syncedRootFolderIds,
+        syncedFolderIds: null,
       };
     });
   }
@@ -194,6 +197,7 @@ export class DexieDriveSyncMetaRepository implements DriveSyncMetaRepository {
         startPageToken,
         lastDriveSyncAt,
         syncedRootFolderIds,
+        syncedFolderIds: null,
       };
     });
   }
