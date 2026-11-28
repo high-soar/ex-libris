@@ -369,6 +369,10 @@ test.describe("SCN-03: Google OAuth連携・Driveフォルダ設定・診断ロ�
 
     await page.getByTestId("drive-setup-banner-cta").click();
     await expect(page).toHaveURL(/\/settings$/);
+    // 非ゼロ位置からの順方向遷移 (TR-03) で先頭初期化されること (R1-21)
+    await expect
+      .poll(() => page.evaluate(() => Math.round(window.scrollY)))
+      .toBe(0);
 
     // Google アカウント連携のみ行いルート未登録で戻る(TR-09) -> no-roots バナーへ遷移 & スクロール位置復元
     await page.getByTestId("google-signin-button").click();
@@ -409,6 +413,34 @@ test.describe("SCN-03: Google OAuth連携・Driveフォルダ設定・診断ロ�
     await expect
       .poll(() => page.evaluate(() => Math.round(window.scrollY)))
       .toBe(100);
+
+    // 0px 位置保存後に /settings でスクロールしてから戻る (TR-09) -> 0px へ復元されること (R1-21)
+    await page.evaluate(() => {
+      window.scrollTo(0, 0);
+    });
+    await expect
+      .poll(() => page.evaluate(() => Math.round(window.scrollY)))
+      .toBe(0);
+    await page.getByTestId("header-settings-button").click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => document.documentElement.scrollHeight - window.innerHeight,
+        ),
+      )
+      .toBeGreaterThan(80);
+    await page.evaluate(() => {
+      window.scrollTo(0, 80);
+    });
+    await expect
+      .poll(() => page.evaluate(() => Math.round(window.scrollY)))
+      .toBe(80);
+    await page.getByTestId("settings-back-button").click();
+    await expect(page).toHaveURL(/\/$/);
+    await expect
+      .poll(() => page.evaluate(() => Math.round(window.scrollY)))
+      .toBe(0);
 
     // 登録済み全ルートフォルダを無効化して '/' へ戻ると no-roots バナーが再表示されること
     await page.getByTestId("header-settings-button").click();
@@ -483,9 +515,11 @@ test.describe("SCN-03: Google OAuth連携・Driveフォルダ設定・診断ロ�
       );
     });
 
-    // 優先度 2: フォルダピッカーモーダル開中のハードウェア戻る -> モーダルのみ閉鎖し /settings に留まる
-    await page.getByTestId("open-folder-picker-button").click();
+    // 優先度 2: フォルダピッカーモーダル開中のハードウェア戻る -> モーダルのみ閉鎖し /settings に留まりトリガーへフォーカス復帰
+    const openPickerBtn = page.getByTestId("open-folder-picker-button");
+    await openPickerBtn.click();
     await expect(page.getByTestId("drive-folder-picker-modal")).toBeVisible();
+    await expect(page.getByTestId("close-folder-picker-button")).toBeFocused();
     await page.evaluate(async () => {
       const bridge = window.__exLibrisServices?.appBridge as
         MockAppBridge | undefined;
@@ -493,22 +527,25 @@ test.describe("SCN-03: Google OAuth連携・Driveフォルダ設定・診断ロ�
     });
     await expect(page.getByTestId("drive-folder-picker-modal")).toHaveCount(0);
     await expect(page).toHaveURL(/\/settings$/);
+    await expect(openPickerBtn).toBeFocused();
 
-    // Escape キーによるモーダル閉鎖
-    await page.getByTestId("open-folder-picker-button").click();
+    // Escape キーによるモーダル閉鎖とトリガーへのフォーカス復帰
+    await openPickerBtn.click();
     await expect(page.getByTestId("drive-folder-picker-modal")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("drive-folder-picker-modal")).toHaveCount(0);
     await expect(page).toHaveURL(/\/settings$/);
+    await expect(openPickerBtn).toBeFocused();
 
-    // バックドロップクリックによるモーダル閉鎖
-    await page.getByTestId("open-folder-picker-button").click();
+    // バックドロップクリックによるモーダル閉鎖とトリガーへのフォーカス復帰
+    await openPickerBtn.click();
     await expect(page.getByTestId("drive-folder-picker-modal")).toBeVisible();
     await page
       .getByTestId("folder-picker-backdrop")
       .click({ position: { x: 8, y: 8 } });
     await expect(page.getByTestId("drive-folder-picker-modal")).toHaveCount(0);
     await expect(page).toHaveURL(/\/settings$/);
+    await expect(openPickerBtn).toBeFocused();
 
     // 優先度 4: モーダル閉鎖後の /settings でハードウェア戻る -> '/' へ復帰
     await page.evaluate(async () => {

@@ -546,7 +546,7 @@ describe("SeriesDetailPage", () => {
     });
   });
 
-  it("isSettled時に一致seriesIdのスクロール位置を復元して消費クリアし、不一致や0以下でも未消費状態をクリアする (AC-SD-03)", async () => {
+  it("isSettled時に一致seriesIdのスクロール位置(0px含む)を復元して消費クリアし、新規遷移・不一致時はマウント時に先頭初期化する (AC-SD-03)", async () => {
     const scrollToSpy = vi
       .spyOn(window, "scrollTo")
       .mockImplementation(() => {});
@@ -567,7 +567,23 @@ describe("SeriesDetailPage", () => {
     expect(useBookshelfUiStateStore.getState().seriesDetailScroll).toBeNull();
     unmountMatch();
 
-    // 不一致 seriesId -> scrollTo せずクリアのみ
+    // 一致 seriesId かつ scrollY === 0 -> window.scrollTo(0, 0) で復元＋クリア
+    scrollToSpy.mockClear();
+    useBookshelfUiStateStore.getState().saveSeriesDetailScroll("series-1", 0);
+    const { unmount: unmountZero } = render(
+      <ServiceContext.Provider value={createMockServices()}>
+        <RouterContext.Provider value={router}>
+          <SeriesDetailPage seriesId="series-1" />
+        </RouterContext.Provider>
+      </ServiceContext.Provider>,
+    );
+    await waitFor(() => {
+      expect(scrollToSpy).toHaveBeenCalledWith(0, 0);
+    });
+    expect(useBookshelfUiStateStore.getState().seriesDetailScroll).toBeNull();
+    unmountZero();
+
+    // 不一致 seriesId -> マウント時に window.scrollTo(0, 0) で先頭初期化し、他シリーズの 500 は復元せずクリア
     scrollToSpy.mockClear();
     useBookshelfUiStateStore
       .getState()
@@ -579,11 +595,27 @@ describe("SeriesDetailPage", () => {
         </RouterContext.Provider>
       </ServiceContext.Provider>,
     );
+    expect(scrollToSpy).toHaveBeenCalledWith(0, 0);
     await waitFor(() => {
       expect(useBookshelfUiStateStore.getState().seriesDetailScroll).toBeNull();
     });
-    expect(scrollToSpy).not.toHaveBeenCalled();
+    expect(scrollToSpy).not.toHaveBeenCalledWith(0, 500);
     unmountMismatch();
+
+    // 新規遷移（保存値 null） -> 非同期解決前のマウント時点で window.scrollTo(0, 0) を実行
+    scrollToSpy.mockClear();
+    const { unmount: unmountFresh } = render(
+      <ServiceContext.Provider value={createMockServices()}>
+        <RouterContext.Provider value={router}>
+          <SeriesDetailPage seriesId="series-1" />
+        </RouterContext.Provider>
+      </ServiceContext.Provider>,
+    );
+    expect(scrollToSpy).toHaveBeenCalledWith(0, 0);
+    await waitFor(() => {
+      expect(screen.queryByTestId("series-detail-loading")).toBeNull();
+    });
+    unmountFresh();
 
     // 同期完了（completedSyncCount増加）で再読込され、アンマウント途中の非同期結果は無視される
     let resolveSeries!: (value: SeriesRecord | null) => void;

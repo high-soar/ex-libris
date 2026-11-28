@@ -603,6 +603,9 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
 
     await page.getByTestId("header-settings-button").click();
     await expect(page).toHaveURL(/\/settings$/);
+    await expect
+      .poll(() => page.evaluate(() => Math.round(window.scrollY)))
+      .toBe(0);
     await page.goBack();
     await expect(page).toHaveURL(/\/$/);
     await expect(sortSelect).toHaveValue("titleAsc");
@@ -632,6 +635,10 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
     await expect(page.getByTestId("series-detail-title")).toHaveText(
       "SLAM DUNK",
     );
+    // 非ゼロ位置からの順方向遷移 (TR-01) で SCR-02 が先頭初期化されること (R1-21)
+    await expect
+      .poll(() => page.evaluate(() => Math.round(window.scrollY)))
+      .toBe(0);
 
     await page.getByTestId("series-detail-back-button").click();
     await expect(page).toHaveURL(/\/$/);
@@ -910,9 +917,12 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
       .poll(() => page.evaluate(() => Math.round(window.scrollY)))
       .toBe(140);
 
-    // TR-05 で SCR-01 へ復帰し、診断ログに 0RTT (fromIndexCache=true) が記録されていることを確認
+    // TR-05 で SCR-01 へ復帰: 遷移前に 0px 保存していたため 140px 引き継ぎせず 0px へ復元されること (R1-21)
     await page.getByTestId("series-detail-back-button").click();
     await expect(page).toHaveURL(/\/$/);
+    await expect
+      .poll(() => page.evaluate(() => Math.round(window.scrollY)))
+      .toBe(0);
     await page.getByTestId("copy-diagnostics-button").click();
     const diagText = await page.evaluate(() => navigator.clipboard.readText());
     expect(diagText).toContain(

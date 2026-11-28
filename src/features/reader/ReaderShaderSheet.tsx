@@ -1,4 +1,10 @@
-import type { MouseEvent, ReactNode, SyntheticEvent } from "react";
+import {
+  type MouseEvent,
+  type ReactNode,
+  type SyntheticEvent,
+  useRef,
+} from "react";
+import { useModalFocusTrap } from "../../shared/ui/useModalFocusTrap";
 import {
   SHADER_PARAM_RANGES,
   normalizeShaderCorrectionParams,
@@ -92,6 +98,9 @@ export function ReaderShaderSheet({
   onSaveDefault,
   onClose,
 }: ReaderShaderSheetProps): ReactNode {
+  const sheetRef = useRef<HTMLElement | null>(null);
+  useModalFocusTrap({ isOpen, containerRef: sheetRef });
+
   if (!isOpen) {
     return null;
   }
@@ -115,6 +124,8 @@ export function ReaderShaderSheet({
         className="absolute inset-0 z-30 bg-transparent"
       />
       <section
+        ref={sheetRef}
+        tabIndex={-1}
         data-testid="reader-shader-sheet"
         role="dialog"
         aria-modal="true"
@@ -126,7 +137,7 @@ export function ReaderShaderSheet({
         style={{
           paddingBottom: "calc(1rem + env(safe-area-inset-bottom, 0px))",
         }}
-        className="absolute inset-x-0 bottom-0 z-40 mx-auto max-h-[80vh] w-full max-w-xl overflow-y-auto rounded-t-2xl border border-b-0 border-slate-700/80 bg-slate-950/95 px-4 pt-4 text-slate-100 shadow-2xl backdrop-blur-md sm:px-6"
+        className="absolute inset-x-0 bottom-0 z-40 mx-auto max-h-[80vh] w-full max-w-xl overflow-y-auto rounded-t-2xl border border-b-0 border-slate-700/80 bg-slate-950/95 px-4 pt-4 text-slate-100 shadow-2xl backdrop-blur-md focus:outline-none sm:px-6"
       >
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-sm font-bold text-white sm:text-base">

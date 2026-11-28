@@ -1,5 +1,11 @@
 import { composeStories } from "@storybook/react";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { type ReactElement } from "react";
 import {
   afterEach,
@@ -273,6 +279,7 @@ describe("SettingsPage", () => {
   });
 
   afterEach(async () => {
+    cleanup();
     vi.restoreAllMocks();
     await resetTestDb();
     resetDriveSyncState();
@@ -338,8 +345,9 @@ describe("SettingsPage", () => {
     };
 
   async function renderAndFlush(element: ReactElement) {
-    const rendered = render(element);
+    let rendered!: ReturnType<typeof render>;
     await act(async () => {
+      rendered = render(element);
       await flushMicrotasks();
     });
     return rendered;
@@ -383,6 +391,12 @@ describe("SettingsPage", () => {
     );
   }
 
+  it("マウント時にwindow.scrollTo(0, 0)を呼び出して前画面のスクロール引き継ぎを防ぐこと (TR-03)", async () => {
+    const scrollToSpy = vi.spyOn(window, "scrollTo");
+    await renderSettings();
+    expect(scrollToSpy).toHaveBeenCalledWith(0, 0);
+  });
+
   it("全Storybookストーリーを描画し6つの直下子コンポーネントへPropsを正しく配線すること (AC-ST-07, AC-ST-08)", async () => {
     const { unmount: u1 } = await renderAndFlush(<Unlinked />);
     expect(screen.getByTestId("settings-main-content")).not.toHaveAttribute(
@@ -407,6 +421,10 @@ describe("SettingsPage", () => {
     expect(getPickerProps()).toMatchObject({
       isOpen: false,
     });
+    expect(getSyncRootsProps().openFolderPickerButtonRef).toBeDefined();
+    expect(getPickerProps().fallbackFocusRef).toBe(
+      getSyncRootsProps().openFolderPickerButtonRef,
+    );
     expect(getDiagnosticsProps().entries).toHaveLength(3);
     u1();
 

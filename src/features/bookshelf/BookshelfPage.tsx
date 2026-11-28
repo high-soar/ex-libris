@@ -293,9 +293,7 @@ export function BookshelfPage({
 
   useEffect(() => {
     const savedScrollY = useBookshelfUiStateStore.getState().scrollY;
-    if (savedScrollY > 0) {
-      window.scrollTo(0, savedScrollY);
-    }
+    window.scrollTo(0, savedScrollY);
   }, []);
 
   useEffect(() => {
@@ -307,10 +305,8 @@ export function BookshelfPage({
       return;
     }
     const savedScrollY = useBookshelfUiStateStore.getState().scrollY;
-    if (savedScrollY > 0) {
-      window.scrollTo(0, savedScrollY);
-      clearScrollY();
-    }
+    window.scrollTo(0, savedScrollY);
+    clearScrollY();
   }, [
     clearScrollY,
     isDriveSetupSettled,

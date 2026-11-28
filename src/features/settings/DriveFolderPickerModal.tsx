@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { type ReactNode, type RefObject, useRef } from "react";
 import type { DriveFolderMetadata } from "../../providers/gdrive/types";
+import { useModalFocusTrap } from "../../shared/ui/useModalFocusTrap";
 import type { DriveFolderBreadcrumbItem } from "./types";
 
 export interface DriveFolderPickerModalProps {
@@ -11,6 +12,7 @@ export interface DriveFolderPickerModalProps {
   readonly isLoadingMore: boolean;
   readonly isSaving: boolean;
   readonly errorMessage: string | null;
+  readonly fallbackFocusRef?: RefObject<HTMLElement | null>;
   readonly onNavigateBreadcrumb: (index: number) => void;
   readonly onOpenFolder: (folder: DriveFolderMetadata) => void;
   readonly onSelectFolder: (folder: DriveFolderMetadata) => void;
@@ -181,6 +183,7 @@ export function DriveFolderPickerModal({
   isLoadingMore,
   isSaving,
   errorMessage,
+  fallbackFocusRef,
   onNavigateBreadcrumb,
   onOpenFolder,
   onSelectFolder,
@@ -188,6 +191,9 @@ export function DriveFolderPickerModal({
   onLoadMore,
   onClose,
 }: DriveFolderPickerModalProps): ReactNode {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  useModalFocusTrap({ isOpen, containerRef: dialogRef, fallbackFocusRef });
+
   if (!isOpen) {
     return null;
   }
@@ -212,6 +218,8 @@ export function DriveFolderPickerModal({
         className="fixed inset-0 bg-slate-950/80"
       />
       <section
+        ref={dialogRef}
+        tabIndex={-1}
         data-testid="drive-folder-picker-modal"
         role="dialog"
         aria-modal="true"
@@ -219,7 +227,7 @@ export function DriveFolderPickerModal({
         style={{
           paddingBottom: "calc(1.25rem + env(safe-area-inset-bottom, 0px))",
         }}
-        className="relative z-10 flex max-h-[85vh] w-full max-w-lg flex-col rounded-2xl border border-slate-700/80 bg-slate-900 p-5 text-slate-100 shadow-2xl"
+        className="relative z-10 flex max-h-[85vh] w-full max-w-lg flex-col rounded-2xl border border-slate-700/80 bg-slate-900 p-5 text-slate-100 shadow-2xl focus:outline-none"
       >
         <div className="flex items-center justify-between gap-3">
           <h2 className="min-w-0 text-sm font-bold text-white sm:text-base">

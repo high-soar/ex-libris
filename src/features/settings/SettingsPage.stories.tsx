@@ -4,10 +4,13 @@ import type {
   DiagnosticEntry,
   DiagnosticLogger,
 } from "../../diagnostics/types";
+import { NoopCoverExtractionScheduler } from "../../engine/cover/CoverExtractionSchedulerCore";
 import { RouterProvider } from "../../shared/router/RouterProvider";
 import { APP_NAME, APP_VERSION } from "../../shared/constants/app";
 import type { DriveSyncRootRecord } from "../../storage/types";
 import { SettingsPage } from "./SettingsPage";
+
+const STORY_COVER_SCHEDULER = new NoopCoverExtractionScheduler();
 
 const FIXED_REPORT_TIME = new Date("2026-11-23T00:05:00.000Z");
 
@@ -128,7 +131,7 @@ const meta: Meta<typeof SettingsPage> = {
   },
   decorators: [
     (Story) => (
-      <ServiceProvider>
+      <ServiceProvider coverExtractionScheduler={STORY_COVER_SCHEDULER}>
         <RouterProvider initialPath="/settings">
           <Story />
         </RouterProvider>

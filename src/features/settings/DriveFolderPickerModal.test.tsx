@@ -1,7 +1,7 @@
 import { composeStories } from "@storybook/react";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DriveFolderPickerModal } from "./DriveFolderPickerModal";
 import * as stories from "./DriveFolderPickerModal.stories";
 
@@ -16,6 +16,9 @@ const {
 } = composeStories(stories);
 
 describe("DriveFolderPickerModal", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   it("Closedストーリーでモーダルとバックドロップを描画しないこと (AC-ST-02)", () => {
     const { container } = render(<Closed />);
 
@@ -217,5 +220,61 @@ describe("DriveFolderPickerModal", () => {
     render(<EmptySubdirectory />);
     expect(screen.getByTestId("folder-picker-empty")).toBeVisible();
     expect(screen.queryByTestId("folder-picker-error")).not.toBeInTheDocument();
+  });
+
+  it("モーダル開閉時に先頭要素への初期フォーカス・Tab循環トラップ・クローズ時フォーカス復帰を行うこと (AC-ST-02, AC-ST-06)", () => {
+    const trigger = document.createElement("button");
+    document.body.appendChild(trigger);
+    trigger.focus();
+
+    const { rerender } = render(<SubdirectoryWithPagination isOpen={true} />);
+    const dialog = screen.getByTestId("drive-folder-picker-modal");
+    const closeBtn = screen.getByTestId("close-folder-picker-button");
+    const confirmBtn = screen.getByTestId("confirm-current-folder-button");
+
+    expect(dialog).toHaveAttribute("tabindex", "-1");
+    expect(document.activeElement).toBe(closeBtn);
+
+    const shiftTab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(shiftTab);
+    expect(shiftTab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(confirmBtn);
+
+    const forwardTab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      cancelable: true,
+    });
+    document.dispatchEvent(forwardTab);
+    expect(forwardTab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(closeBtn);
+
+    rerender(<SubdirectoryWithPagination isOpen={false} />);
+    expect(document.activeElement).toBe(trigger);
+
+    // 背面 inert 等でオープン時に activeElement が document.body になっても fallbackFocusRef へ復帰すること
+    const fallbackRef = { current: trigger };
+    const bodyActiveSpy = vi
+      .spyOn(document, "activeElement", "get")
+      .mockReturnValue(document.body);
+    rerender(
+      <SubdirectoryWithPagination
+        isOpen={true}
+        fallbackFocusRef={fallbackRef}
+      />,
+    );
+    bodyActiveSpy.mockRestore();
+    rerender(
+      <SubdirectoryWithPagination
+        isOpen={false}
+        fallbackFocusRef={fallbackRef}
+      />,
+    );
+    expect(document.activeElement).toBe(trigger);
+
+    trigger.remove();
   });
 });

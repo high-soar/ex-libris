@@ -251,4 +251,39 @@ describe("ReaderShaderSheet", () => {
     expect(parentPointerUp).not.toHaveBeenCalled();
     expect(parentPointerCancel).not.toHaveBeenCalled();
   });
+
+  it("ボトムシート開閉時に先頭要素への初期フォーカス・Tab循環トラップ・クローズ時フォーカス復帰を行うこと (AC-RD-13)", () => {
+    const trigger = document.createElement("button");
+    document.body.appendChild(trigger);
+    trigger.focus();
+
+    const { rerender } = render(<Default isOpen={true} />);
+    const sheet = screen.getByTestId("reader-shader-sheet");
+    const closeBtn = screen.getByTestId("shader-sheet-close-button");
+    const saveBtn = screen.getByTestId("shader-save-default-button");
+
+    expect(sheet).toHaveAttribute("tabindex", "-1");
+    expect(document.activeElement).toBe(closeBtn);
+
+    const shiftTab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(shiftTab);
+    expect(shiftTab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(saveBtn);
+
+    const forwardTab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      cancelable: true,
+    });
+    document.dispatchEvent(forwardTab);
+    expect(forwardTab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(closeBtn);
+
+    rerender(<Default isOpen={false} />);
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
 });

@@ -262,6 +262,13 @@ export function SeriesDetailPage({
   ]);
 
   useEffect(() => {
+    const saved = useBookshelfUiStateStore.getState().seriesDetailScroll;
+    if (saved === null || saved.seriesId !== seriesId) {
+      window.scrollTo(0, 0);
+    }
+  }, [seriesId]);
+
+  useEffect(() => {
     if (!isSettled) {
       return;
     }
@@ -269,7 +276,7 @@ export function SeriesDetailPage({
     if (saved === null) {
       return;
     }
-    if (saved.seriesId === seriesId && saved.scrollY > 0) {
+    if (saved.seriesId === seriesId) {
       window.scrollTo(0, saved.scrollY);
     }
     clearSeriesDetailScroll();

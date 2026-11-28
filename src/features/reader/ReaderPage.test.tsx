@@ -2850,11 +2850,17 @@ describe("ReaderPage", () => {
     );
 
     // 読込完了前にユーザーがシートを開いてスライダー変更した場合、後から届いたデフォルト値で上書きしない
+    expect(
+      screen.getByTestId("reader-interaction-surface"),
+    ).not.toHaveAttribute("inert");
     act(() => {
       getLatestHudProps().onOpenShaderSheet?.();
     });
     expect(getLatestHudProps().isOpen).toBe(false);
     expect(getLatestShaderSheetProps().isOpen).toBe(true);
+    expect(screen.getByTestId("reader-interaction-surface")).toHaveAttribute(
+      "inert",
+    );
     expect(getLatestShaderSheetProps().saveStatus).toBe("idle");
 
     const manualParams: ShaderCorrectionParams = {
@@ -2930,10 +2936,16 @@ describe("ReaderPage", () => {
       getLatestShaderSheetProps().onClose();
     });
     expect(getLatestShaderSheetProps().isOpen).toBe(false);
+    expect(
+      screen.getByTestId("reader-interaction-surface"),
+    ).not.toHaveAttribute("inert");
     act(() => {
       getLatestHudProps().onOpenShaderSheet?.();
     });
     expect(getLatestShaderSheetProps().isOpen).toBe(true);
+    expect(screen.getByTestId("reader-interaction-surface")).toHaveAttribute(
+      "inert",
+    );
     expect(getLatestShaderSheetProps().saveStatus).toBe("idle");
 
     // デフォルト保存失敗時は警告ログ記録＋errorステータス
