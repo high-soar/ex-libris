@@ -3,7 +3,7 @@ type: spec-db-schema
 title: "Dexie.js（IndexedDB）ローカルDBスキーマ・インデックス定義"
 description: "仮想本棚、指定ルートフォルダ同期、ZIP目次キャッシュ、ローカル一時ZIP共用レジューム、および appDataFolder LWW 端末間同期を支える全9テーブル定義の正本"
 status: "Review (#26)"
-updated: "2026-11-27"
+updated: "2026-11-28"
 tags:
   [database, dexie, indexeddb, schema, bookshelf, lww-sync, reading-progress]
 related_specs:
@@ -93,10 +93,10 @@ erDiagram
 
 ### 3.1 `syncMeta`（同期トークン・端末ローカル制御メタ情報 / `Phase 1`〜）
 
-| カラム名 | 型       | Indexed | 説明                                                                                                                               |
-| :------- | :------- | :-----: | :--------------------------------------------------------------------------------------------------------------------------------- |
-| `key`    | `string` | **PK**  | `'driveStartPageToken'` / `'lastDriveSyncAt'` / `'syncedRootFolderIds'` / `'lastAppDataSyncAt'` / `'defaultReaderSettingsJson'` 等 |
-| `value`  | `string` |    -    | JSON 文字列またはトークン文字列                                                                                                    |
+| カラム名 | 型       | Indexed | 説明                                                                                                                                                     |
+| :------- | :------- | :-----: | :------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`    | `string` | **PK**  | `'driveStartPageToken'` / `'lastDriveSyncAt'` / `'syncedRootFolderIds'` / `'syncedFolderIds'` / `'lastAppDataSyncAt'` / `'defaultReaderSettingsJson'` 等 |
+| `value`  | `string` |    -    | JSON 文字列またはトークン文字列                                                                                                                          |
 
 - **`'defaultReaderSettingsJson'` 保存・正規化契約（`ReaderSettingsRepository` / `v0.1`〜）**:
   - 保存形式は `{ version: 1, shader: ShaderCorrectionParams }` の JSON 文字列とする（将来の `v0.4` 拡張を見据えたバージョン付き構造）。
@@ -105,7 +105,8 @@ erDiagram
   - `'driveStartPageToken'`: 非空トークン文字列（未保存・空白のみの場合は `null`）。
   - `'lastDriveSyncAt'`: 有限 UNIX ms 数値の文字列表現（非数値・破損時はキーを削除して `null` へフォールバック）。
   - `'syncedRootFolderIds'`: 同期完了済みの `driveSyncRoots.folderId` 配列の JSON 文字列（JSON 破損・非配列・空要素混入時はキーを削除して `[]` へフォールバックし、次回同期で安全にフルスキャンを誘発する）。
-  - 内部 Promise キューで FIFO 直列実行し、`saveSyncState({ startPageToken, lastDriveSyncAt, syncedRootFolderIds })` は 3 キーを単一 `rw` トランザクションで原子保存する。
+  - `'syncedFolderIds'`: 有効ルート配下で既知となった全サブフォルダ ID（ルート自身を除く、多段中間フォルダ含む）配列の JSON 文字列（未保存・アップグレード直後・JSON 破損・非配列・空要素混入時はキーを削除して `null` へフォールバックし、空配列 `[]`［サブフォルダ 0 件で同期済み］と厳格区別して次回同期で安全にフルスキャンを誘発する）。
+  - 内部 Promise キューで FIFO 直列実行し、`saveSyncState({ startPageToken, lastDriveSyncAt, syncedRootFolderIds, syncedFolderIds })` は 4 キーを単一 `rw` トランザクションで原子保存する（`syncedFolderIds === null` 時はキーを削除）。
 
 ### 3.2 `zipIndexCache`（ZIP Central Directory 解析済み目次キャッシュ / `v0.1`〜）
 
