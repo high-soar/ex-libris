@@ -100,6 +100,7 @@ export class DecodeWorkerPool implements DecodeWorkerApi {
   decodePageSlice(
     compressedData: Uint8Array,
     compressionMethod: ZipCompressionMethod,
+    expectedUncompressedSize?: number,
   ): Promise<DecodeSliceResult> {
     if (this.disposed) {
       return Promise.reject(
@@ -142,10 +143,17 @@ export class DecodeWorkerPool implements DecodeWorkerApi {
 
       let rpcPromise: Promise<DecodeSliceResult>;
       try {
-        rpcPromise = slot.handle.api.decodePageSlice(
-          compressedData,
-          compressionMethod,
-        );
+        rpcPromise =
+          expectedUncompressedSize !== undefined
+            ? slot.handle.api.decodePageSlice(
+                compressedData,
+                compressionMethod,
+                expectedUncompressedSize,
+              )
+            : slot.handle.api.decodePageSlice(
+                compressedData,
+                compressionMethod,
+              );
       } catch (syncError) {
         settleFromWorker(() => reject(syncError));
         return;

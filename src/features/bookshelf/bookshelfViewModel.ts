@@ -1,3 +1,9 @@
+import {
+  resolveRepresentativeVolume,
+  resolveRepresentativeVolumeNonEmpty,
+  sortSeriesItems,
+  type BookshelfSortOrder,
+} from "../../shared/bookshelf/seriesOrdering";
 import { compareVolumesForDisplay } from "../../storage/repositories/volumesRepository";
 import type {
   ReadingProgressRecord,
@@ -6,8 +12,7 @@ import type {
   VolumeRecord,
 } from "../../storage/types";
 
-export type BookshelfSortOrder =
-  "lastReadDesc" | "addedDesc" | "titleAsc" | "volumeCountDesc";
+export { resolveRepresentativeVolume, type BookshelfSortOrder };
 
 export type QuickLaunchKind = "continue" | "start" | "next" | "reread";
 
@@ -65,48 +70,10 @@ export interface BuildSeriesDetailViewModelInput {
   readonly progressByVolumeId: ReadonlyMap<string, ReadingProgressRecord>;
 }
 
-function compareStringsAsc(a: string, b: string): number {
-  if (a < b) {
-    return -1;
-  }
-  if (a > b) {
-    return 1;
-  }
-  return 0;
-}
-
 export function isOmnibusVolume(
   volume: Pick<VolumeRecord, "volumeLabel">,
 ): boolean {
   return volume.volumeLabel.includes("合本");
-}
-
-function resolveRepresentativeVolumeNonEmpty(
-  series: Pick<SeriesRecord, "representativeVolumeId">,
-  visibleVolumes: readonly [VolumeRecord, ...VolumeRecord[]],
-): VolumeRecord {
-  if (series.representativeVolumeId !== null) {
-    const matched = visibleVolumes.find(
-      (volume) => volume.id === series.representativeVolumeId,
-    );
-    if (matched !== undefined) {
-      return matched;
-    }
-  }
-  return visibleVolumes[0];
-}
-
-export function resolveRepresentativeVolume(
-  series: Pick<SeriesRecord, "representativeVolumeId">,
-  visibleVolumes: readonly VolumeRecord[],
-): VolumeRecord | null {
-  if (visibleVolumes.length === 0) {
-    return null;
-  }
-  return resolveRepresentativeVolumeNonEmpty(
-    series,
-    visibleVolumes as readonly [VolumeRecord, ...VolumeRecord[]],
-  );
 }
 
 function resolveQuickLaunchVolumeNonEmpty(
@@ -285,65 +252,11 @@ export function buildBookshelfSeriesItems(
   return items;
 }
 
-function compareTitleTieBreak(
-  a: BookshelfSeriesCardItem,
-  b: BookshelfSeriesCardItem,
-): number {
-  const readingDiff = compareStringsAsc(a.titleReading, b.titleReading);
-  if (readingDiff !== 0) {
-    return readingDiff;
-  }
-  const titleDiff = compareStringsAsc(a.title, b.title);
-  if (titleDiff !== 0) {
-    return titleDiff;
-  }
-  return compareStringsAsc(a.seriesId, b.seriesId);
-}
-
-function compareAddedDesc(
-  a: BookshelfSeriesCardItem,
-  b: BookshelfSeriesCardItem,
-): number {
-  if (a.latestVolumeAddedAt !== b.latestVolumeAddedAt) {
-    return b.latestVolumeAddedAt - a.latestVolumeAddedAt;
-  }
-  if (a.seriesAddedAt !== b.seriesAddedAt) {
-    return b.seriesAddedAt - a.seriesAddedAt;
-  }
-  return compareTitleTieBreak(a, b);
-}
-
-const BOOKSHELF_SORT_COMPARATORS: Record<
-  BookshelfSortOrder,
-  (a: BookshelfSeriesCardItem, b: BookshelfSeriesCardItem) => number
-> = {
-  lastReadDesc: (a, b) => {
-    if (a.lastReadAt !== b.lastReadAt) {
-      if (a.lastReadAt === null) {
-        return 1;
-      }
-      if (b.lastReadAt === null) {
-        return -1;
-      }
-      return b.lastReadAt - a.lastReadAt;
-    }
-    return compareAddedDesc(a, b);
-  },
-  addedDesc: compareAddedDesc,
-  titleAsc: compareTitleTieBreak,
-  volumeCountDesc: (a, b) => {
-    if (a.volumeCount !== b.volumeCount) {
-      return b.volumeCount - a.volumeCount;
-    }
-    return compareTitleTieBreak(a, b);
-  },
-};
-
 export function sortBookshelfSeriesItems(
   items: readonly BookshelfSeriesCardItem[],
   sortOrder: BookshelfSortOrder,
 ): BookshelfSeriesCardItem[] {
-  return [...items].sort(BOOKSHELF_SORT_COMPARATORS[sortOrder]);
+  return sortSeriesItems(items, sortOrder);
 }
 
 export function buildSeriesDetailViewModel(

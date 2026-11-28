@@ -20,11 +20,16 @@ const workerHandles: DecodeWorkerHandle[] = Array.from(
     const remote = Comlink.wrap<DecodeWorkerApi>(worker);
     return {
       api: {
-        decodePageSlice(compressedData, compressionMethod) {
+        decodePageSlice(
+          compressedData,
+          compressionMethod,
+          expectedUncompressedSize,
+        ) {
           const { data, transferables } = prepareDecodeTransfer(compressedData);
           return remote.decodePageSlice(
             Comlink.transfer(data, transferables),
             compressionMethod,
+            expectedUncompressedSize,
           );
         },
       },

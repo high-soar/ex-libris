@@ -414,6 +414,7 @@ export class CoordinatorCore implements CoordinatorWorkerApi {
       const decoded = await this.decodePool.decodePageSlice(
         compressedSlice,
         entry.compressionMethod,
+        entry.uncompressedSize,
       );
       if (signal.aborted) {
         decoded.bitmap.close();

@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CoverWorkerClientHandle } from "../../app/coverWorkerClient";
 import type { GoogleAuthSession } from "../../bridges/oauth/types";
 import { createDiagnosticLogger } from "../../diagnostics/diagnosticLogger";
 import { db, resetTestDb } from "../../storage/db";
@@ -23,6 +22,7 @@ import {
 import type {
   CoverExtractionProgressSnapshot,
   CoverExtractionVolumeUpdateEvent,
+  CoverWorkerClientHandle,
 } from "./types";
 
 function createDeferred<T = void>() {
@@ -1573,12 +1573,15 @@ describe("CoverExtractionSchedulerCore", () => {
     const logger = createDiagnosticLogger();
     let mode: "offline" | "503" | "recover" = "offline";
     let readAttempts = 0;
+    let currentTime = 1_000;
 
     const scheduler = new CoverExtractionSchedulerCore(
       createBaseDeps(zipBytes, {
         logger,
+        now: () => currentTime,
         sleep: async (ms) => {
           sleepCalls.push(ms);
+          currentTime += ms;
         },
         createRangeReader: (volume) => ({
           sourceId: `gdrive:${volume.driveFileId}`,
@@ -1631,6 +1634,7 @@ describe("CoverExtractionSchedulerCore", () => {
     mode = "503";
     sleepCalls.length = 0;
     readAttempts = 0;
+    currentTime += 1_000;
     await scheduler.syncQueue();
     await vi.waitFor(() => {
       expect(readAttempts).toBe(4);

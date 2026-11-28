@@ -135,45 +135,52 @@ function bindAuthCallbacks(
   });
 }
 
+function createDisposedError(): DOMException {
+  return new DOMException(
+    "Coordinator session has been disposed",
+    "AbortError",
+  );
+}
+
 function createGuardedCoordinatorApi(
   rawApi: CoordinatorRemoteProxy,
   state: {
     readonly isDisposed: () => boolean;
     readonly getFatalError: () => ZipArchiveError | null;
-    readonly pendingRejects: Set<(error: ZipArchiveError) => void>;
+    readonly pendingRejects: Set<(error: unknown) => void>;
   },
 ): CoordinatorWorkerApi {
   const trackAsyncRpc = <T>(invoke: () => Promise<T>): Promise<T> => {
     if (state.isDisposed()) {
-      return invoke();
+      return Promise.reject(createDisposedError());
     }
     const fatalError = state.getFatalError();
     if (fatalError !== null) {
       return Promise.reject(fatalError);
     }
     return new Promise<T>((resolve, reject) => {
-      const rejectWithFatal = (error: ZipArchiveError) => {
-        state.pendingRejects.delete(rejectWithFatal);
+      const rejectPending = (error: unknown) => {
+        state.pendingRejects.delete(rejectPending);
         reject(error);
       };
-      state.pendingRejects.add(rejectWithFatal);
+      state.pendingRejects.add(rejectPending);
 
       let rpcPromise: Promise<T>;
       try {
         rpcPromise = invoke();
       } catch (syncError) {
-        state.pendingRejects.delete(rejectWithFatal);
+        state.pendingRejects.delete(rejectPending);
         reject(syncError);
         return;
       }
 
       rpcPromise.then(
         (value) => {
-          state.pendingRejects.delete(rejectWithFatal);
+          state.pendingRejects.delete(rejectPending);
           resolve(value);
         },
         (error) => {
-          state.pendingRejects.delete(rejectWithFatal);
+          state.pendingRejects.delete(rejectPending);
           reject(error);
         },
       );
@@ -181,7 +188,7 @@ function createGuardedCoordinatorApi(
   };
 
   const forwardSyncRpc = (invoke: () => void): void => {
-    if (state.getFatalError() !== null && !state.isDisposed()) {
+    if (state.isDisposed() || state.getFatalError() !== null) {
       return;
     }
     invoke();
@@ -220,7 +227,7 @@ export function createCoordinatorSession(
   const worker = (deps.createWorker ?? defaultCreateWorker)();
   let disposed = false;
   let fatalError: ZipArchiveError | null = null;
-  const pendingRejects = new Set<(error: ZipArchiveError) => void>();
+  const pendingRejects = new Set<(error: unknown) => void>();
 
   const cleanupListeners = subscribeWorkerFailure(worker, (event) => {
     if (disposed || fatalError !== null) {
@@ -280,6 +287,10 @@ export function createCoordinatorSession(
       disposed = true;
       cleanupListeners();
       unsubscribeAuthSession?.();
+      const disposedError = createDisposedError();
+      for (const rejectPending of [...pendingRejects]) {
+        rejectPending(disposedError);
+      }
       pendingRejects.clear();
       releaseAndTerminate(rawApi, worker);
     },

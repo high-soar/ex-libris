@@ -1,6 +1,7 @@
 import { ENGINE_BUDGETS } from "../constants";
 import type { ZipCompressionMethod } from "../types";
 import {
+  computeMaxDecompressedBytes,
   decompressZipSlice,
   type DecompressZipSliceDeps,
 } from "../zip/decompressSlice";
@@ -64,7 +65,12 @@ export class CoverResizeWorkerCore implements CoverResizeWorkerApi {
       const rawBytes = await decompressZipSlice(
         compressedData,
         compressionMethod,
-        this.decompressDeps,
+        {
+          ...this.decompressDeps,
+          maxUncompressedBytes: computeMaxDecompressedBytes(
+            options?.expectedUncompressedSize,
+          ),
+        },
       );
       const sourceBlob = new Blob([rawBytes as Uint8Array<ArrayBuffer>]);
       const bitmap = await this.decodeBitmap(sourceBlob);

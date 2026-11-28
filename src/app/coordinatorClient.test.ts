@@ -126,9 +126,9 @@ describe("coordinatorClient", () => {
     session.dispose();
 
     expect(terminateSpy).toHaveBeenCalledTimes(1);
-    expect(() => session.api.closeArchive()).toThrow(
-      "Proxy has been released and is not useable",
-    );
+    await expect(session.api.closeArchive()).rejects.toMatchObject({
+      name: "AbortError",
+    });
   });
 
   it("createWorker/wrapWorker/registerErrorHandlerのDI注入時およびreleaseProxy未定義・送出時も確実にterminateされること", () => {
@@ -357,12 +357,12 @@ describe("coordinatorClient", () => {
     resolvePendingClose();
     await Promise.resolve();
 
-    // dispose() 後の closeArchive() は既存通り同期フォワードされること
+    // dispose() 後の closeArchive() は AbortError で即時 reject されること
     session.dispose();
     expect(terminateSpy).toHaveBeenCalledTimes(1);
-    expect(() => session.api.closeArchive()).toThrow(
-      "Proxy has been released and is not useable",
-    );
+    await expect(session.api.closeArchive()).rejects.toMatchObject({
+      name: "AbortError",
+    });
   });
 
   it("messageerror発火・wrapWorker例外時のリスナー解除・不完全イベント詳細・重複発火および同期throwを安全に処理すること", async () => {
