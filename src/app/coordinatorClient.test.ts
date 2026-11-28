@@ -126,9 +126,9 @@ describe("coordinatorClient", () => {
     session.dispose();
 
     expect(terminateSpy).toHaveBeenCalledTimes(1);
-    expect(() => session.api.closeArchive()).toThrow(
-      "Proxy has been released and is not useable",
-    );
+    await expect(session.api.closeArchive()).rejects.toMatchObject({
+      name: "AbortError",
+    });
   });
 
   it("createWorker/wrapWorker/registerErrorHandlerのDI注入時およびreleaseProxy未定義・送出時も確実にterminateされること", () => {
@@ -357,12 +357,12 @@ describe("coordinatorClient", () => {
     resolvePendingClose();
     await Promise.resolve();
 
-    // dispose() 後の closeArchive() は既存通り同期フォワードされること
+    // dispose() 後の closeArchive() は AbortError で即時 reject されること
     session.dispose();
     expect(terminateSpy).toHaveBeenCalledTimes(1);
-    expect(() => session.api.closeArchive()).toThrow(
-      "Proxy has been released and is not useable",
-    );
+    await expect(session.api.closeArchive()).rejects.toMatchObject({
+      name: "AbortError",
+    });
   });
 
   it("messageerror発火・wrapWorker例外時のリスナー解除・不完全イベント詳細・重複発火および同期throwを安全に処理すること", async () => {
@@ -753,5 +753,61 @@ describe("coordinatorClient", () => {
       ]);
     });
     channelSession.dispose();
+  });
+
+  it("dispose時に保留中RPCをAbortErrorでrejectし、破棄後の新規非同期RPCも即時AbortErrorでrejectし同期RPCは無害化すること (R1-10)", async () => {
+    const rawApi: CoordinatorWorkerApi = {
+      openArchive: vi.fn(() => new Promise<OpenArchiveResult>(() => undefined)),
+      requestVisiblePages: vi.fn(
+        () => new Promise<DecodedPageFrame[]>(() => undefined),
+      ),
+      updateAccessToken: vi.fn(),
+      setHostCallbacks: vi.fn(),
+      cancelEpochBelow: vi.fn(),
+      closeArchive: vi.fn(() => new Promise<void>(() => undefined)),
+    };
+    const session = createCoordinatorSession({
+      registerErrorHandler: vi.fn(),
+      createWorker: () => ({
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        terminate: vi.fn(),
+      }),
+      wrapWorker: () => rawApi,
+    });
+
+    const pendingOpen = session.api.openArchive(
+      createDummyLocalSource(),
+      null,
+      1,
+    );
+    const pendingPages = session.api.requestVisiblePages([0], [], 1);
+
+    session.dispose();
+
+    await expect(pendingOpen).rejects.toMatchObject({ name: "AbortError" });
+    await expect(pendingPages).rejects.toMatchObject({ name: "AbortError" });
+
+    // 破棄後の新規非同期 RPC も即座に AbortError で reject
+    await expect(
+      session.api.openArchive(createDummyLocalSource(), null, 2),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    await expect(
+      session.api.requestVisiblePages([1], [], 2),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    await expect(session.api.closeArchive()).rejects.toMatchObject({
+      name: "AbortError",
+    });
+
+    // 破棄後の同期 RPC は rawApi を呼ばず無害化
+    session.api.updateAccessToken("token-after-dispose");
+    session.api.setHostCallbacks(null);
+    session.api.cancelEpochBelow(3);
+    expect(rawApi.openArchive).toHaveBeenCalledTimes(1);
+    expect(rawApi.requestVisiblePages).toHaveBeenCalledTimes(1);
+    expect(rawApi.closeArchive).not.toHaveBeenCalled();
+    expect(rawApi.updateAccessToken).not.toHaveBeenCalled();
+    expect(rawApi.setHostCallbacks).not.toHaveBeenCalled();
+    expect(rawApi.cancelEpochBelow).not.toHaveBeenCalled();
   });
 });

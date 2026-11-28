@@ -1,6 +1,11 @@
 import { deflateSync } from "fflate";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { decompressZipSlice } from "./decompressSlice";
+import {
+  DECOMPRESS_SIZE_MARGIN_BYTES,
+  MAX_DECOMPRESSED_PAGE_BYTES,
+  computeMaxDecompressedBytes,
+  decompressZipSlice,
+} from "./decompressSlice";
 
 describe("decompressZipSlice", () => {
   afterEach(() => {
@@ -58,5 +63,63 @@ describe("decompressZipSlice", () => {
     await expect(
       decompressZipSlice(corrupt, 8, { createDecompressionStream: null }),
     ).rejects.toThrow();
+  });
+
+  it("伸長サイズがmaxUncompressedBytesを超過した場合はStore/DecompressionStream/fflateいずれの経路でもDECODE_FAILEDを送出すること (R1-11)", async () => {
+    const raw = new Uint8Array(4096).fill(0x41);
+    const deflated = deflateSync(raw);
+
+    // 1. Store (0) 経路
+    await expect(
+      decompressZipSlice(raw, 0, { maxUncompressedBytes: 1024 }),
+    ).rejects.toMatchObject({
+      name: "ZipArchiveError",
+      code: "DECODE_FAILED",
+    });
+
+    // 2. DecompressionStream 経路（上限超過時に fflate フォールバックへ落とさず即時 DECODE_FAILED）
+    await expect(
+      decompressZipSlice(deflated, 8, {
+        createDecompressionStream: (format) => new DecompressionStream(format),
+        maxUncompressedBytes: 1024,
+      }),
+    ).rejects.toMatchObject({
+      name: "ZipArchiveError",
+      code: "DECODE_FAILED",
+    });
+
+    // 3. fflate フォールバック経路
+    await expect(
+      decompressZipSlice(deflated, 8, {
+        createDecompressionStream: null,
+        maxUncompressedBytes: 1024,
+      }),
+    ).rejects.toMatchObject({
+      name: "ZipArchiveError",
+      code: "DECODE_FAILED",
+    });
+
+    // 4. 上限ちょうどは正常通過すること
+    expect(
+      await decompressZipSlice(deflated, 8, {
+        createDecompressionStream: null,
+        maxUncompressedBytes: 4096,
+      }),
+    ).toEqual(raw);
+
+    // 5. computeMaxDecompressedBytes の未指定・異常値・正常値・絶対上限クランプ境界
+    expect(computeMaxDecompressedBytes(undefined)).toBe(
+      MAX_DECOMPRESSED_PAGE_BYTES,
+    );
+    expect(computeMaxDecompressedBytes(-1)).toBe(MAX_DECOMPRESSED_PAGE_BYTES);
+    expect(computeMaxDecompressedBytes(Number.NaN)).toBe(
+      MAX_DECOMPRESSED_PAGE_BYTES,
+    );
+    expect(computeMaxDecompressedBytes(2048)).toBe(
+      2048 + DECOMPRESS_SIZE_MARGIN_BYTES,
+    );
+    expect(computeMaxDecompressedBytes(MAX_DECOMPRESSED_PAGE_BYTES * 4)).toBe(
+      MAX_DECOMPRESSED_PAGE_BYTES,
+    );
   });
 });

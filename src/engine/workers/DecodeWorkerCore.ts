@@ -1,5 +1,6 @@
 import type { DecodeWorkerApi, ZipCompressionMethod } from "../types";
 import {
+  computeMaxDecompressedBytes,
   decompressZipSlice,
   type DecompressZipSliceDeps,
 } from "../zip/decompressSlice";
@@ -24,6 +25,7 @@ export class DecodeWorkerCore implements DecodeWorkerApi {
   async decodePageSlice(
     compressedData: Uint8Array,
     compressionMethod: ZipCompressionMethod,
+    expectedUncompressedSize?: number,
   ): Promise<{
     bitmap: ImageBitmap;
     width: number;
@@ -33,7 +35,12 @@ export class DecodeWorkerCore implements DecodeWorkerApi {
       const rawBytes = await decompressZipSlice(
         compressedData,
         compressionMethod,
-        this.decompressDeps,
+        {
+          ...this.decompressDeps,
+          maxUncompressedBytes: computeMaxDecompressedBytes(
+            expectedUncompressedSize,
+          ),
+        },
       );
       const blob = new Blob([rawBytes as Uint8Array<ArrayBuffer>]);
       const bitmap = await this.decodeBitmap(blob);

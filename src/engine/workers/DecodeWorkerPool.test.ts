@@ -33,13 +33,13 @@ describe("DecodeWorkerPool", () => {
 
     const slice = new Uint8Array([1, 2, 3]);
     await pool.decodePageSlice(slice, 0);
-    await pool.decodePageSlice(slice, 8);
+    await pool.decodePageSlice(slice, 8, 4096);
     await pool.decodePageSlice(slice, 0);
 
     expect(spy0).toHaveBeenCalledTimes(2);
     expect(spy1).toHaveBeenCalledTimes(1);
     expect(spy0).toHaveBeenCalledWith(slice, 0);
-    expect(spy1).toHaveBeenCalledWith(slice, 8);
+    expect(spy1).toHaveBeenCalledWith(slice, 8, 4096);
   });
 
   it("一方のWorkerが処理中の場合は空きWorkerを優先して割り当て最小負荷分散すること", async () => {

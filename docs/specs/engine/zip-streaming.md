@@ -3,7 +3,7 @@ type: spec-engine
 title: "ZIPストリーミング・I/O・Worker エンジン仕様書"
 description: "LocalFileReader、GoogleDriveRangeReader（HTTP Range・401 Single-Flight 1回透過リトライ・429/403 Rate Limit構造化メタデータ・200 OOM防御）、標準ZIP/ZIP64/CP932パーサー、80MB L2ByteCache LRU、10MB/64KB結合 AdaptivePrefetcher、Coordinator/Decode Worker構成、zipIndexCache 0RTT、HO-03所有権分離、およびrequestEpoch世代キャンセル制御の正本"
 status: "Review (#26)"
-updated: "2026-11-27"
+updated: "2026-11-28"
 tags:
   [
     engine,
@@ -70,7 +70,7 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 | `src/engine/io/GoogleDriveRangeReader.ts`   | Layer 1  | Google Drive `alt=media` エンドポイントに対して標準 `fetch`（HTTP `Range`）で範囲読込し、`401` 1回透過リトライ・`429`/`403` Rate Limit ＆ 未認証構造化メタデータ付与・部分要求時の `200 OK` OOM 遮断・マスク済み診断通知を行う `RandomAccessReader` 実装                                                                             |
 | `src/engine/zip/zipParser.ts`               | Layer 2  | 論理名 `ZipParserCore`（実装関数: `parseZipDirectory`, `readCompressedPageSlice`, `computeEntryFetchSpan`, `extractCompressedSliceFromBuffer`）。EOCD/CDH 解析、画像フィルタ・ゴミ除外、自然順ソート、LFH 可変長ヘッダスキップ＆2 RTT 補完、および 80MB 超ページのヘッダ先行独立抽出                                                 |
 | `src/engine/zip/zipIndexValidation.ts`      | Layer 2  | `zipIndexCache` 復元時および `CoordinatorCore.openArchive` 入口での `ZipPageEntry[]` 構造・境界検証純関数                                                                                                                                                                                                                            |
-| `src/engine/zip/decompressSlice.ts`         | Layer 2  | Store (`0`) / Deflate (`8`: `DecompressionStream('deflate-raw')` ＋ `fflate.inflateSync` フォールバック) の共通伸長純関数（`DecodeWorkerCore` および `CoverResizeWorkerCore` で共用）                                                                                                                                                |
+| `src/engine/zip/decompressSlice.ts`         | Layer 2  | Store (`0`) / Deflate (`8`: `DecompressionStream('deflate-raw')` ＋ `fflate.Inflate` ストリーミングフォールバック) の共通伸長純関数および `expectedUncompressedSize` 超過上限ガード（`DecodeWorkerCore` および `CoverResizeWorkerCore` で共用）                                                                                      |
 | `src/engine/zip/errors.ts`                  | Layer 2  | 型付きエンジンエラー（`ZipArchiveError`［オプショナル構造化メタデータ `httpStatus` / `isRateLimited` / `isUnauthorized` 対応］ / エラーコード列挙 / `isAbortError`）                                                                                                                                                                 |
 | `src/engine/cache/L2ByteCache.ts`           | Layer 2  | 80MB 上限（`L2_CACHE_MAX_BYTES`）の未デコード圧縮 `Uint8Array` LRU キャッシュ。単一 80MB 超表示ページのピン付き一時保持・表示外即時退避、独立 `Uint8Array` 正規化、および `markSharedBuffer` 自動付与                                                                                                                                |
 | `src/engine/prefetch/AdaptivePrefetcher.ts` | Layer 2  | 閲覧優先順 10MB 予算選抜（単一 10MB 超〜80MB 以下単独許容・80MB 超除外）＋物理オフセット昇順・ギャップ 64KB 以内・実 Range 長 10MB 以内の結合取得および L2 格納エンジン                                                                                                                                                              |
@@ -237,9 +237,10 @@ Worker グローバル（`self`）への直接依存を避けて Vitest によ�
 
 ### 4.3 `DecodeWorkerCore`（2 Worker プール）
 
-1. `decodePageSlice(compressedData, compressionMethod)`:
-   - `compressionMethod === 0`（Store）: `compressedData` をそのまま画像 Blob 化。
-   - `compressionMethod === 8`（Deflate）: `DecompressionStream("deflate-raw")` が利用可能であれば優先使用し、非対応環境（テスト JSDOM 等）や失敗時の互換フォールバックとして `fflate.inflateSync` を使用する。
+1. `decodePageSlice(compressedData, compressionMethod, expectedUncompressedSize?)`:
+   - `computeMaxDecompressedBytes(expectedUncompressedSize)` により伸長上限（`expectedUncompressedSize + 1KB` マージン、かつ絶対上限 `160 MiB`）を算出し、`decompressZipSlice` へ渡す。
+   - `compressionMethod === 0`（Store）: `compressedData.byteLength > maxBytes` の場合は `ZipArchiveError("DECODE_FAILED")` を送出し、範囲内であればそのまま画像 Blob 化する。
+   - `compressionMethod === 8`（Deflate）: `DecompressionStream("deflate-raw")` が利用可能であれば優先使用し、チャンク受信ごとに合計サイズを検証して `maxBytes` 超過時はストリームを即切断（`reader.cancel()`）して `ZipArchiveError("DECODE_FAILED")` を送出する（上限超過時はフォールバックへ落とさない）。非対応環境（テスト JSDOM 等）や実行失敗時は `fflate.Inflate` ストリーミング伸長へフォールバックし、同様にチャンク単位で `maxBytes` 超過を検知して即時 `DECODE_FAILED` で遮断する（Zip Bomb / Worker OOM 防止）。
    - 伸長済みバイト列から `new Blob([rawBytes])` を生成し、`createImageBitmap(blob)` でオフスレッドデコードを行う（失敗時は `ZipArchiveError("DECODE_FAILED")`）。
    - 返却値 `{ bitmap, width: bitmap.width, height: bitmap.height }`。Worker ラッパー側では `Comlink.transfer(result, [result.bitmap])` で所有権ごと親側へ Zero-Copy 転送する。
 

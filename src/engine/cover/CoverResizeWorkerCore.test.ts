@@ -240,5 +240,24 @@ describe("CoverResizeWorkerCore", () => {
     ).rejects.toMatchObject({
       code: "DECODE_FAILED",
     });
+
+    // 6. expectedUncompressedSize を超過する Zip Bomb 相当の圧縮データ
+    const bombPayload = new Uint8Array(16_384).fill(0x33);
+    const deflatedBomb = deflateSync(bombPayload);
+    const decodeSpy = vi.fn();
+    const coreBomb = new CoverResizeWorkerCore({
+      createImageBitmap: decodeSpy,
+      createOffscreenCanvas: vi.fn(),
+      createDecompressionStream: null,
+    });
+    await expect(
+      coreBomb.encodeCoverWebp(deflatedBomb, 8, {
+        expectedUncompressedSize: 512,
+      }),
+    ).rejects.toMatchObject({
+      name: "ZipArchiveError",
+      code: "DECODE_FAILED",
+    });
+    expect(decodeSpy).not.toHaveBeenCalled();
   });
 });

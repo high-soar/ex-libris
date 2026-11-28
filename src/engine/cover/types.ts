@@ -3,6 +3,7 @@ import type { ZipCompressionMethod } from "../types";
 export interface EncodeCoverWebpOptions {
   readonly maxLongEdgePx?: number;
   readonly webpQuality?: number;
+  readonly expectedUncompressedSize?: number;
 }
 
 export interface EncodeCoverWebpResult {
@@ -17,6 +18,12 @@ export interface CoverResizeWorkerApi {
     compressionMethod: ZipCompressionMethod,
     options?: EncodeCoverWebpOptions,
   ): Promise<EncodeCoverWebpResult>;
+}
+
+export interface CoverWorkerClientHandle {
+  readonly api: CoverResizeWorkerApi;
+  readonly isBroken: () => boolean;
+  readonly dispose: () => void;
 }
 
 export type CoverExtractionPauseReason =

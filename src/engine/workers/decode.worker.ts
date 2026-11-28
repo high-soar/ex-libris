@@ -11,10 +11,12 @@ const api: DecodeWorkerApi = {
   async decodePageSlice(
     compressedData: Uint8Array,
     compressionMethod: ZipCompressionMethod,
+    expectedUncompressedSize?: number,
   ) {
     const result = await core.decodePageSlice(
       compressedData,
       compressionMethod,
+      expectedUncompressedSize,
     );
     return Comlink.transfer(result, [result.bitmap]);
   },

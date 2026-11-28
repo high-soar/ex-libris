@@ -1,11 +1,11 @@
-import type { CoverWorkerClientHandle } from "../../app/coverWorkerClient";
 import type { GoogleAuthBridge } from "../../bridges/oauth/types";
 import { diagnosticLogger } from "../../diagnostics/diagnosticLogger";
 import type { DiagnosticLogger } from "../../diagnostics/types";
 import {
-  buildBookshelfSeriesItems,
-  sortBookshelfSeriesItems,
-} from "../../features/bookshelf/bookshelfViewModel";
+  resolveRepresentativeVolumeNonEmpty,
+  sortSeriesItems,
+  type SortableSeriesFields,
+} from "../../shared/bookshelf/seriesOrdering";
 import type { DriveSyncRootsRepository } from "../../storage/repositories/driveSyncRootsRepository";
 import type { SeriesRepository } from "../../storage/repositories/seriesRepository";
 import {
@@ -26,6 +26,7 @@ import type {
   CoverExtractionScheduler,
   CoverExtractionVolumeUpdateEvent,
   CoverViewportScreenKey,
+  CoverWorkerClientHandle,
   EncodeCoverWebpResult,
 } from "./types";
 
@@ -91,10 +92,28 @@ function formatErrorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isTransientNetworkError(error: unknown): boolean {
+  if (!(error instanceof ZipArchiveError) || error.code !== "READ_ERROR") {
+    return false;
+  }
+  if (error.isRateLimited === true || error.isUnauthorized === true) {
+    return false;
+  }
+  if (error.httpStatus === undefined) {
+    return true;
+  }
+  return error.httpStatus >= 500 && error.httpStatus < 600;
+}
+
 function prependUnique(queue: string[], volumeId: string): void {
   if (!queue.includes(volumeId)) {
     queue.unshift(volumeId);
   }
+}
+
+interface OrderedSeriesCoverEntry extends SortableSeriesFields {
+  readonly representativeVolume: VolumeRecord;
+  readonly sortedVolumes: readonly VolumeRecord[];
 }
 
 function buildPriorityOrder(
@@ -104,15 +123,6 @@ function buildPriorityOrder(
   readonly representativeIds: string[];
   readonly otherIds: string[];
 } {
-  const seriesItems = sortBookshelfSeriesItems(
-    buildBookshelfSeriesItems({
-      seriesList: activeSeries,
-      visibleVolumes,
-      progressByVolumeId: new Map(),
-    }),
-    "lastReadDesc",
-  );
-
   const volumesBySeries = new Map<string, VolumeRecord[]>();
   for (const volume of visibleVolumes) {
     const bucket = volumesBySeries.get(volume.seriesId);
@@ -122,6 +132,40 @@ function buildPriorityOrder(
       volumesBySeries.set(volume.seriesId, [volume]);
     }
   }
+
+  const unorderedEntries: OrderedSeriesCoverEntry[] = [];
+  for (const series of activeSeries) {
+    const seriesVolumes = volumesBySeries.get(series.id);
+    if (seriesVolumes === undefined) {
+      continue;
+    }
+    const sortedVolumes = [...seriesVolumes].sort(compareVolumesForDisplay) as [
+      VolumeRecord,
+      ...VolumeRecord[],
+    ];
+    let latestVolumeAddedAt = sortedVolumes[0].addedAt;
+    for (const volume of sortedVolumes) {
+      if (volume.addedAt > latestVolumeAddedAt) {
+        latestVolumeAddedAt = volume.addedAt;
+      }
+    }
+    unorderedEntries.push({
+      seriesId: series.id,
+      title: series.title,
+      titleReading: series.titleReading,
+      volumeCount: sortedVolumes.length,
+      lastReadAt: series.lastReadAt,
+      latestVolumeAddedAt,
+      seriesAddedAt: series.addedAt,
+      representativeVolume: resolveRepresentativeVolumeNonEmpty(
+        series,
+        sortedVolumes,
+      ),
+      sortedVolumes,
+    });
+  }
+
+  const seriesItems = sortSeriesItems(unorderedEntries, "lastReadDesc");
 
   const representativeIds: string[] = [];
   const otherIds: string[] = [];
@@ -136,8 +180,7 @@ function buildPriorityOrder(
   }
 
   for (const item of seriesItems) {
-    const seriesVolumes = volumesBySeries.get(item.seriesId)!;
-    for (const volume of seriesVolumes) {
+    for (const volume of item.sortedVolumes) {
       if (volume.coverStatus === "pending" && !placedIds.has(volume.id)) {
         otherIds.push(volume.id);
         placedIds.add(volume.id);
@@ -186,6 +229,8 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
   private backgroundRepQueue: string[] = [];
   private backgroundOtherQueue: string[] = [];
   private rateLimitAttempts = new Map<string, number>();
+  private transientErrorAttempts = 0;
+  private transientSuspended = false;
 
   private readyCount = 0;
   private pendingCount = 0;
@@ -250,12 +295,32 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
     return this.enabledRootIds.has(rootFolderId) && wasPending;
   }
 
+  private handlePersistenceFailure(
+    volumeId: string,
+    message: string,
+    saveError: unknown,
+  ): null {
+    if (this.disposed) {
+      return null;
+    }
+    this.logger.error("cover", message, formatErrorDetail(saveError));
+    this.rateLimitAttempts.delete(volumeId);
+    this.transientErrorAttempts = 0;
+    this.pendingVolumesById.delete(volumeId);
+    this.pendingCount = this.pendingVolumesById.size;
+    this.emitProgress();
+    return null;
+  }
+
   private computePhase(): CoverExtractionPhase {
     if (this.pauseReasons.size > 0) {
       return this.pendingCount > 0 ? "paused" : "idle";
     }
     if (this.phase === "backoff") {
       return "backoff";
+    }
+    if (this.transientSuspended) {
+      return "idle";
     }
     if (this.activeVolumeId !== null || this.hasQueuedWork()) {
       return "running";
@@ -352,6 +417,7 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
   private ensureLoopRunning(): void {
     if (
       this.disposed ||
+      this.transientSuspended ||
       this.pauseReasons.size > 0 ||
       this.loopPromise !== null ||
       !this.hasQueuedWork()
@@ -359,21 +425,30 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
       return;
     }
     const epoch = this.schedulerEpoch;
-    const promise = this.runLoop(epoch).finally(() => {
-      if (this.loopPromise === promise) {
-        this.loopPromise = null;
-      }
-      if (
-        !this.disposed &&
-        this.pauseReasons.size === 0 &&
-        this.hasQueuedWork()
-      ) {
-        this.ensureLoopRunning();
-      } else {
-        this.phase = "idle";
-        this.emitProgress();
-      }
-    });
+    const promise = this.runLoop(epoch)
+      .catch((error) => {
+        this.logger.error(
+          "cover",
+          "表紙抽出スケジューラループで予期しないエラーが発生しました",
+          formatErrorDetail(error),
+        );
+      })
+      .finally(() => {
+        if (this.loopPromise === promise) {
+          this.loopPromise = null;
+        }
+        if (
+          !this.disposed &&
+          !this.transientSuspended &&
+          this.pauseReasons.size === 0 &&
+          this.hasQueuedWork()
+        ) {
+          this.ensureLoopRunning();
+        } else {
+          this.phase = "idle";
+          this.emitProgress();
+        }
+      });
     this.loopPromise = promise;
   }
 
@@ -401,7 +476,7 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
   }
 
   private async runLoop(epoch: number): Promise<void> {
-    while (this.isEpochActive(epoch)) {
+    while (this.isEpochActive(epoch) && !this.transientSuspended) {
       if (this.viewportHighQueue.length === 0 && this.hasQueuedWork()) {
         const waitMs =
           this.lastNetworkCompletedAt === null
@@ -434,10 +509,17 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
       this.phase = "running";
       this.emitProgress();
 
-      const backoffMs = await this.processVolume(nextVolumeId, epoch);
+      let backoffMs: number | null;
+      try {
+        backoffMs = await this.processVolume(nextVolumeId, epoch);
+      } finally {
+        if (this.activeVolumeId === nextVolumeId) {
+          this.activeVolumeId = null;
+        }
+      }
 
-      if (this.activeVolumeId === nextVolumeId) {
-        this.activeVolumeId = null;
+      if (this.transientSuspended) {
+        break;
       }
 
       if (backoffMs !== null && this.isEpochActive(epoch)) {
@@ -480,6 +562,7 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
     const encoded = await workerClient.api.encodeCoverWebp(
       compressedSlice,
       targetEntry.compressionMethod,
+      { expectedUncompressedSize: targetEntry.uncompressedSize },
     );
     this.assertEpochActive(epoch, signal);
 
@@ -604,16 +687,26 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
         }
       }
 
-      const saved = await this.deps.volumesRepo.saveCoverReady({
-        volumeId: latest.id,
-        expectedMd5Checksum: latest.md5Checksum,
-        expectedFileSize: latest.fileSize,
-        coverBlob: encoded.blob,
-      });
+      let saved: VolumeRecord | null;
+      try {
+        saved = await this.deps.volumesRepo.saveCoverReady({
+          volumeId: latest.id,
+          expectedMd5Checksum: latest.md5Checksum,
+          expectedFileSize: latest.fileSize,
+          coverBlob: encoded.blob,
+        });
+      } catch (saveError) {
+        return this.handlePersistenceFailure(
+          volumeId,
+          `表紙WebPの保存に失敗したため当該セッションではスキップします: volumeId=${volumeId}`,
+          saveError,
+        );
+      }
       if (this.disposed) {
         return null;
       }
       this.rateLimitAttempts.delete(volumeId);
+      this.transientErrorAttempts = 0;
       const wasPending = this.pendingVolumesById.delete(volumeId);
       this.pendingCount = this.pendingVolumesById.size;
 
@@ -661,19 +754,51 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
         return null;
       }
 
+      if (isTransientNetworkError(error)) {
+        this.requeueFront(volumeId);
+        if (
+          this.transientErrorAttempts <
+          ENGINE_BUDGETS.COVER_RATE_LIMIT_MAX_RETRIES
+        ) {
+          const backoffMs =
+            ENGINE_BUDGETS.COVER_RATE_LIMIT_BASE_BACKOFF_MS *
+            2 ** this.transientErrorAttempts;
+          this.transientErrorAttempts += 1;
+          return backoffMs;
+        }
+        this.logger.warn(
+          "cover",
+          `一時的な通信障害が継続しているため表紙抽出を待機停止します（pending維持）: volumeId=${volumeId}`,
+          formatErrorDetail(error),
+        );
+        this.transientErrorAttempts = 0;
+        this.transientSuspended = true;
+        return null;
+      }
+
       this.logger.warn(
         "cover",
         `表紙抽出に失敗したためエラーとして確定します: volumeId=${volumeId}`,
         formatErrorDetail(error),
       );
       this.rateLimitAttempts.delete(volumeId);
+      this.transientErrorAttempts = 0;
 
       if (latest !== null) {
-        const saved = await this.deps.volumesRepo.saveCoverError({
-          volumeId: latest.id,
-          expectedMd5Checksum: latest.md5Checksum,
-          expectedFileSize: latest.fileSize,
-        });
+        let saved: VolumeRecord | null;
+        try {
+          saved = await this.deps.volumesRepo.saveCoverError({
+            volumeId: latest.id,
+            expectedMd5Checksum: latest.md5Checksum,
+            expectedFileSize: latest.fileSize,
+          });
+        } catch (saveError) {
+          return this.handlePersistenceFailure(
+            volumeId,
+            `表紙抽出エラー状態の保存に失敗しました: volumeId=${volumeId}`,
+            saveError,
+          );
+        }
         if (this.disposed) {
           return null;
         }
@@ -707,22 +832,36 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
       this.pauseReasons.delete("unauthenticated");
     }
 
-    const activeRoots = await this.deps.driveSyncRootsRepo.listActive();
-    const enabledRootIds = new Set(
-      activeRoots
-        .filter((root) => root.enabled === 1)
-        .map((root) => root.folderId),
-    );
-    const [visibleVolumes, activeSeries] = await Promise.all([
-      this.deps.volumesRepo.listVisibleByEnabledRoots(enabledRootIds),
-      this.deps.seriesRepo.listActive(),
-    ]);
+    let enabledRootIds: Set<string>;
+    let visibleVolumes: readonly VolumeRecord[];
+    let activeSeries: readonly SeriesRecord[];
+    try {
+      const activeRoots = await this.deps.driveSyncRootsRepo.listActive();
+      enabledRootIds = new Set(
+        activeRoots
+          .filter((root) => root.enabled === 1)
+          .map((root) => root.folderId),
+      );
+      [visibleVolumes, activeSeries] = await Promise.all([
+        this.deps.volumesRepo.listVisibleByEnabledRoots(enabledRootIds),
+        this.deps.seriesRepo.listActive(),
+      ]);
+    } catch (error) {
+      this.logger.error(
+        "cover",
+        "表紙抽出キューの同期に失敗しました",
+        formatErrorDetail(error),
+      );
+      return;
+    }
 
     if (this.disposed) {
       return;
     }
 
     this.enabledRootIds = enabledRootIds;
+    this.transientSuspended = false;
+    this.transientErrorAttempts = 0;
 
     let ready = 0;
     let error = 0;
@@ -828,6 +967,8 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
     if (!removed) {
       return;
     }
+    this.transientSuspended = false;
+    this.transientErrorAttempts = 0;
     this.emitProgress();
     this.ensureLoopRunning();
   }
@@ -838,16 +979,26 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
     if (this.disposed) {
       return 0;
     }
-    const activeRoots = await this.deps.driveSyncRootsRepo.listActive();
-    const enabledRootIds = new Set(
-      activeRoots
-        .filter((root) => root.enabled === 1)
-        .map((root) => root.folderId),
-    );
-    const resetVolumes = await this.deps.volumesRepo.resetErrorCoversToPending({
-      enabledRootIds,
-      seriesId: options?.seriesId,
-    });
+    let resetVolumes: readonly VolumeRecord[];
+    try {
+      const activeRoots = await this.deps.driveSyncRootsRepo.listActive();
+      const enabledRootIds = new Set(
+        activeRoots
+          .filter((root) => root.enabled === 1)
+          .map((root) => root.folderId),
+      );
+      resetVolumes = await this.deps.volumesRepo.resetErrorCoversToPending({
+        enabledRootIds,
+        seriesId: options?.seriesId,
+      });
+    } catch (error) {
+      this.logger.error(
+        "cover",
+        "エラー表紙の再試行リセットに失敗しました",
+        formatErrorDetail(error),
+      );
+      return 0;
+    }
 
     for (const volume of resetVolumes) {
       this.rateLimitAttempts.delete(volume.id);
@@ -906,6 +1057,8 @@ export class CoverExtractionSchedulerCore implements CoverExtractionScheduler {
     this.backgroundRepQueue = [];
     this.backgroundOtherQueue = [];
     this.rateLimitAttempts.clear();
+    this.transientErrorAttempts = 0;
+    this.transientSuspended = false;
     this.readyCount = 0;
     this.pendingCount = 0;
     this.errorCount = 0;

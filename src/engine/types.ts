@@ -134,6 +134,7 @@ export interface DecodeWorkerApi {
   decodePageSlice(
     compressedData: Uint8Array,
     compressionMethod: ZipCompressionMethod,
+    expectedUncompressedSize?: number,
   ): Promise<{
     bitmap: ImageBitmap;
     width: number;

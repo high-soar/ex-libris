@@ -1,10 +1,15 @@
 import * as Comlink from "comlink";
 import { diagnosticLogger } from "../diagnostics/diagnosticLogger";
 import type { DiagnosticLogger } from "../diagnostics/types";
-import type { CoverResizeWorkerApi } from "../engine/cover/types";
+import type {
+  CoverResizeWorkerApi,
+  CoverWorkerClientHandle,
+} from "../engine/cover/types";
 import { registerZipArchiveErrorTransferHandler } from "../engine/workers/comlinkErrorHandler";
 import { prepareDecodeTransfer } from "../engine/workers/coordinatorTransfer";
 import { ZipArchiveError } from "../engine/zip/errors";
+
+export type { CoverWorkerClientHandle };
 
 export interface CoverWorkerHandle {
   terminate(): void;
@@ -21,12 +26,6 @@ export interface CoverWorkerHandle {
 export type CoverWorkerRemoteProxy = CoverResizeWorkerApi & {
   [Comlink.releaseProxy]?: () => void;
 };
-
-export interface CoverWorkerClientHandle {
-  readonly api: CoverResizeWorkerApi;
-  readonly isBroken: () => boolean;
-  readonly dispose: () => void;
-}
 
 export interface CreateCoverWorkerClientDeps {
   readonly createWorker?: () => CoverWorkerHandle;
@@ -107,16 +106,31 @@ function releaseAndTerminate(
   }
 }
 
+function createDisposedError(): DOMException {
+  return new DOMException(
+    "Cover Worker client has been disposed",
+    "AbortError",
+  );
+}
+
 function createGuardedCoverApi(
   rawApi: CoverWorkerRemoteProxy,
   state: {
     readonly isDisposed: () => boolean;
     readonly getFatalError: () => ZipArchiveError | null;
-    readonly pendingRejects: Set<(error: ZipArchiveError) => void>;
+    readonly pendingRejects: Set<(error: unknown) => void>;
   },
 ): CoverResizeWorkerApi {
   return {
     encodeCoverWebp(compressedData, compressionMethod, options) {
+      if (state.isDisposed()) {
+        return Promise.reject(createDisposedError());
+      }
+      const fatalError = state.getFatalError();
+      if (fatalError !== null) {
+        return Promise.reject(fatalError);
+      }
+
       const prepared = prepareDecodeTransfer(compressedData);
       const invoke = () =>
         rawApi.encodeCoverWebp(
@@ -125,37 +139,29 @@ function createGuardedCoverApi(
           options,
         );
 
-      if (state.isDisposed()) {
-        return invoke();
-      }
-      const fatalError = state.getFatalError();
-      if (fatalError !== null) {
-        return Promise.reject(fatalError);
-      }
-
       return new Promise((resolve, reject) => {
-        const rejectWithFatal = (error: ZipArchiveError) => {
-          state.pendingRejects.delete(rejectWithFatal);
+        const rejectPending = (error: unknown) => {
+          state.pendingRejects.delete(rejectPending);
           reject(error);
         };
-        state.pendingRejects.add(rejectWithFatal);
+        state.pendingRejects.add(rejectPending);
 
         let rpcPromise: ReturnType<CoverResizeWorkerApi["encodeCoverWebp"]>;
         try {
           rpcPromise = invoke();
         } catch (syncError) {
-          state.pendingRejects.delete(rejectWithFatal);
+          state.pendingRejects.delete(rejectPending);
           reject(syncError);
           return;
         }
 
         rpcPromise.then(
           (value) => {
-            state.pendingRejects.delete(rejectWithFatal);
+            state.pendingRejects.delete(rejectPending);
             resolve(value);
           },
           (error) => {
-            state.pendingRejects.delete(rejectWithFatal);
+            state.pendingRejects.delete(rejectPending);
             reject(error);
           },
         );
@@ -175,7 +181,7 @@ export function createCoverWorkerClient(
   const worker = (deps.createWorker ?? defaultCreateWorker)();
   let disposed = false;
   let fatalError: ZipArchiveError | null = null;
-  const pendingRejects = new Set<(error: ZipArchiveError) => void>();
+  const pendingRejects = new Set<(error: unknown) => void>();
 
   const cleanupListeners = subscribeWorkerFailure(worker, (event) => {
     if (disposed || fatalError !== null) {
@@ -218,6 +224,10 @@ export function createCoverWorkerClient(
       }
       disposed = true;
       cleanupListeners();
+      const disposedError = createDisposedError();
+      for (const rejectPending of [...pendingRejects]) {
+        rejectPending(disposedError);
+      }
       pendingRejects.clear();
       releaseAndTerminate(rawApi, worker);
     },

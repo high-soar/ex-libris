@@ -132,4 +132,22 @@ describe("DecodeWorkerCore", () => {
       code: "DECODE_FAILED",
     });
   });
+
+  it("expectedUncompressedSizeを大幅に超過するZip Bomb相当の圧縮スライスをDECODE_FAILEDで遮断すること (R1-11)", async () => {
+    const bombPayload = new Uint8Array(16_384).fill(0x55);
+    const deflatedBomb = deflateSync(bombPayload);
+    const decodeSpy = vi.fn(async () => createFakeBitmap());
+    const core = new DecodeWorkerCore({
+      createImageBitmap: decodeSpy,
+      createDecompressionStream: null,
+    });
+
+    await expect(
+      core.decodePageSlice(deflatedBomb, 8, 512),
+    ).rejects.toMatchObject({
+      name: "ZipArchiveError",
+      code: "DECODE_FAILED",
+    });
+    expect(decodeSpy).not.toHaveBeenCalled();
+  });
 });
