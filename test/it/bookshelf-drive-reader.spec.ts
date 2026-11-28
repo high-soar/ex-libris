@@ -439,6 +439,118 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
       "全 3 作品 / 6 冊",
     );
 
+    // R1-25 (AC-ST-08): 手動同期失敗時の role="alert" 表示（SCR-04 drive-sync-error および SCR-01 bookshelf-sync-error 双方）
+    await page.getByTestId("header-settings-button").click();
+    await expect(page).toHaveURL(/\/settings$/);
+
+    await page.evaluate(() => {
+      window.__exLibrisServices?.mockDriveSyncClient?.setInjectedError(
+        new Error("Mock Drive 503 Unavailable"),
+      );
+    });
+    await page.getByTestId("settings-sync-incremental-button").click();
+    await expect(page.getByTestId("settings-sync-status-badge")).toHaveText(
+      "同期エラー",
+    );
+    const settingsSyncError = page.getByTestId("drive-sync-error");
+    await expect(settingsSyncError).toBeVisible();
+    await expect(settingsSyncError).toHaveAttribute("role", "alert");
+    await expect(settingsSyncError).toContainText(
+      "Google Drive 同期中に予期しないエラーが発生しました",
+    );
+
+    // TR-09 で SCR-01 へ戻ると共有 driveSyncStateStore のエラー通知 (bookshelf-sync-error) が role="alert" で表示されること
+    await page.getByTestId("settings-back-button").click();
+    await expect(page).toHaveURL(/\/$/);
+    const bookshelfSyncError = page.getByTestId("bookshelf-sync-error");
+    await expect(bookshelfSyncError).toBeVisible();
+    await expect(bookshelfSyncError).toHaveAttribute("role", "alert");
+    await expect(bookshelfSyncError).toContainText(
+      "Google Drive 同期中に予期しないエラーが発生しました",
+    );
+
+    // SCR-01 ヘッダー「同期」ボタンからの手動同期失敗でも role="alert" が維持されること
+    await page.getByTestId("header-sync-drive-button").click();
+    await expect(bookshelfSyncError).toBeVisible();
+    await expect(bookshelfSyncError).toHaveAttribute("role", "alert");
+
+    // エラー注入を解除し、SCR-04 で同期実行中の排他 disabled（ログアウト・ルート変更抑止）＆ TR-09 帰還後の継続完了を検証
+    await page.getByTestId("header-settings-button").click();
+    await expect(page).toHaveURL(/\/settings$/);
+
+    await page.evaluate(() => {
+      const client = window.__exLibrisServices?.mockDriveSyncClient;
+      if (!client) {
+        throw new Error("mockDriveSyncClient is not available");
+      }
+      client.setInjectedError(null);
+      client.upsertItem({
+        id: "mock-file-akira-vol2",
+        name: "[大友克洋] AKIRA 第02巻.cbz",
+        mimeType: "application/octet-stream",
+        parents: ["mock-folder-scifi"],
+        size: 13_500_000,
+        md5Checksum: "md5-akira-02",
+        modifiedTime: Date.parse("2026-11-25T10:10:00.000Z"),
+        trashed: false,
+      });
+
+      const originalListChanges = client.listChanges.bind(client);
+      let releaseGate: (() => void) | null = null;
+      const gatePromise = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+      (
+        window as unknown as {
+          __releaseMockSyncGate?: () => void;
+        }
+      ).__releaseMockSyncGate = () => {
+        releaseGate?.();
+      };
+      client.listChanges = async (pageToken, options) => {
+        await gatePromise;
+        client.listChanges = originalListChanges;
+        return originalListChanges(pageToken, options);
+      };
+    });
+
+    await page.getByTestId("settings-sync-incremental-button").click();
+    await expect(page.getByTestId("settings-sync-status-badge")).toHaveText(
+      "同期中",
+    );
+
+    // 同期実行中の排他保護: ログアウトおよびルート変更操作がすべて disabled になること
+    await expect(page.getByTestId("google-signout-button")).toBeDisabled();
+    await expect(page.getByTestId("open-folder-picker-button")).toBeDisabled();
+    await expect(page.getByTestId("folder-input")).toBeDisabled();
+    await expect(page.getByTestId("add-folder-by-input-button")).toBeDisabled();
+    await expect(
+      page.getByTestId("toggle-sync-root-button").first(),
+    ).toBeDisabled();
+    await expect(
+      page.getByTestId("remove-sync-root-button").first(),
+    ).toBeDisabled();
+
+    // 同期中も TR-09 はブロックされず SCR-01 へ戻れ、共有ストア経由で同期継続・完了すること
+    await expect(page.getByTestId("settings-back-button")).toBeEnabled();
+    await page.getByTestId("settings-back-button").click();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByTestId("header-sync-drive-button")).toBeDisabled();
+
+    await page.evaluate(() => {
+      (
+        window as unknown as {
+          __releaseMockSyncGate?: () => void;
+        }
+      ).__releaseMockSyncGate?.();
+    });
+
+    await expect(page.getByTestId("bookshelf-series-count")).toHaveText(
+      "全 3 作品 / 7 冊",
+    );
+    await expect(page.getByTestId("header-sync-drive-button")).toBeEnabled();
+    await expect(page.getByTestId("bookshelf-sync-error")).toHaveCount(0);
+
     expect(pageErrors).toEqual([]);
   });
 
@@ -740,19 +852,24 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
     expect(page1Pixel.g).toBeGreaterThan(200);
     expect(page1Pixel.b).toBeLessThan(30);
 
-    const vol1Id = await page.evaluate(async () => {
+    const { vol1Id, onePieceSeriesId } = await page.evaluate(async () => {
       const vol =
         await window.__exLibrisServices?.volumesRepo?.getByDriveFileId(
           "mock-file-vol1",
         );
-      return vol?.id ?? "";
+      return {
+        vol1Id: vol?.id ?? "",
+        onePieceSeriesId: vol?.seriesId ?? "",
+      };
     });
     expect(vol1Id).not.toBe("");
+    expect(onePieceSeriesId).not.toBe("");
 
-    await page.getByTestId("reader-back-button").click();
+    // R1-24: /read/volume/:volumeId からのブラウザ page.goBack() (popstate) で vol:* 進捗・series.lastReadAt が保存され、
+    // SCR-01 のソート順・先頭反映・進捗バッジ・スクロール位置が復元されること
+    const volumeReaderUrl = page.url();
+    await page.goBack();
     await expect(page).toHaveURL(/\/$/);
-
-    // TR-08 復帰: ONE PIECE が lastReadDesc の先頭へ移動し、進捗＆スクロール位置が復元されること
     await expect(sortSelect).toHaveValue("lastReadDesc");
     await expect
       .poll(async () => (await getSeriesCardTitles(page))[0])
@@ -763,6 +880,51 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
     await expect
       .poll(() => page.evaluate(() => Math.round(window.scrollY)))
       .toBe(scrollBeforeQuickRead);
+
+    const progressAfterGoBack = await readReadingProgressRecord(
+      page,
+      `vol:${vol1Id}`,
+    );
+    expect(progressAfterGoBack?.currentPageIndex).toBe(1);
+    expect(progressAfterGoBack?.totalPageCount).toBe(3);
+
+    const lastReadAtAfterGoBack = await page.evaluate(async (seriesId) => {
+      const series =
+        await window.__exLibrisServices?.seriesRepo?.getById(seriesId);
+      return series?.lastReadAt ?? null;
+    }, onePieceSeriesId);
+    expect(lastReadAtAfterGoBack).not.toBeNull();
+
+    // page.goForward() でリーダーが保存位置 (index 1) から安全に再表示されること
+    await page.goForward();
+    await expect(page).toHaveURL(volumeReaderUrl);
+    await expect(canvas).toHaveAttribute("data-webgl-status", "ready", {
+      timeout: 15_000,
+    });
+    await expect(canvas).toHaveAttribute("data-rendered-page", "1");
+    const forwardResumedPixel = readPngCenterPixel(await canvas.screenshot());
+    expect(forwardResumedPixel.r).toBeLessThan(30);
+    expect(forwardResumedPixel.g).toBeGreaterThan(200);
+    expect(forwardResumedPixel.b).toBeLessThan(30);
+
+    // HUD を開いて「戻る」ボタンで TR-08 (SCR-01) へ復帰
+    const boxAfterForward = await canvas.boundingBox();
+    expect(boxAfterForward).not.toBeNull();
+    await page.mouse.click(
+      boxAfterForward!.x + boxAfterForward!.width / 2,
+      boxAfterForward!.y + boxAfterForward!.height / 2,
+    );
+    await page.getByTestId("reader-back-button").click();
+    await expect(page).toHaveURL(/\/$/);
+
+    // TR-08 復帰後も ONE PIECE 先頭・進捗・DB レコードが維持されていること
+    await expect(sortSelect).toHaveValue("lastReadDesc");
+    await expect
+      .poll(async () => (await getSeriesCardTitles(page))[0])
+      .toBe("ONE PIECE");
+    await expect(
+      page.getByTestId("series-card").first().getByTestId("series-read-status"),
+    ).toHaveText("読書中 (0/2)");
 
     const savedProgress = await readReadingProgressRecord(
       page,
@@ -841,11 +1003,12 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
     await expect(page.getByTestId("volume-omnibus-badge")).toHaveCount(1);
     await expect(page.getByTestId("volume-omnibus-badge")).toHaveText("合本");
 
-    // 1回目オープン (TR-04): 第01巻を開き p.2 (index 1: 緑) へ進めて TR-07 で戻る
+    // 1回目オープン (TR-04): 第01巻を開き初回 TTFP (fromIndexCache=false) を計測し、p.2 (index 1: 緑) へ進めて TR-07 で戻る
     const vol1Row = page
       .getByTestId("series-volume-item")
       .filter({ hasText: "第01巻" })
       .first();
+    const firstOpenStartMs = performance.now();
     await vol1Row.getByTestId("open-volume-reader-button").click();
     await expect(page).toHaveURL(/\/read\/volume\/.+/);
 
@@ -854,6 +1017,11 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
       timeout: 15_000,
     });
     await expect(canvas).toHaveAttribute("data-rendered-page", "0");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    const firstTtfpMs = performance.now() - firstOpenStartMs;
+    expect(firstTtfpMs).toBeGreaterThanOrEqual(0);
+    expect(firstTtfpMs).toBeLessThan(5_000);
+
     await page.keyboard.press("ArrowLeft");
     await expect(canvas).toHaveAttribute("data-rendered-page", "1");
 
@@ -874,7 +1042,7 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
     );
     await expect(vol1Row.getByTestId("volume-progress-bar")).toBeVisible();
 
-    // SCR-02 をスクロールしてから 2 回目の TR-04 巻選択を実行（0RTT + 自動レジューム + スクロール復元）
+    // SCR-02 をスクロールしてから 2 回目の TR-04 巻選択を実行（0RTT + TTFP 計測 + 自動レジューム + スクロール復元）
     await expect
       .poll(() =>
         page.evaluate(
@@ -888,6 +1056,7 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
       .toBe(140);
 
     routeController.clearRequests();
+    const secondOpenStartMs = performance.now();
     await vol1Row.getByTestId("open-volume-reader-button").click();
     await expect(page).toHaveURL(/\/read\/volume\/.+/);
 
@@ -896,6 +1065,15 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
     });
     // 前回ページ (index 1: 緑) へ自動レジューム
     await expect(canvas).toHaveAttribute("data-rendered-page", "1");
+    await expect(page.getByTestId("reader-loading")).toBeHidden();
+    const secondTtfpMs = performance.now() - secondOpenStartMs;
+    expect(secondTtfpMs).toBeGreaterThanOrEqual(0);
+    expect(secondTtfpMs).toBeLessThan(5_000);
+    test.info().annotations.push({
+      type: "drive-ttfp-ms",
+      description: `first=${firstTtfpMs.toFixed(1)}ms, second(0RTT)=${secondTtfpMs.toFixed(1)}ms`,
+    });
+
     const resumedPixel = readPngCenterPixel(await canvas.screenshot());
     expect(resumedPixel.r).toBeLessThan(30);
     expect(resumedPixel.g).toBeGreaterThan(200);
@@ -925,8 +1103,15 @@ test.describe("SCN-05: 仮想本棚・シリーズ詳細・Drive巻リーダー�
       .toBe(0);
     await page.getByTestId("copy-diagnostics-button").click();
     const diagText = await page.evaluate(() => navigator.clipboard.readText());
-    expect(diagText).toContain(
-      `目次キャッシュからアーカイブを開きました (0RTT) | ${cacheKey} (pages=3, fromIndexCache=true)`,
+    expect(diagText).toMatch(
+      new RegExp(
+        `\\[\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z\\] \\[INFO\\] \\[reader\\] Central Directory解析でアーカイブを開きました \\| ${cacheKey} \\(pages=3, fromIndexCache=false\\)`,
+      ),
+    );
+    expect(diagText).toMatch(
+      new RegExp(
+        `\\[\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z\\] \\[INFO\\] \\[reader\\] 目次キャッシュからアーカイブを開きました \\(0RTT\\) \\| ${cacheKey} \\(pages=3, fromIndexCache=true\\)`,
+      ),
     );
 
     expect(pageErrors).toEqual([]);
