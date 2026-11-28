@@ -86,7 +86,7 @@ erDiagram
 |  6  | **`volumes`**           | `"id, seriesId, [seriesId+volumeNumber], &driveFileId, rootFolderId, md5Checksum, coverStatus, isTrashed, addedAt, updatedAt"` |     `v0.2`     | **メタ設定のみ同期対象**（`coverBlob` バイナリは各端末抽出） |
 |  7  | **`collections`**       | `"id, kind, sortOrder, updatedAt, deletedAt"`                                                                                  |     `v0.3`     |                     **同期対象（LWW）**                      |
 |  8  | **`seriesCollections`** | `"id, collectionId, seriesId, updatedAt, deletedAt"`                                                                           |     `v0.3`     |                     **同期対象（LWW）**                      |
-|  9  | **`bookmarks`**         | `"id, volumeId, [volumeId+pageIndex], updatedAt, deletedAt"`                                                                   |     `v0.4`     |                     **同期対象（LWW）**                      |
+|  9  | **`bookmarks`**         | `"id, volumeId, [volumeId+pageIndex], updatedAt, deletedAt"`                                                                   |     `v0.5`     |                     **同期対象（LWW）**                      |
 
 ---
 
@@ -100,7 +100,7 @@ erDiagram
 | `value`  | `string` |    -    | JSON 文字列またはトークン文字列                                                                                                                          |
 
 - **`'defaultReaderSettingsJson'` 保存・正規化契約（`ReaderSettingsRepository` / `v0.1`〜）**:
-  - 保存形式は `{ version: 1, shader: ShaderCorrectionParams }` の JSON 文字列とする（将来の `v0.4` 拡張を見据えたバージョン付き構造）。
+  - 保存形式は `{ version: 1, shader: ShaderCorrectionParams }` の JSON 文字列とする（将来の `v0.5` 拡張を見据えたバージョン付き構造）。
   - 取得時に未保存の場合は `DEFAULT_SHADER_CORRECTION_PARAMS`（`{ sharpness: 0, whitePoint: 1, blackPoint: 0, gamma: 1 }`）を返す。JSON パース失敗、ルート値が非プレーンオブジェクト（`null`・プリミティブ・配列）、または自前の `shader` プロパティ（`Object.prototype.hasOwnProperty.call` 判定）が存在するのに非プレーンオブジェクト（`null`・プリミティブ・配列）である場合は、破損レコードとして `syncMeta` から該当キーを削除して初期値へフォールバックし、プレーンオブジェクト内の部分欠落・範囲外数値は `normalizeShaderCorrectionParams` で許容範囲へクランプ・正規化する。
 - **Google Drive 同期メタ契約（`DriveSyncMetaRepository` / `src/storage/repositories/driveSyncMetaRepository.ts` / `v0.2 [2/4]`〜）**:
   - `'driveStartPageToken'`: 非空トークン文字列（未保存・空白のみの場合は `null`）。
@@ -182,7 +182,7 @@ erDiagram
 | `externalIds`            | `{ ndlId?: string; anilistId?: string; googleBooksId?: string }` |      -      | 紐付け済み公開書誌データソース識別子                                              |
 | `metadataLocked`         | `boolean`                                                        |      -      | 手動編集保護ロック（`true` の場合は自動書誌上書きを抑止）                         |
 | `representativeVolumeId` | `string \| null`                                                 |      -      | シリーズカードの代表表紙に使用する `volumes.id`（`null` 時は最小巻）              |
-| `readerPresetJson`       | `string \| null`                                                 |      -      | 作品別 WebGL2 画質補正・読み方向・オートクロップ設定 JSON（`v0.4`〜）             |
+| `readerPresetJson`       | `string \| null`                                                 |      -      | 作品別 WebGL2 画質補正・読み方向・オートクロップ設定 JSON（`v0.5`〜）             |
 | `lastReadAt`             | `number \| null`                                                 |     Yes     | 所属巻の最新読書日時（本棚「最近読んだ順」高速ソート用）                          |
 | `addedAt`                | `number`                                                         |     Yes     | 初回取り込み日時（UNIX ms）                                                       |
 | `updatedAt`              | `number`                                                         |     Yes     | **ユーザー論理更新日時（UNIX ms、LWW 同期用）**                                   |
@@ -210,8 +210,8 @@ erDiagram
 | `driveModifiedTime` | `number`                                          |        -         | Drive 側のファイル更新時刻（UNIX ms）                                    |
 | `coverBlob`         | `Blob \| null`                                    |        -         | 長辺約 350px の軽量表紙 WebP（約 15〜25KB/冊、端末ローカル保持）         |
 | `coverStatus`       | `'pending' \| 'ready' \| 'error'`                 |       Yes        | 表紙抽出キュー状態                                                       |
-| `coverCropMode`     | `'auto' \| 'full' \| 'left-half' \| 'right-half'` |        -         | 見開きカバー半裁クロップ指定（`v0.4`〜）                                 |
-| `coverPageIndex`    | `number`                                          |        -         | 表紙に採用する論理ページ番号（デフォルト `0`、`v0.4`〜変更対応）         |
+| `coverCropMode`     | `'auto' \| 'full' \| 'left-half' \| 'right-half'` |        -         | 見開きカバー半裁クロップ指定（`v0.5`〜）                                 |
+| `coverPageIndex`    | `number`                                          |        -         | 表紙に採用する論理ページ番号（デフォルト `0`、`v0.5`〜変更対応）         |
 | `coverUpdatedAt`    | `number \| null`                                  |        -         | 表紙抽出完了日時（内部管理用・`updatedAt` とは分離）                     |
 | `isTrashed`         | `0 \| 1`                                          |       Yes        | Drive 側ゴミ箱移動・削除・または対象ルートフォルダ外移動の検知フラグ     |
 | `addedAt`           | `number`                                          |       Yes        | 初回同期取り込み日時（UNIX ms）                                          |
@@ -227,13 +227,13 @@ erDiagram
     - `saveCoverError({ volumeId, expectedMd5Checksum, expectedFileSize, coverUpdatedAt? })`: 上記と同一の整合ガードの下で `{ ...existing, coverBlob: null, coverStatus: "error", coverUpdatedAt: coverUpdatedAt ?? now }` を保存して更新後レコードを返す（条件不一致時は `null`、**`existing.updatedAt` は一切更新しない**）。
     - `resetErrorCoversToPending({ enabledRootIds, seriesId? })`: 単一 `rw` トランザクション内で `isTrashed === 0 && enabledRootIds.has(rootFolderId) && coverStatus === "error"`（`seriesId` 指定時は `record.seriesId === seriesId` も満たす）の有効レコードを抽出し、`{ ...record, coverBlob: null, coverStatus: "pending", coverUpdatedAt: null }` へ一括更新（**`record.updatedAt` は一切更新しない**）して表示順ソート済み配列を返却する。
 
-### 3.7 `collections` / `seriesCollections` / `bookmarks`（`v0.3`〜`v0.4`）
+### 3.7 `collections` / `seriesCollections` / `bookmarks`（`v0.3`〜`v0.5`）
 
 - **`collections`（カスタム棚・スマートコレクション定義 / `v0.3`〜）**:
   - `id` (PK), `name`, `kind` (`'manual' | 'smart'`), `smartFilterJson` (`string | null`), `sortOrder` (Indexed), `createdAt`, `updatedAt` (Indexed), `deletedAt` (Indexed)
 - **`seriesCollections`（手動コレクションとシリーズの多対多中間テーブル / `v0.3`〜）**:
   - `id` (PK: `${collectionId}:${seriesId}`), `collectionId` (Indexed), `seriesId` (Indexed), `addedAt`, `updatedAt` (Indexed), `deletedAt` (Indexed)
-- **`bookmarks`（一言メモ付きページしおり / `v0.4`〜）**:
+- **`bookmarks`（一言メモ付きページしおり / `v0.5`〜）**:
   - `id` (PK: UUID v4), `volumeId` (Indexed), `pageIndex` (`[volumeId+pageIndex]` 複合インデックス), `note` (`string`), `createdAt`, `updatedAt` (Indexed), `deletedAt` (Indexed)
 
 ---
@@ -243,7 +243,7 @@ erDiagram
 1. **段階的テーブル有効化ルール**:
    - `Phase 1` 時点では `version(1)`（`syncMeta`）が稼働中。
    - `v0.1` で `version(2)`（`zipIndexCache`, `readingProgress`）を先行定義し、`#19` で `ZipIndexCacheRepository` による `zipIndexCache` 読み書き・LRU 整理を有効化し、`#22` で `readingProgress` の Repository / UI 利用を有効化する。
-   - `v0.2` では第 1 弾の `#23` で `version(3)`（`driveSyncRoots`, `series`, `volumes`）の 3 テーブル定義を先行確定させて `DriveSyncRootsRepository`（および `SCR-04` ルートフォルダ管理 UI）を有効化し、続く `#24` で `series` / `volumes` の Repository および Drive スキャン・差分同期を有効化する。以降、`v0.3` で `version(4)`（`collections`, `seriesCollections`）、`v0.4` で `version(5)`（`bookmarks`）を加算的に定義する。
+   - `v0.2` では第 1 弾の `#23` で `version(3)`（`driveSyncRoots`, `series`, `volumes`）の 3 テーブル定義を先行確定させて `DriveSyncRootsRepository`（および `SCR-04` ルートフォルダ管理 UI）を有効化し、続く `#24` で `series` / `volumes` の Repository および Drive スキャン・差分同期を有効化する。以降、`v0.3` で `version(4)`（`collections`, `seriesCollections`、および `driveSyncRoots` の書誌連携設定拡張）、`v0.4` で `driveSyncRoots` の館表示メタ拡張（必要に応じて）、`v0.5` で `version(5)`（`bookmarks`）を加算的に定義する。
 2. **`resetTestDb()` の不変契約**:
    - `resetTestDb(targetDb = db)` は、その時点で `ExLibrisDatabase` に定義されている **`targetDb.tables` 全件に対して `table.clear()` をトランザクションまたは並列で実行** し、テスト間の状態汚染を完全にゼロにする。
    - `ServiceProvider` による `window.__exLibrisServices` テスト用フック（`resetTestDb`・`coverExtractionScheduler`・`setTestCoverExtractionAutoRun` 等）の公開は `!Capacitor.isNativePlatform() && (import.meta.env.DEV || import.meta.env.MODE === "test" || navigator.webdriver === true)`（`shouldExposeResetTestDb`）を満たす開発・テスト・E2E（WebDriver）環境のみに限定し（`resetTestDb` ではモックアダプタ・`sessionStorage` テストフラグ初期化に加えて `await coverExtractionScheduler.resetForTest()`［WebDriver 環境では既定の `pause("test-harness")` も再適用］・`resetCoverExtractionState()`・`resetBookshelfUiState()`・`resetDriveSyncState()` を同時実行して進行中バックグラウンドジョブとオンメモリ UI/同期/表紙状態を完全初期化する）、Android ネイティブ実機および通常の本番ブラウザ環境ではプロパティを省略（`undefined`）して誤削除・テスト制御経路を公開しない。

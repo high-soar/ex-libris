@@ -60,7 +60,7 @@ related_tests:
 本ドキュメントは、ExLibris のシリーズ詳細・巻一覧画面 **`SCR-02`（ルートパス `/series/:seriesId`）** に関する機能仕様・UI コンポーネント構成・画面遷移（`TR-01` / `TR-04` / `TR-05` / `TR-07`）・スクロール位置復元・受け入れ条件（`AC-SD-xx`）の正本（Single Source of Truth）です。
 
 > [!NOTE]
-> `v0.2`（`Issue #25`・`#26`）ではローカル IndexedDB（`series` / `volumes` / `readingProgress` / `driveSyncRoots`）完結の作品サマリ・巻一覧・`SCR-03` リーダー起動に加え、`IntersectionObserver` による収録巻の表紙 WebP 即時優先抽出とインプレース差分反映・シリーズ内エラー巻の再試行導線を備えます。公開書誌 API（NDL / AniList / Google Books）による書誌再検索・手動編集・ロックモーダルは `v0.3`、作品別画質/綴じ方向プリセットおよび表紙半裁クロップ・表紙ページ番号変更は `v0.4` で拡張します。
+> `v0.2`（`Issue #25`・`#26`）ではローカル IndexedDB（`series` / `volumes` / `readingProgress` / `driveSyncRoots`）完結の作品サマリ・巻一覧・`SCR-03` リーダー起動に加え、`IntersectionObserver` による収録巻の表紙 WebP 即時優先抽出とインプレース差分反映・シリーズ内エラー巻の再試行導線を備えます。公開書誌 API（NDL / AniList / Google Books）による書誌再検索・手動編集・ロックモーダルは `v0.3`、作品別画質/綴じ方向プリセットおよび表紙半裁クロップ・表紙ページ番号変更は `v0.5` で拡張します。
 
 ---
 
