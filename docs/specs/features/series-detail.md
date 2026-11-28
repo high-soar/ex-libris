@@ -2,7 +2,7 @@
 type: spec-feature
 title: "シリーズ詳細・巻一覧画面仕様書（SCR-02: Series Detail）"
 description: "SCR-02（/series/:seriesId）の作品サマリ、続きを読むクイック起動、単巻＋合本混在の所属有効巻一覧・進捗バー、ビューポート優先表紙抽出連携・エラー再試行導線、未存在/0件エンプティ案内、およびTR-01/TR-04/TR-05/TR-07・スクロール復元・優先度4戻る制御の正本"
-status: "Review (#26)"
+status: "Approved"
 updated: "2026-11-28"
 tags:
   [

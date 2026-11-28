@@ -3,7 +3,7 @@ type: guideline
 title: "開発プロセス・ワークフロー標準（SSOT）"
 description: "ハイブリッド進行モデル、Issue駆動マイクロ・ウォーターフォール、Android実機検証の実施判断・試験項目提示ルール、OKFステータス管理、Task Completion Gate 7条件（中間PR自律マージ＆エスカレーション規律）、およびミニMilestone運用（Step 3での品質分析・アーカイブ統合）の正本。"
 status: "Approved"
-updated: "2026-11-21"
+updated: "2026-11-28"
 tags:
   [
     workflow,
@@ -76,7 +76,7 @@ flowchart LR
 4. **Step 4: IT（結合テスト・全体回帰保証）・実機検証（対象時）・申し送り精算・差分仕様のアーカイブ【👤 人間承認・マージ】**:
    - Playwright 実ブラウザ結合テスト（`SCN-01`〜）を最新仕様に合わせて更新・追加し、過去機能を含め全シナリオ 100% PASS を確認する（小規模改修では MK PR に同梱可）。
    - `docs/quality/bug-and-handover-log.md` のバグ記録および該当 Issue の申し送り事項（`HO-xx`）がすべて消化（または Milestone 完了前ゲート分として明確に引き継ぎ）されていることを確認する。
-   - 親 Issue を完了させる最終 PR（`Closes #親Issue番号`）において、完了した差分仕様ファイルの YAML フロントマター `status` を `"Completed (Archived)"` に更新した上で **`docs/specs/changes/archive/issue-XX-<slug>.md` へ移動（`git mv`）** し、`changes/` 直下には進行中の差分仕様のみが存在する状態を保つ。
+   - 親 Issue を完了させる最終 PR（`Closes #親Issue番号`）において、完了した差分仕様ファイルの YAML フロントマター `status` を `"Completed (Archived)"` に更新した上で **`docs/specs/changes/archive/issue-XX-<slug>.md` へ移動（`git mv`）** し、`changes/` 直下には進行中の差分仕様のみが存在する状態を保つ。また前段 PR 由来の記録行・アーカイブ済みパスおよび Step 4 PR 自体で追記した記録行は、次続 PR または Milestone Step 2 / Step 3 にて `main` 上の squash コミット SHA（`PR #XX @ <sha>`）および `changes/archive/` へ必ず正規化する（`R1-05`）。
    - **📱 親 Issue 単位での実機検証を実施する場合**:
      - 最終 PR（`Closes #親Issue番号`）を作成し、Gate 1〜6 をすべて通過した段階で、AI は人間に **構造化された「Android 実機検証試験項目表」** を提示する。
    - **親 Issue をクローズする最終 PR（`Closes #親Issue番号`）は必ず人間の最終確認・マージを待つ（親 Issue の出口ゲート）**。

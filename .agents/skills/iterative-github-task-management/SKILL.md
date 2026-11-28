@@ -53,7 +53,7 @@ description: "Use when breaking down a Feature Request Issue into an iterative m
 ### Step 4: IT（全体回帰テスト）・実機検証（対象時）・申し送り精算・差分仕様アーカイブ・親 Issue 完了（人間マージ）
 
 1. Playwright 実ブラウザ結合テスト（`test/it/` の `SCN-01`〜）を最新仕様に合わせて進化・追加し、過去機能を含め全シナリオ 100% PASS を確認する。
-2. 最後の Sub-issue PR（または IT PR）において、完了した差分仕様ファイルの状態を `Completed (Archived)` に更新し、**`git mv docs/specs/changes/issue-XX-<slug>.md docs/specs/changes/archive/issue-XX-<slug>.md` でアーカイブディレクトリへ移動** する。
+2. 最後の Sub-issue PR（または IT PR）において、完了した差分仕様ファイルの状態を `Completed (Archived)` に更新し、**`git mv docs/specs/changes/issue-XX-<slug>.md docs/specs/changes/archive/issue-XX-<slug>.md` でアーカイブディレクトリへ移動** する。また、前段の設計 PR・MK PR で台帳へ記入した行のトピックブランチ SHA や移動前差分仕様パスを `main` 上の squash SHA（`PR #XX @ <sha>`）および `changes/archive/` へ正規化する（本 Step 4 PR 自体に追記した行も、マージ後の次続 PR または Milestone Step 2 / Step 3 にて同様に `main` squash SHA へ正規化する）。
 3. PR に `Closes #親Issue番号`（および該当する場合は `Closes #IT-Sub-issue番号`）を設定し、Task Completion Gate 条件 1〜6（CI / 独立 `pr-reviewer` レビュー収束）を完遂する。
 4. **📱 親 Issue 単位で実機検証を実施する対象の場合**:
    - 最終 PR が Gate 1〜6 を通過した段階で、[android-apk-distribution スキル](../android-apk-distribution/SKILL.md) に従って `gh workflow run build-android.yml --ref <対象ブランチ> -f build_type=debug` を実行・展開して Google Drive の `app-debug.apk`（`app-release.apk` とは分離）へ自動配置し、[docs/guidelines/workflow.md §2.2](../../../docs/guidelines/workflow.md#22-android-実機検証の実施判断基準と試験項目表フォーマット) に従い **APK 取得リンク・必要時の検証サンプル（[test/fixtures/manual/](../../../test/fixtures/manual/README.md)）付きの「Android 実機検証試験項目表」** を人間に提示する。

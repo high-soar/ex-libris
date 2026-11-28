@@ -2,7 +2,7 @@
 type: spec-feature
 title: "仮想本棚ホーム画面仕様書（SCR-01: Bookshelf）"
 description: "SCR-01（/）のダークテーマシェル、手動Drive同期トリガー、4軸基本ソート対応シリーズカードグリッド、「続きを読む」クイック起動（TR-02b）、ビューポート優先の表紙WebP自動抽出・進捗/再試行表示、設定導線・段階別ガイドバナー、ローカルZIP/CBZ選択導線・閲覧履歴、診断ログコピー、およびTR-01/TR-02a/TR-02b/TR-03/TR-05/TR-08/TR-09仕様の正本"
-status: "Review (#26)"
+status: "Approved"
 updated: "2026-11-28"
 tags:
   [

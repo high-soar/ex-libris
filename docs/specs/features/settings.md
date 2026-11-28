@@ -2,8 +2,8 @@
 type: spec-feature
 title: "ストレージ連携・設定画面仕様書（SCR-04: Settings）"
 description: "SCR-04（/settings）のGoogleアカウント連携、マンガ保管ルートフォルダ管理、手動Drive差分同期・強制フルスキャン実行UI、表紙WebP抽出キュー進捗・エラー再試行UI、診断ログ閲覧/コピー/クリア、およびTR-03/TR-09・戻る優先度1/2/4仕様の正本"
-status: "Review (#26)"
-updated: "2026-11-27"
+status: "Approved"
+updated: "2026-11-28"
 tags:
   [
     feature,
