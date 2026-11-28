@@ -218,4 +218,39 @@ describe("DriveFolderPickerModal", () => {
     expect(screen.getByTestId("folder-picker-empty")).toBeVisible();
     expect(screen.queryByTestId("folder-picker-error")).not.toBeInTheDocument();
   });
+
+  it("モーダル開閉時に先頭要素への初期フォーカス・Tab循環トラップ・クローズ時フォーカス復帰を行うこと (AC-ST-02, AC-ST-06)", () => {
+    const trigger = document.createElement("button");
+    document.body.appendChild(trigger);
+    trigger.focus();
+
+    const { rerender } = render(<SubdirectoryWithPagination isOpen={true} />);
+    const dialog = screen.getByTestId("drive-folder-picker-modal");
+    const closeBtn = screen.getByTestId("close-folder-picker-button");
+    const confirmBtn = screen.getByTestId("confirm-current-folder-button");
+
+    expect(dialog).toHaveAttribute("tabindex", "-1");
+    expect(document.activeElement).toBe(closeBtn);
+
+    const shiftTab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(shiftTab);
+    expect(shiftTab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(confirmBtn);
+
+    const forwardTab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      cancelable: true,
+    });
+    document.dispatchEvent(forwardTab);
+    expect(forwardTab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(closeBtn);
+
+    rerender(<SubdirectoryWithPagination isOpen={false} />);
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
 });
